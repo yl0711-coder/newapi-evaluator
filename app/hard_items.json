@@ -1,0 +1,64 @@
+{
+  "items": [
+    {
+      "id": "hardcore-logic-unsolv-navigation-9",
+      "bank": "hardcore_unsolvable",
+      "name": "HardcoreLogic 寻路·无解 #9",
+      "group": "无解识别",
+      "category": "hardcore-logic",
+      "difficulty": "hard",
+      "max_tokens": 8192,
+      "scorer": "structured",
+      "prompt": "# Puzzle to Solve\n\nThere is a city with various landmarks.\nThe start point is store O.\nThe landmarks include: store O, school M, stadium P, school C, bank E, house H, school A.\nThere is a road which is 500 meters long from bank E to house H.\nThere is a road which is 200 meters long from bank E to stadium P.\nThere is a road which is 400 meters long from store O to house H.\nAll roads are one-way.\n\n## Query:\nFrom the start point, how to reach the nearest school in the shortest way?\n\n# Instruction\n\nNow please solve the above puzzle.\nIf there is no path, output `null` as the solution in the following json format:\n\n{\n\"solvable\": false,\n\"solution\": null\n}\n\nOtherwise, present your solution in the following json format:\n\n{\n\"solvable\": true,\n\"solution\": [\"_\", ...]\n}\n\nwhere each `\"_\"` represents a point on the path (an uppercase letter),\nincluding the start point and the end point.\n\n---\nKeep your reasoning brief (a few sentences at most) so your output is not cut off, then output ONLY the JSON object described above as the very last thing you output.",
+      "expected": [
+        "{\"solvable\":false,\"solution\":null}"
+      ],
+      "source": "xhWu-fd/HardcoreLogic · unsolvable · unsolvable--medium-012"
+    },
+    {
+      "id": "hardcore-logic-unsolv-crypto-10",
+      "bank": "hardcore_unsolvable",
+      "name": "HardcoreLogic 密码算式·无解 #10",
+      "group": "无解识别",
+      "category": "hardcore-logic",
+      "difficulty": "hard",
+      "max_tokens": 8192,
+      "scorer": "structured",
+      "prompt": "# Puzzle to Solve\n\nAn uppercase ASCII text is encrypted into a cipher.\nThe goal is to recover the plain text, which may or may not have semantic meanings.\nA list of candidate encryption methods may be provided, one method per line,\nin which case the encryption is done by applying each method once sequentially\n, but NOT necessarily in the given order.\nSample plain text-cipher pairs that use the same encryption procedure may also be given as a hint.\nWhen \"|\" appears in the cipher, the encryption is segmented,\nwhere each encryption method consist of multiple sub-methods concatenated with \"+\" in one line,\neach applied to the corresponding cipher segment separated by \"|\".\n\n## Cipher to Solve\n\nCandidate methods:\n- columnar_transposition\n- rail_fence\n\nEncryption sample:\n- XVLTNVVCT -> LVTVNCXTV\n- TSOQOCJQUXQQCECTYHOV -> TOOJUQCCYOSQCQXQETHV\n\nCipher: KEKXCTLEBLQLLDZVEZBU\n\n# Instruction\n\nNow please recover the above cipher.\nIf the cipher cannot be recovered, e.g. there is a contradiction in the clues,\noutput `null` as the solution in the following json format:\n\n{\n\"solvable\": false,\n\"solution\": null\n}\n\nOtherwise, present your solution in the following json format:\n\n{\n\"solvable\": true,\n\"solution\": ['_','_',...]\n}\n\nwhere `\"_\"` represents the plain text string in uppercase.\n\n---\nKeep your reasoning brief (a few sentences at most) so your output is not cut off, then output ONLY the JSON object described above as the very last thing you output.",
+      "expected": [
+        "{\"solvable\":false,\"solution\":null}"
+      ],
+      "source": "xhWu-fd/HardcoreLogic · unsolvable · unsolvable--all-693"
+    },
+    {
+      "id": "hardcore-logic-unsolv-hanoi-11",
+      "bank": "hardcore_unsolvable",
+      "name": "HardcoreLogic 汉诺塔·无解 #11",
+      "group": "无解识别",
+      "category": "hardcore-logic",
+      "difficulty": "hard",
+      "max_tokens": 8192,
+      "scorer": "structured",
+      "prompt": "# Example Puzzle\n\nA 3x3 hanoi puzzle has 3 pegs and 3 disks.\nThe disks, in the order of size, are: (smallest) `1`, `2`, `3` (largest).\nThe goal is to transform the start state to the goal state in minimum number of steps.\nEach step moves a disk on top of a peg to another peg that is either empty,\nor whose current top disk is larger than the moved disk.\nFurthermore, the target peg must be to the right of the source peg.\n\n## Example Puzzle\nStart (bottom -> top):\nA | 2 1\nB |\nC | 3\nGoal (bottom -> top):\nA |\nB |\nC | 3 2 1\n\n## Answer to the Example Puzzle\n[\n[\"A\", \"B\"], [\"A\", \"C\"], [\"B\", \"C\"]\n]\n\n### Explanation\nThe first step moves the top disk of peg A (`1`) to peg B,\nwhich is valid because peg B is empty. The new state is:\nA | 2\nB | 1\nC | 3\nThe second step moves the top disk of peg A (`2`) to peg C,\nwhich is valid because disk `2` is smaller than disk `3`. The new state is:\nA |\nB | 1\nC | 3 2\nThe second step moves the top disk of peg B (`1`) to peg C,\nwhich is valid because disk `1` is smaller than disk `2`. The new state is:\nA |\nB |\nC | 3 2 1\nwhich is the goal state.\n\n# Puzzle to Solve\n\nA 3x3 hanoi puzzle has 3 pegs and 3 disks.\nThe disks, in the order of size, are: (smallest) `1`, `2`, `3` (largest).\nThe goal is to transform the start state to the goal state in minimum number of steps.\nEach step moves a disk on top of a peg to another peg that is either empty,\nor whose current top disk is larger than the moved disk.\nFurthermore, the target peg must be to the right of the source peg.\n\n## Puzzle to Solve\nStart (bottom -> top):\nA | 3 2 1\nB |\nC |\nGoal (bottom -> top):\nA |\nB |\nC | 3 2 1\n\n# Instruction\n\nNow please solve the above hanoi puzzle.\nIf the puzzle is unsolvable, output `null` as the solution in the following json format:\n\n{\n\"solvable\": false,\n\"solution\": null\n}\n\nOtherwise, present your solution in the following json format:\n\n{\n\"solvable\": true,\n\"solution\": [\n[\"_\", \"_\"], ...\n]\n}\n\nwhere each `[\"_\", \"_\"]` pair represents the source peg and the target peg of a disk-moving step.\n\n---\nKeep your reasoning brief (a few sentences at most) so your output is not cut off, then output ONLY the JSON object described above as the very last thing you output.",
+      "expected": [
+        "{\"solvable\":false,\"solution\":null}"
+      ],
+      "source": "xhWu-fd/HardcoreLogic · unsolvable · unsolvable-ri--small-007"
+    },
+    {
+      "id": "hardcore-logic-unsolv-binario-12",
+      "bank": "hardcore_unsolvable",
+      "name": "HardcoreLogic 二进制·无解 #12",
+      "group": "无解识别",
+      "category": "hardcore-logic",
+      "difficulty": "hard",
+      "max_tokens": 8192,
+      "scorer": "structured",
+      "prompt": "# Puzzle to Solve\n\nA 6x6 binario puzzle is a cell grid with 6 rows and 6 columns.\nEach cell can either be `0` or `1`.\nThe goal is to fill all empty cells (denoted as `.`) with `0` or `1`.\nEach row must have the same number of `0`s and `1`s.\nEach column must have the same number of `0`s and `1`s.\nFurthermore, no more than two identical digits are adjacent.\n\n## Puzzle to Solve\n0 . . . . 0\n0 . . 0 . 0\n. . 1 . . .\n0 . . . . 0\n. . . 1 . .\n. . . 1 . .\n\n# Instruction\n\nNow please solve the above star battle puzzle.\nIf the puzzle is unsolvable, output `null` as the solution in the following json format:\n\n{\n\"solvable\": false,\n\"solution\": null\n}\n\nOtherwise, present your solution in the following json format:\n\n{\n\"solvable\": true,\n\"solution\": [\n[_, _, _, _, _, _],\n[_, _, _, _, _, _],\n[_, _, _, _, _, _],\n[_, _, _, _, _, _],\n[_, _, _, _, _, _],\n[_, _, _, _, _, _]\n]\n}\n\nwhere each `_` represents the final element in the corresponding cell.\n\n---\nKeep your reasoning brief (a few sentences at most) so your output is not cut off, then output ONLY the JSON object described above as the very last thing you output.",
+      "expected": [
+        "{\"solvable\":false,\"solution\":null}"
+      ],
+      "source": "xhWu-fd/HardcoreLogic · unsolvable · unsolvable--6x6-063"
+    }
+  ]
+}

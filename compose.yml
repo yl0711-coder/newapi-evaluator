@@ -1,0 +1,41 @@
+services:
+  evaluator:
+    build: .
+    restart: unless-stopped
+    init: true
+    read_only: true
+    cpus: 0.5
+    mem_limit: 512m
+    pids_limit: 256
+    ports:
+      - "127.0.0.1:${EVALUATOR_PORT:-8000}:8000"
+    environment:
+      TEST_DATA_DIR: /data
+      TEST_BACKUP_DIR: /backups
+      TEST_BACKUP_KEY_PATH: /backups/backup.key
+      TEST_COOKIE_SECURE: "1"
+      TEST_WORKERS: "2"
+      TEST_BOOTSTRAP_USERNAME: ${TEST_BOOTSTRAP_USERNAME:?set in deployment environment}
+      TEST_BOOTSTRAP_PASSWORD: ${TEST_BOOTSTRAP_PASSWORD:?set in deployment environment}
+      TEST_EGRESS_ALLOWLIST: ${TEST_EGRESS_ALLOWLIST:-}
+    volumes:
+      - ${EVALUATOR_DATA_DIR:-./runtime-data}:/data
+      - ${EVALUATOR_BACKUP_DIR:?mount a private off-server backup path}:/backups
+    tmpfs:
+      - /tmp:size=128m,mode=1777
+    security_opt:
+      - no-new-privileges:true
+    cap_drop:
+      - ALL
+    healthcheck:
+      test: ["CMD", "python", "-c", "import json,urllib.request; d=json.load(urllib.request.urlopen('http://127.0.0.1:8000/api/health',timeout=3)); raise SystemExit(0 if d['status'] in ('ok','degraded') else 1)"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 20s
+    networks:
+      - evaluator_internal
+
+networks:
+  evaluator_internal:
+    internal: false

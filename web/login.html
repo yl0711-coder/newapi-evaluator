@@ -1,0 +1,31 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>登录 · 模型渠道测试平台</title>
+<link rel="stylesheet" href="style.css">
+</head>
+<body class="login-page">
+<main class="login-shell">
+  <section class="card login-card">
+    <div class="login-mark">API</div>
+    <h1>登录测试平台</h1>
+    <p class="lead">使用分配给你的独立账号。所有配置变更都会进入审计记录。</p>
+    <div id="notice" class="notice err hide"></div>
+    <form id="login-form">
+      <div class="field">
+        <label for="username">用户名</label>
+        <input id="username" name="username" autocomplete="username" required autofocus>
+      </div>
+      <div class="field">
+        <label for="password">密码</label>
+        <input id="password" name="password" type="password" autocomplete="current-password" required>
+      </div>
+      <button id="login-button" type="submit" class="primary login-submit">登录</button>
+    </form>
+  </section>
+</main>
+<script src="login.js"></script>
+</body>
+</html>

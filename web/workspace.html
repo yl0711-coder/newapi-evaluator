@@ -1,0 +1,110 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>渠道配置 · 模型渠道测试平台</title>
+<link rel="stylesheet" href="style.css">
+<link rel="stylesheet" href="workspace.css?v=20260901-1">
+<link rel="stylesheet" href="configuration.css?v=20260901-1">
+</head>
+<body>
+<div class="topbar"><div class="inner workspace-topbar">
+  <span class="logo">模型渠道测试平台</span>
+  <nav><a href="index.html">首页</a><a href="workspace.html" class="on">渠道配置</a><a href="compare.html">双端准入</a><a href="scheduled.html">定时测试</a><a href="history.html">任务与报告</a></nav>
+</div></div>
+
+<main class="workbench configuration-page">
+  <header class="workspace-heading configuration-heading">
+    <div>
+      <div class="eyebrow">渠道 → 模型家族 → 上游采购倍率 → 精确连接配置</div>
+      <h1>渠道配置</h1>
+      <p class="lead">精确连接配置决定业务状态和测试资格。保存后先按下一步完成保真、双端准入或上线检查；测试报告和人工结论均保留在配置详情中。</p>
+    </div>
+    <div class="heading-actions"><button type="button" id="add-configuration" class="primary">＋ 添加精确连接配置</button></div>
+  </header>
+
+  <div id="notice" class="notice err hide" role="alert"></div>
+  <section class="overview-strip configuration-overview" aria-label="配置概览">
+    <div><span>渠道</span><strong id="stat-channels">0</strong></div>
+    <div><span>精确配置</span><strong id="stat-configurations">0</strong></div>
+    <div><span>待测试</span><strong id="stat-pending">0</strong></div>
+    <div><span>已上线</span><strong id="stat-online">0</strong></div>
+    <div><span>需处理</span><strong class="attention" id="stat-attention">0</strong></div>
+  </section>
+
+  <section class="configuration-toolbar" aria-label="配置筛选">
+    <label class="search-box"><span>⌕</span><input id="configuration-search" type="search" placeholder="搜索渠道、模型、地址或倍率…"></label>
+    <div class="segmented" id="configuration-filter">
+      <button class="on" data-filter="all">全部</button>
+      <button data-filter="pending">待测试</button>
+      <button data-filter="online">已上线</button>
+      <button data-filter="attention">需处理</button>
+    </div>
+  </section>
+
+  <section id="configuration-list" class="configuration-list" aria-live="polite"></section>
+</main>
+
+<dialog class="workspace-dialog wide configuration-dialog" id="configuration-dialog">
+  <form method="dialog" id="configuration-form">
+    <div class="dialog-head"><div><div class="eyebrow">按自然顺序填写</div><h2 id="configuration-dialog-title">添加精确连接配置</h2></div><button value="cancel" class="icon-button" aria-label="关闭">×</button></div>
+    <input id="configuration-id" type="hidden">
+    <section class="configuration-form-section">
+      <h3>1. 选择模型家族与采购倍率</h3>
+      <div class="row">
+        <div class="field"><label for="configuration-family">模型家族</label><select id="configuration-family" required></select><div class="help">选择后填写本配置实际支持的具体模型及上游映射。</div></div>
+        <div class="field"><label for="configuration-multiplier">上游采购倍率</label><input id="configuration-multiplier" type="number" min="0.01" max="100" step="0.01" placeholder="例如 1.2" required></div>
+      </div>
+    </section>
+    <section class="configuration-form-section">
+      <h3>2. 填写连接信息</h3>
+      <div class="row">
+        <div class="field"><label for="configuration-channel">渠道名称</label><input id="configuration-channel" maxlength="80" placeholder="例如：供应商 A" required></div>
+        <div class="field"><label for="configuration-name">配置显示名称</label><input id="configuration-name" maxlength="120" placeholder="例如：主线路" required></div>
+      </div>
+      <div class="row">
+        <div class="field"><label for="configuration-protocol">协议</label><select id="configuration-protocol"><option value="openai">OpenAI compatible</option><option value="anthropic">Anthropic compatible</option></select></div>
+        <div class="field"><label for="configuration-base-url">地址</label><input id="configuration-base-url" type="url" placeholder="https://api.example.com" required></div>
+      </div>
+      <div class="row">
+        <div class="field"><label for="configuration-route">路由</label><input id="configuration-route" maxlength="160" placeholder="可留空"></div>
+        <div class="field"><label for="configuration-group">分组</label><input id="configuration-group" maxlength="160" placeholder="可留空"></div>
+      </div>
+      <div class="field"><label for="configuration-api-key">凭据</label><input id="configuration-api-key" type="password" autocomplete="new-password" placeholder="新建时必填；编辑时留空保持原凭据"><div class="help">系统只保存加密凭据和不可逆指纹，详情不会回显明文。</div></div>
+    </section>
+    <section class="configuration-form-section">
+      <div class="between"><h3>3. 完整模型映射</h3><button type="button" class="sm" id="add-model-mapping">＋ 添加模型</button></div>
+      <p class="help">家族用于组织配置；映射必须覆盖此连接实际承载的具体模型，也可包含跨家族的主测模型。上线检查会逐个顺序检查这里的映射。</p>
+      <div id="model-mappings" class="model-mappings"></div>
+    </section>
+    <details class="configuration-advanced"><summary>显示信息</summary><div class="field"><label for="configuration-note">备注</label><textarea id="configuration-note" maxlength="1000" placeholder="仅用于说明，不改变精确连接配置身份"></textarea></div></details>
+    <div class="dialog-actions"><button value="cancel">取消</button><button type="submit" class="primary" id="save-configuration">保存配置</button></div>
+  </form>
+</dialog>
+
+<dialog class="workspace-dialog configuration-detail-dialog" id="configuration-detail-dialog">
+  <form method="dialog"><div class="dialog-head"><div><div class="eyebrow">精确连接配置</div><h2 id="detail-title">配置详情</h2></div><button value="cancel" class="icon-button" aria-label="关闭">×</button></div>
+    <nav class="detail-tabs" aria-label="配置详情"><button type="button" class="on" data-detail-tab="overview">概览</button><button type="button" data-detail-tab="connection">连接配置</button><button type="button" data-detail-tab="history">测试历史</button></nav>
+    <div id="detail-overview" class="detail-panel"></div>
+    <div id="detail-connection" class="detail-panel hide"></div>
+    <div id="detail-history" class="detail-panel hide"></div>
+  </form>
+</dialog>
+
+<dialog class="workspace-dialog" id="status-dialog">
+  <form method="dialog" id="status-form"><div class="dialog-head"><div><div class="eyebrow">管理员操作</div><h2 id="status-dialog-title">调整业务状态</h2></div><button value="cancel" class="icon-button" aria-label="关闭">×</button></div>
+    <input id="status-configuration-id" type="hidden"><div class="field"><label for="status-reason">操作理由</label><select id="status-reason"><option value="external_business_verified">已在外部业务稳定使用</option><option value="stopped_using">已停止实际使用</option><option value="maintenance">维护或替换配置</option></select></div><div class="field"><label for="status-note">补充说明（可选）</label><textarea id="status-note" maxlength="1000"></textarea></div><div id="status-dialog-help" class="notice info"></div><div class="dialog-actions"><button value="cancel">取消</button><button type="submit" class="primary" id="status-submit">确认</button></div>
+  </form>
+</dialog>
+
+<dialog class="workspace-dialog" id="presentation-dialog">
+  <form method="dialog" id="presentation-form"><div class="dialog-head"><div><div class="eyebrow">不改变精确连接身份</div><h2>编辑显示信息</h2></div><button value="cancel" class="icon-button" aria-label="关闭">×</button></div>
+    <input id="presentation-configuration-id" type="hidden"><div class="field"><label for="presentation-name">配置显示名称</label><input id="presentation-name" maxlength="160" required></div><div class="field"><label for="presentation-note">备注</label><textarea id="presentation-note" maxlength="1000" placeholder="仅用于说明，不改变地址、协议、模型映射、倍率、路由、分组或凭据指纹"></textarea></div><div class="dialog-actions"><button value="cancel">取消</button><button type="submit" class="primary">保存显示信息</button></div>
+  </form>
+</dialog>
+
+<script src="app.js?v=20260901-1"></script>
+<script src="workspace.js?v=20260901-1"></script>
+</body>
+</html>

@@ -1,0 +1,83 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>能力评测 · 模型渠道测试平台</title>
+<link rel="stylesheet" href="style.css">
+</head>
+<body>
+<div class="topbar"><div class="inner">
+  <span class="logo">模型渠道测试平台</span>
+  <nav>
+    <a href="index.html">首页</a>
+    <a href="workspace.html" class="on">模型工作台</a>
+    <a href="history.html">任务与报告</a>
+  </nav>
+</div></div>
+
+<div class="page">
+  <h1>能力评测</h1>
+  <p class="lead" id="capability-lead">正在读取当前题库、请求数与版本…</p>
+
+  <div id="notice" class="notice err hide"></div>
+
+  <div class="card">
+    <b>① 选择渠道</b>
+    <div class="field" style="margin-top:12px">
+      <label>渠道</label>
+      <select id="f-target"></select>
+    </div>
+  </div>
+
+  <div class="card">
+    <b>② 选择标杆</b>
+    <div class="field" style="margin-top:12px">
+      <label>本模型-倍率组标杆</label>
+      <select id="f-bench"></select>
+      <div class="help" id="bench-tip"></div>
+    </div>
+    <div id="bench-detail"></div>
+  </div>
+
+  <div class="card">
+    <b>③ 要不要跑硬题</b>
+    <div class="field" style="margin-top:12px">
+      <label style="display:flex;align-items:center;gap:8px;font-weight:normal">
+        <input type="checkbox" id="f-include_hard" checked style="width:auto;margin:0">
+        <span>跑硬题（HardcoreLogic 无解识别）</span>
+      </label>
+      <div class="help" id="hard-tip">加载中…</div>
+    </div>
+    <div class="help">
+      硬题独立计分，<b>不进四维能力总分</b>，也不参与可用性成功率、超时门槛与延迟分位。
+      想拿这条渠道的硬题分当标杆，就保持勾选 —— 跑完在报告里一键存成标杆时会一起存进去。
+    </div>
+  </div>
+
+  <div class="card">
+    <b>④ 确认成本后提交</b>
+    <div class="metrics" id="est" style="margin-top:14px"></div>
+    <div class="notice warn" style="margin-top:14px">
+      题量、Token 与费用由当前后端题库实时计算，提交前会在下方展示。
+      实际通常低不少，模型推理几句就给答案。
+      费用上限默认按预估的 4 倍设置，超了会停下来并保留已完成部分的报告。
+    </div>
+    <div class="field">
+      <label>费用上限（¥，留空用默认）</label>
+      <input id="f-limit" type="number" step="0.01" style="max-width:200px">
+    </div>
+    <div class="actions">
+      <button class="primary" id="btn-submit">开始评测</button>
+      <a href="workspace.html" class="small muted">返回模型工作台</a>
+    </div>
+  </div>
+
+  <h2>该渠道的历史评测</h2>
+  <div class="card"><div id="history"></div></div>
+</div>
+
+<script src="app.js?v=20260824-3"></script>
+<script src="capability.js?v=20260824-1"></script>
+</body>
+</html>

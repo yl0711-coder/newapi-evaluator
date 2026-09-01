@@ -1,0 +1,72 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>任务详情 · 模型渠道测试平台</title>
+<link rel="stylesheet" href="style.css">
+</head>
+<body>
+<div class="topbar"><div class="inner">
+  <span class="logo">模型渠道测试平台</span>
+  <nav>
+    <a href="index.html">首页</a>
+    <a href="workspace.html">模型工作台</a>
+    <a href="history.html">任务与报告</a>
+  </nav>
+</div></div>
+
+<div class="page">
+  <div class="between">
+    <div>
+      <h1 id="title">任务</h1>
+      <p class="lead" id="subtitle">加载中…</p>
+    </div>
+    <div id="head-actions" class="flex"></div>
+  </div>
+
+  <div id="notice" class="notice err hide"></div>
+
+  <!-- 执行中：进度 -->
+  <div class="card hide" id="progress-card">
+    <div class="between">
+      <b id="p-current">准备中…</b>
+      <span id="p-status"></span>
+    </div>
+    <div class="bar"><i id="p-bar" style="width:0%"></i></div>
+    <div class="small muted" id="p-detail"></div>
+    <div class="actions">
+      <button class="danger sm" id="btn-cancel">取消任务</button>
+    </div>
+  </div>
+
+  <!-- 完成：报告 -->
+  <div id="report-area" class="hide">
+    <div class="verdict" id="verdict"></div>
+    <p class="lead small" id="verdict-hint" style="margin-top:8px"></p>
+
+    <div class="tabs">
+      <button class="on" data-view="exec">管理层摘要</button>
+      <button data-view="ops">运营可读版</button>
+      <button data-view="tech">技术明细</button>
+    </div>
+    <div class="card" style="border-top-left-radius:0;border-top-right-radius:0"
+         id="view-body"></div>
+
+    <div class="actions">
+      <span class="small muted">导出：</span>
+      <button class="sm" data-fmt="md">Markdown</button>
+      <button class="sm" data-fmt="html">HTML</button>
+      <button class="sm" data-fmt="json">JSON</button>
+      <button class="sm" id="btn-retry">重新测一次</button>
+    </div>
+  </div>
+
+  <h2>执行时间线</h2>
+  <div class="card"><ul class="tl" id="timeline"></ul></div>
+</div>
+
+<script src="app.js?v=20260824-3"></script>
+<script src="task.js?v=20260824-3"></script>
+</body>
+</html>

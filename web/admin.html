@@ -1,0 +1,53 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>运营设置 · 模型渠道测试平台</title>
+<link rel="stylesheet" href="style.css">
+</head>
+<body>
+<div class="topbar"><div class="inner"><span class="logo">模型渠道测试平台</span><nav><a href="index.html">首页</a><a href="workspace.html">模型工作台</a><a href="history.html">任务与报告</a><a href="admin.html" class="on">运营设置</a></nav></div></div>
+<main class="page">
+  <div class="eyebrow">Operations</div><h1>运营设置</h1>
+  <p class="lead">维护显式用途标签、查看后台告警与审计；题目、答案和判分规则不在前端开放。</p>
+  <div id="notice" class="notice err hide"></div>
+
+  <section class="card">
+    <h2>用户用途绑定</h2>
+    <p class="help">录入值立即转换为部署内不可逆匿名指纹，数据库和导出接口都不保存原始用户或 Token 标识。</p>
+    <form id="usage-form" class="form-grid">
+      <div class="field"><label>对象类型</label><select id="subject-type"><option value="user">用户</option><option value="token">令牌</option><option value="group">分组</option></select></div>
+      <div class="field"><label>原始标识（仅本次处理）</label><input id="subject-id" type="password" autocomplete="off" required></div>
+      <div class="field"><label>可读标签</label><input id="subject-label" placeholder="例如：客服一组"></div>
+      <div class="field"><label>主用途</label><select id="primary-profile"></select></div>
+      <div class="field"><label>次用途（可多选）</label><select id="secondary-profiles" multiple size="4"></select></div>
+      <div class="field"><label>备注</label><input id="usage-note"></div>
+      <div><button class="primary" type="submit">保存匿名用途映射</button></div>
+    </form>
+    <div id="usage-list" style="margin-top:16px"></div>
+  </section>
+
+  <section class="card" style="margin-top:18px">
+    <h2>出站安全边界</h2><div id="egress-policy"></div>
+  </section>
+
+  <section class="card" style="margin-top:18px">
+    <div class="between"><div><h2>加密备份与容量</h2><p class="help">业务库与指标库分别在线快照，再合并加密；恢复演练不会覆盖当前数据库。</p></div><div class="flex"><button id="run-backup">立即备份</button><button id="run-restore-drill">恢复演练</button></div></div>
+    <div id="backup-status"></div>
+  </section>
+
+  <section class="card" style="margin-top:18px">
+    <div class="between"><div><h2>后台健康告警</h2><p class="help">调度器失败、任务死信和安全拦截会在这里留痕。</p></div><button id="refresh-alerts">刷新</button></div>
+    <div id="alert-list"></div>
+  </section>
+
+  <details class="card" style="margin-top:18px" open>
+    <summary><strong>操作审计</strong></summary>
+    <form id="audit-filter" class="flex" style="margin:14px 0"><input id="audit-actor" placeholder="操作人"><input id="audit-action" placeholder="动作，如 http.post"><input id="audit-object" placeholder="对象类型"><select id="audit-result"><option value="">全部结果</option><option value="success">成功</option><option value="failure">失败</option></select><button type="submit">筛选</button></form>
+    <div id="audit-list"></div>
+  </details>
+</main>
+<script src="app.js"></script><script src="admin.js"></script>
+</body>
+</html>

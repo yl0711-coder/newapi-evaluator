@@ -1,0 +1,134 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>渠道与手动巡检 · 模型渠道测试平台</title>
+<link rel="stylesheet" href="style.css">
+</head>
+<body>
+<div class="topbar"><div class="inner">
+  <span class="logo">模型渠道测试平台</span>
+  <nav>
+    <a href="index.html">首页</a>
+    <a href="workspace.html" class="on">模型工作台</a>
+    <a href="history.html">任务与报告</a>
+  </nav>
+</div></div>
+
+<div class="page">
+  <div class="between">
+    <div>
+      <h1>渠道与手动巡检</h1>
+      <p class="lead">这里保留单模型巡检入口；平台倍率归属、标杆和定时测试请在工作台统一管理。</p>
+    </div>
+    <a href="admission.html"><button class="primary">配一个新渠道</button></a>
+  </div>
+
+  <div id="notice" class="notice err hide"></div>
+  <div id="channels"></div>
+  <div id="list"></div>
+</div>
+
+<script src="app.js"></script>
+<script>
+const STATUS_TAG = {
+  recommend: ['推荐', 'ok'], observe: ['建议观察', 'warn'],
+  downgrade: ['建议降级', 'bad'], reject: ['不推荐', 'bad'],
+  manual: ['待人工复核', 'warn'], pending: ['未检测', ''],
+};
+async function load() {
+  clearError();
+  try {
+    const [channels, list] = await Promise.all([
+      get('/api/channels'), get('/api/targets'),
+    ]);
+    $('#channels').innerHTML = channels.length ? `<div class="card"><b>已保存的渠道连接</b>${channels.map(channelCard).join('')}</div>` : '';
+    bindChannels();
+    if (!list.length) {
+      $('#list').innerHTML = `<div class="card empty">
+        还没有已配置的模型。<br><br>
+        <a href="admission.html">添加模型并检测 →</a></div>`;
+      return;
+    }
+    $('#list').innerHTML = list.map(card).join('');
+    bind();
+  } catch (e) { showError(e.message); }
+}
+
+function channelCard(c) {
+  const models = c.models.length
+    ? c.models.map((m) => `${esc(m.model)}（${esc(STATUS_TAG[m.status]?.[0] || '未检测')}）`).join('、')
+    : '还没有添加模型';
+  return `<div class="between" data-channel-id="${c.id}" style="padding:12px 0;border-bottom:1px solid var(--line)">
+    <div><b>${esc(c.name)}</b><div class="small muted">${esc(c.protocol)} · ${esc(c.base_url)} · Key ${esc(c.key_masked)}</div>
+      <div class="small muted">模型：${models}</div></div>
+    <button class="sm danger rm-channel">删除渠道</button>
+  </div>`;
+}
+
+function bindChannels() {
+  $$('[data-channel-id]').forEach((el) => $('.rm-channel', el).addEventListener('click', async () => {
+    const id = el.dataset.channelId;
+    if (!confirm('删除该渠道及其所有模型？历史任务和报告会保留。')) return;
+    try { await del(`/api/channels/${id}`); load(); } catch (e) { showError(e.message); }
+  }));
+}
+
+function card(t) {
+  const [text, cls] = STATUS_TAG[t.status] || [t.status, ''];
+  return `<div class="card" data-id="${t.id}">
+    <div class="between">
+      <div>
+        <b>${esc(t.name)}</b>　<span class="tag ${cls}">${esc(text)}</span>
+        ${t.source === 'import' ? '<span class="tag">来自导入</span>' : ''}
+        ${t.edited_fields.length
+          ? `<span class="tag">手工改过 ${t.edited_fields.length} 项</span>` : ''}
+        <div class="small muted" style="margin-top:5px">
+          ${esc(t.model)}　·　${esc(t.protocol)}　·　${esc(t.base_url)}
+        </div>
+        <div class="small muted">
+          Key ${esc(t.key_masked || '-')}　·　最近结论：${esc(t.last_verdict || '无')}
+          ${t.last_task_id ? `　·　<a href="task.html?id=${t.last_task_id}">看报告</a>` : ''}
+        </div>
+        <div class="small muted">平台倍率归属请到<a href="workspace.html">模型工作台</a>查看或移动。</div>
+      </div>
+      <div class="flex">
+        <button class="sm now">立即抽检</button>
+        <button class="sm degrade-btn">降智复核</button>
+        <a href="load.html?target=${t.id}"><button class="sm">压力测试</button></a>
+        <a href="capability.html?target=${t.id}"><button class="sm">能力评测</button></a>
+        <button class="sm danger rm">删除</button>
+      </div>
+    </div>
+  </div>`;
+}
+
+function bind() {
+  $$('.card[data-id]').forEach((el) => {
+    const id = el.dataset.id;
+    $('.now', el).addEventListener('click', async () => {
+      try {
+        const r = await post(`/api/targets/${id}/inspect-now`);
+        location.href = `task.html?id=${r.task_id}`;
+      } catch (e) { showError(e.message); }
+    });
+
+    $('.degrade-btn', el).addEventListener('click', async () => {
+      try {
+        const r = await post('/api/tasks', { kind: 'degrade', target_id: Number(id) });
+        location.href = `task.html?id=${r.task_id}`;
+      } catch (e) { showError(e.message); }
+    });
+
+    $('.rm', el).addEventListener('click', async () => {
+      if (!confirm('删除这个渠道？历史任务和报告会保留。')) return;
+      try { await del(`/api/targets/${id}`); load(); }
+      catch (e) { showError(e.message); }
+    });
+  });
+}
+load();
+</script>
+</body>
+</html>

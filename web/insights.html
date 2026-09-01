@@ -1,0 +1,99 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>生产洞察 · 模型渠道测试平台</title>
+<link rel="stylesheet" href="style.css">
+<link rel="stylesheet" href="insights.css">
+</head>
+<body>
+<div class="topbar"><div class="inner insights-topbar">
+  <span class="logo">模型渠道测试平台</span>
+  <nav>
+    <a href="index.html">首页</a>
+    <a href="workspace.html">模型工作台</a>
+    <a href="insights.html" class="on">生产洞察</a>
+    <a href="history.html">任务与报告</a>
+  </nav>
+</div></div>
+
+<main class="insights-page">
+  <header class="insights-heading">
+    <div>
+      <div class="eyebrow">Production Intelligence</div>
+      <h1>生产洞察</h1>
+      <p class="lead">只读分析实际请求；这里只给出证据和候选建议，不修改生产路由。</p>
+    </div>
+    <button id="refresh-all" type="button" class="primary">刷新数据</button>
+  </header>
+
+  <div id="notice" class="notice err hide"></div>
+  <div id="freshness" class="freshness-banner loading">正在读取最新采集状态…</div>
+
+  <section class="insight-filters card">
+    <div class="field"><label for="filter-group">平台组</label><select id="filter-group"><option value="">全部</option></select></div>
+    <div class="field"><label for="filter-family">模型家族</label><select id="filter-family"><option value="">全部</option></select></div>
+    <div class="field"><label for="filter-model">模型</label><select id="filter-model"><option value="">全部</option></select></div>
+    <div class="field"><label for="filter-usage">用途</label><select id="filter-usage"><option value="">全部</option></select></div>
+    <div class="field"><label for="filter-channel">渠道</label><select id="filter-channel"><option value="">全部</option></select></div>
+  </section>
+
+  <section id="summary-cards" class="insight-summary"></section>
+
+  <section class="card trend-card">
+    <div class="section-heading"><div><h2>最近 24 小时</h2><p>请求和成功率按分钟汇总</p></div></div>
+    <div id="trend-chart" class="trend-chart empty">等待指标数据</div>
+  </section>
+
+  <section class="card">
+    <div class="section-heading">
+      <div><h2>实时健康</h2><p>默认显示结论，展开行可查看专业指标。</p></div>
+      <span id="health-count" class="soft-tag">0 个渠道</span>
+    </div>
+    <div id="health-list" class="health-list"></div>
+  </section>
+
+  <section class="ranking-grid">
+    <article class="card"><div class="section-heading"><div><h2>需求前三</h2><p>按平台组统计，已削弱单一重度用户影响。</p></div></div><div id="demand-ranking"></div></article>
+    <article class="card"><div class="section-heading"><div><h2>最稳定前三</h2><p>7 天样本门槛、成功率置信下界和跨日波动。</p></div></div><div id="stability-ranking"></div></article>
+    <article class="card"><div class="section-heading"><div><h2>速度前三</h2><p>只比较同模型、同用途和同输出长度。</p></div></div><div id="speed-ranking"></div></article>
+  </section>
+
+  <section class="card">
+    <div class="section-heading">
+      <div><h2>供给缺口候选</h2><p>仅形成接入候选，不写入中转站。</p></div>
+      <button id="refresh-gaps" type="button">重新计算</button>
+    </div>
+    <div id="supply-gaps" class="gap-list"></div>
+  </section>
+
+  <section class="card review-card">
+    <div class="section-heading"><div><h2>建议效果复盘</h2><p>新渠道上线后自动在第 7 天和第 30 天对比上线前后指标。</p></div></div>
+    <div id="recommendation-reviews" class="review-list"></div>
+  </section>
+
+  <details class="card advanced-panel">
+    <summary><span><strong>专业数据与采集配置</strong><small>数据源、完整率、低样本渠道和手工采集</small></span></summary>
+    <div class="advanced-content">
+      <div class="section-heading"><div><h2>只读指标数据源</h2><p>Token 只加密保存在本机，不会显示或进入报告。</p></div><button id="show-source-form" type="button">添加数据源</button></div>
+      <form id="source-form" class="source-form hide">
+        <div class="field"><label for="source-name">名称</label><input id="source-name" required></div>
+        <div class="field source-endpoint"><label for="source-endpoint">分钟指标接口</label><input id="source-endpoint" type="url" placeholder="https://relay.example/api/metrics/minute" required></div>
+        <div class="field"><label for="source-token">只读 Token</label><input id="source-token" type="password" autocomplete="off"></div>
+        <div class="field"><label for="source-interval">采集间隔</label><select id="source-interval"><option value="60">每分钟</option><option value="300">每 5 分钟</option><option value="900">每 15 分钟</option></select></div>
+        <div class="source-actions"><button type="submit" class="primary">保存数据源</button><button id="cancel-source" type="button">取消</button></div>
+      </form>
+      <div id="source-list" class="source-list"></div>
+      <h3>采集完整率</h3>
+      <div id="quality-list"></div>
+      <h3>暂不具备排行资格</h3>
+      <div id="insufficient-list"></div>
+    </div>
+  </details>
+</main>
+
+<script src="app.js"></script>
+<script src="insights.js"></script>
+</body>
+</html>

@@ -1,0 +1,38 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>定时测试 · 模型渠道测试平台</title>
+<link rel="stylesheet" href="style.css">
+<link rel="stylesheet" href="scheduled-configurations.css?v=20260901-1">
+</head>
+<body>
+<div class="topbar"><div class="inner"><span class="logo">模型渠道测试平台</span><nav><a href="index.html">首页</a><a href="workspace.html">渠道配置</a><a href="compare.html">双端准入</a><a href="scheduled.html" class="on">定时测试</a><a href="history.html">任务与报告</a></nav></div></div>
+
+<main class="page scheduled-configuration-page">
+  <header class="scheduled-heading"><div><h1>定时测试</h1><p class="lead">只监测用户明确选择的已上线精确连接配置。目标、主测模型或测量条件变化会形成新的计划版本；未完成历史不会被覆盖。</p></div><a href="workspace.html"><button type="button">管理渠道配置</button></a></header>
+  <div id="notice" class="notice err hide" role="alert"></div>
+
+  <section class="card primary-model-card"><div class="between"><div><h2>当前主测模型</h2><p class="help">每个目标配置必须映射全部主测模型，并对每个模型固定安排 10 次标准化流式请求。缺少映射的计划会暂停，等待人工补齐后重新确认。</p></div><div class="actions"><span id="primary-rule-version" class="tag">加载中</span><button id="edit-primary-models" type="button" class="sm">调整集合</button></div></div><div id="primary-models" class="primary-models"></div><p id="primary-thresholds" class="help"></p></section>
+
+  <section class="card schedule-form-card">
+    <div class="between"><div><h2 id="form-title">新建定时计划</h2><p class="help">先按“模型家族 + 上游采购倍率”查找，再明确勾选外部业务实际路由到的已上线配置。本系统不记录或推断外部路由权重。</p></div><button id="cancel-edit" class="sm hide" type="button">取消编辑</button></div>
+    <div class="row"><div class="field"><label for="schedule-name">计划名称</label><input id="schedule-name" maxlength="80" placeholder="例如：早间稳定性监测"></div><div class="field"><label for="report-time">报告发送时间</label><input id="report-time" type="time" value="09:00"><div class="help">报告时间前 30 分钟开始；暂停期间错过的执行不补跑。</div></div></div>
+    <div class="row"><div class="field"><label>飞书群（可不选）</label><div id="feishu-options" class="choice-grid"></div></div><div class="field"><label>邮件收件人（可不选）</label><div id="email-options" class="choice-grid"></div></div></div>
+    <section><div class="between"><h3>选择已上线精确连接配置</h3><span id="target-count" class="tag">0 份配置</span></div><div id="configuration-target-groups" class="configuration-target-groups"></div></section>
+    <label class="flex small"><input id="schedule-enabled" type="checkbox" checked style="width:auto"> 启用计划</label><div class="actions"><button id="save-schedule" class="primary" type="button">保存计划</button></div>
+  </section>
+
+  <section><div class="between"><div><h2>精确连接配置计划</h2><p class="help">前 3 份成功、封存且指标完整的报告建立本计划版本基线；基线建立后固定，不跨版本计算趋势。</p></div></div><div id="schedule-list" class="schedule-list"></div></section>
+  <section id="legacy-schedules" class="hide"><h2>保留的旧定时计划</h2><p class="help">这些计划仍保持原有数据和功能，尚未转换为精确连接配置计划，因此不会被新的目标选择器静默改写。</p><div id="legacy-schedule-list" class="schedule-list"></div></section>
+
+  <section class="notification-section"><h2>通知接口</h2><div class="card"><b>SMTP 发件接口</b><div class="row"><div class="field"><label>SMTP 主机</label><input id="smtp-host" placeholder="smtp.example.com"></div><div class="field"><label>端口</label><input id="smtp-port" type="number" value="465"></div><div class="field"><label>加密方式</label><select id="smtp-tls"><option value="ssl">SSL</option><option value="starttls">STARTTLS</option></select></div><div class="field"><label>登录账号</label><input id="smtp-user"></div><div class="field"><label>密码或授权码</label><input id="smtp-password" type="password" placeholder="留空表示不修改"></div><div class="field"><label>发件地址</label><input id="smtp-from"></div><div class="field"><label>发件名称</label><input id="smtp-from-name" value="模型渠道测试平台"></div></div><button id="save-smtp" class="sm">保存 SMTP</button></div>
+    <div class="row"><div class="card"><b>飞书群机器人</b><div class="field"><label>名称</label><input id="feishu-name"></div><div class="field"><label>Webhook</label><input id="feishu-webhook" type="password"></div><div class="field"><label>签名密钥（可选）</label><input id="feishu-secret" type="password"></div><button id="add-feishu" class="sm">保存飞书接口</button><div id="feishu-list" class="destination-list"></div></div><div class="card"><b>邮件收件人</b><div class="field"><label>名称</label><input id="email-name"></div><div class="field"><label>邮箱地址</label><input id="email-address" type="email"></div><button id="add-email" class="sm">保存收件人</button><div id="email-list" class="destination-list"></div></div></div>
+  </section>
+</main>
+<dialog class="workspace-dialog" id="primary-model-dialog"><form method="dialog" id="primary-model-form"><div class="dialog-head"><div><div class="eyebrow">定时主测模型</div><h2>调整主测模型集合</h2></div><button value="cancel" class="icon-button" aria-label="关闭">×</button></div><p class="help">保存后受影响计划从下一批开始使用新的集合，并形成新计划版本；正在运行的批次不受影响。</p><div id="primary-model-options" class="choice-grid"></div><div class="field"><label for="primary-model-reason">调整原因</label><textarea id="primary-model-reason" maxlength="1000" required placeholder="说明模型集合变更原因"></textarea></div><div class="dialog-actions"><button value="cancel">取消</button><button type="submit" class="primary">保存新集合</button></div></form></dialog>
+<script src="app.js?v=20260901-1"></script>
+<script src="scheduled.js?v=20260901-1"></script>
+</body>
+</html>

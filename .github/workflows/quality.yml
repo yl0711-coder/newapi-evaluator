@@ -1,0 +1,35 @@
+name: quality-and-secret-gate
+on:
+  pull_request:
+    branches: [main]
+  push:
+    branches: [main]
+permissions:
+  contents: read
+jobs:
+  test-and-scan:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.13'
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+      - name: Install dependencies
+        run: pip install -r requirements.txt
+      - name: Repository allowlist and secret scan
+        run: python scripts/repo_security_scan.py .
+      - name: Python selftests
+        env:
+          TEST_BOOTSTRAP_USERNAME: selftest-admin
+          TEST_BOOTSTRAP_PASSWORD: selftest-password-2026
+          TEST_COOKIE_SECURE: '0'
+          TEST_EGRESS_ALLOWLIST: 127.0.0.1,localhost,example.com,open.feishu.cn
+        run: python run_selftests.py
+      - name: JavaScript syntax
+        shell: bash
+        run: find web -maxdepth 1 -name '*.js' -print0 | xargs -0 -n1 node --check

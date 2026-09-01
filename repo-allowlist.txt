@@ -1,0 +1,19 @@
+# 唯一允许进入源码仓库的顶层路径；发布脚本和 CI 使用同一份清单。
+.github/
+.dockerignore
+.env.example
+.gitignore
+Dockerfile
+README.md
+compose.yml
+repo-allowlist.txt
+requirements.txt
+run.py
+local_runner.py
+manage_accounts.py
+mock_upstream.py
+run_selftests.py
+selftest_*.py
+app/
+web/
+scripts/

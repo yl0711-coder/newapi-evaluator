@@ -1,0 +1,124 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>降智复核 · 模型渠道测试平台</title>
+<link rel="stylesheet" href="style.css">
+</head>
+<body>
+<div class="topbar"><div class="inner">
+  <span class="logo">模型渠道测试平台</span>
+  <nav>
+    <a href="index.html">首页</a>
+    <a href="workspace.html" class="on">模型工作台</a>
+    <a href="history.html">任务与报告</a>
+  </nav>
+</div></div>
+
+<div class="page">
+  <h1>降智复核</h1>
+  <p class="lead">怀疑变差了：跑同一套能力题，与该渠道首次接入时的基线对比。</p>
+
+  <div id="notice" class="notice err hide"></div>
+
+  <div class="card">
+    <b>① 选择要复核的渠道</b>
+    <div class="field" style="margin-top:12px">
+      <label>渠道</label>
+      <select id="f-target"></select>
+      <div class="help" id="base-tip"></div>
+    </div>
+  </div>
+
+  <div class="card">
+    <b>② 确认成本后提交</b>
+    <div class="metrics" id="est" style="margin-top:14px"></div>
+    <p class="help">题目固定，temperature 默认取 0；上游不支持时会在本任务内省略并记录，所以本次结果可以按报告口径和基线比。
+      得分比基线低 30% 以上判定为确认降智，低 15%~30% 判定为疑似波动。</p>
+    <div class="actions">
+      <button class="primary" id="btn-submit">开始复核</button>
+      <a href="index.html" class="small muted">返回首页</a>
+    </div>
+  </div>
+
+  <h2>该渠道的历史复核</h2>
+  <div class="card"><div id="history"></div></div>
+</div>
+
+<script src="app.js"></script>
+<script>
+let targets = [];
+
+async function load() {
+  try {
+    targets = await get('/api/targets');
+    if (!targets.length) {
+      $('#notice').className = 'notice info';
+      $('#notice').innerHTML = '还没有已配置的模型，先去 <a href="admission.html">添加模型并检测</a>。';
+      $('#notice').classList.remove('hide');
+      $('#btn-submit').disabled = true;
+      return;
+    }
+    $('#f-target').innerHTML = targets.map((t) =>
+      `<option value="${t.id}">${esc(t.name)}　·　${esc(t.model)}</option>`).join('');
+    onPick();
+  } catch (e) { showError(e.message); }
+}
+
+async function onPick() {
+  const id = Number($('#f-target').value);
+  const t = targets.find((x) => x.id === id);
+  $('#base-tip').textContent = t && t.has_baseline
+    ? '该渠道已有基线，本次会直接与基线对比。'
+    : '该渠道还没有基线，本次结果将作为基线保存，下次复核才能对比。';
+  loadEstimate(id);
+  loadHistory(id);
+}
+
+async function loadEstimate(id) {
+  try {
+    const e = await get(`/api/estimate?kind=degrade&target_id=${id}`);
+    $('#est').innerHTML = [
+      ['预计请求数', e.requests], ['预计 tokens', e.tokens],
+      ['并发度', e.concurrency], ['预计费用', '¥' + e.cost.toFixed(4)],
+    ].map(([k, v]) =>
+      `<div class="metric"><div class="k">${k}</div><div class="v">${v}</div></div>`).join('');
+  } catch (e) { showError(e.message); }
+}
+
+async function loadHistory(id) {
+  try {
+    const rows = await get(`/api/tasks?kind=degrade&target_id=${id}&limit=10`);
+    $('#history').innerHTML = rows.length ? `
+      <table><thead><tr><th>任务</th><th>时间</th><th>状态</th><th>结论</th></tr></thead>
+      <tbody>${rows.map((r) => `<tr>
+        <td><a href="task.html?id=${r.id}">#${r.id}</a></td>
+        <td>${fmtTime(r.created_at)}</td>
+        <td>${statusTag(r.status)}</td>
+        <td>${esc(r.verdict || '-')}</td>
+      </tr>`).join('')}</tbody></table>`
+      : '<div class="empty">该渠道还没有做过降智复核。</div>';
+  } catch (e) { showError(e.message); }
+}
+
+$('#f-target').addEventListener('change', onPick);
+$('#btn-submit').addEventListener('click', async () => {
+  const btn = $('#btn-submit');
+  btn.disabled = true;
+  btn.textContent = '提交中…';
+  try {
+    const r = await post('/api/tasks', {
+      kind: 'degrade', target_id: Number($('#f-target').value),
+    });
+    location.href = `task.html?id=${r.task_id}`;
+  } catch (e) {
+    showError(e.message);
+    btn.disabled = false;
+    btn.textContent = '开始复核';
+  }
+});
+load();
+</script>
+</body>
+</html>

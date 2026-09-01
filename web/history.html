@@ -1,0 +1,127 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>任务与报告 · 模型渠道测试平台</title>
+<link rel="stylesheet" href="style.css">
+</head>
+<body>
+<div class="topbar"><div class="inner">
+  <span class="logo">模型渠道测试平台</span>
+  <nav>
+    <a href="index.html">首页</a>
+    <a href="workspace.html">模型工作台</a>
+    <a href="history.html" class="on">任务与报告</a>
+  </nav>
+</div></div>
+
+<div class="page">
+  <h1>任务与报告</h1>
+  <p class="lead">重新打开平台也能在这里找到全部历史任务和报告。</p>
+
+  <div id="notice" class="notice err hide"></div>
+
+  <div class="card">
+    <div class="flex">
+      <select id="f-kind" style="width:auto">
+        <option value="">全部类型</option>
+        <option value="admission">接入检测</option>
+        <option value="inspect">定期巡检</option>
+        <option value="degrade">降智复核</option>
+        <option value="load">压力测试</option>
+        <option value="capability">能力评测</option>
+      </select>
+      <select id="f-verdict" style="width:auto">
+        <option value="">全部结论</option>
+        <option value="recommend">推荐准入</option>
+        <option value="observe">建议观察</option>
+        <option value="manual">需要人工复核</option>
+        <option value="downgrade">建议降级</option>
+        <option value="reject">暂不准入</option>
+      </select>
+      <input id="f-search" placeholder="搜索任务号、渠道或模型" style="width:210px">
+      <input id="f-owner" placeholder="负责人" style="width:110px">
+      <input id="f-tag" placeholder="标签" style="width:100px">
+      <select id="f-review" style="width:auto"><option value="">全部审查状态</option><option value="unreviewed">未审查</option><option value="in_review">审查中</option><option value="approved">已通过</option><option value="rejected">已驳回</option></select>
+      <button class="sm" id="btn-refresh">刷新</button>
+    </div>
+  </div>
+
+  <div class="card" style="padding:0;overflow:hidden" id="wrap"></div>
+</div>
+
+<script src="app.js"></script>
+<script>
+let currentRows = [];
+async function load() {
+  clearError();
+  const params = new URLSearchParams({ limit: '100' });
+  if ($('#f-kind').value) params.set('kind', $('#f-kind').value);
+  if ($('#f-verdict').value) params.set('verdict', $('#f-verdict').value);
+  if ($('#f-search').value.trim()) params.set('q', $('#f-search').value.trim());
+  if ($('#f-owner').value.trim()) params.set('owner', $('#f-owner').value.trim());
+  if ($('#f-tag').value.trim()) params.set('tag', $('#f-tag').value.trim());
+  if ($('#f-review').value) params.set('review_status', $('#f-review').value);
+  try {
+    const rows = await get('/api/tasks?' + params);
+    currentRows = rows;
+    if (!rows.length) {
+      $('#wrap').innerHTML = '<div class="empty">没有符合条件的任务。</div>';
+      return;
+    }
+    $('#wrap').innerHTML = `
+      <table><thead><tr>
+        <th>任务</th><th>类型</th><th>渠道</th><th>状态</th>
+        <th>结论</th><th>标杆对比</th><th>负责人/标签</th><th>审查</th><th>进度</th><th>提交时间</th>
+      </tr></thead><tbody>${rows.map(row).join('')}</tbody></table>`;
+  } catch (e) { showError(e.message); }
+}
+
+function row(r) {
+  const p = r.progress || {};
+  const prog = p.total ? `${p.done || 0}/${p.total}` : '-';
+  const cmp = r.selected_benchmark_comparison;
+  const cmpVerdict = cmp ? (cmp.status === 'recommended'
+    ? `<span class="tag ok">固定值可入组：${esc(cmp.benchmark_name || '')}</span>`
+    : `<span class="tag warn">固定值不入组：${esc(cmp.benchmark_name || '')}</span>`)
+    : '<span class="tag warn">未选择对比</span>';
+  return `<tr>
+    <td><a href="task.html?id=${r.id}">#${r.id}</a>
+      ${r.parent_task_id
+        ? `<div class="small muted">重试自 #${r.parent_task_id}</div>` : ''}</td>
+    <td>${esc(KIND_NAME[r.kind] || r.kind)}</td>
+    <td>${esc(r.target_name || '-')}
+      <div class="small muted mono">${esc((r.snapshot || {}).model || '')}</div></td>
+    <td>${statusTag(r.status)}</td>
+    <td>${r.verdict
+      ? `<span class="tag ${r.verdict_code === 'recommend' ? 'ok'
+        : r.verdict_code === 'reject' || r.verdict_code === 'downgrade' ? 'bad'
+        : 'warn'}">${esc(r.verdict)}</span>` : '-'}</td>
+    <td>${cmpVerdict}</td>
+    <td><b>${esc(r.owner || '-')}</b><div class="small muted">${(r.tags || []).map(esc).join('、') || '无标签'}</div></td>
+    <td><button class="sm" data-task-metadata="${r.id}">${esc({ unreviewed: '未审查', in_review: '审查中', approved: '已通过', rejected: '已驳回' }[r.review_status] || r.review_status)}</button></td>
+    <td class="small">${prog}${p.failed ? `<span class="muted">（失败 ${p.failed}）</span>` : ''}</td>
+    <td class="small muted">${fmtTime(r.created_at)}</td>
+  </tr>`;
+}
+
+$('#f-kind').addEventListener('change', load);
+$('#f-verdict').addEventListener('change', load);
+$('#f-review').addEventListener('change', load);
+$('#btn-refresh').addEventListener('click', load);
+$('#wrap').addEventListener('click', async (event) => {
+  const button = event.target.closest('[data-task-metadata]');
+  if (!button) return;
+  const task = currentRows.find((item) => item.id === Number(button.dataset.taskMetadata));
+  if (!task) return;
+  const owner = prompt('负责人', task.owner || ''); if (owner == null) return;
+  const tagsText = prompt('标签（逗号分隔）', (task.tags || []).join(',')); if (tagsText == null) return;
+  const review_status = prompt('审查状态：unreviewed / in_review / approved / rejected', task.review_status || 'unreviewed'); if (review_status == null) return;
+  const note = prompt('运营备注', task.operator_note || ''); if (note == null) return;
+  try { await api(`/api/tasks/${task.id}/metadata`, { method: 'PATCH', body: JSON.stringify({ owner, tags: tagsText.split(',').map((item) => item.trim()).filter(Boolean), review_status, note }) }); await load(); } catch (error) { showError(error.message); }
+});
+load();
+</script>
+</body>
+</html>

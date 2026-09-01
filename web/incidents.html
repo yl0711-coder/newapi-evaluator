@@ -1,0 +1,15 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>异常归因 · 模型渠道测试平台</title><link rel="stylesheet" href="style.css"><link rel="stylesheet" href="incidents.css"></head>
+<body>
+<div class="topbar"><div class="inner"><span class="logo">模型渠道测试平台</span><nav><a href="index.html">首页</a><a href="workspace.html">模型工作台</a><a href="insights.html">生产洞察</a><a href="incidents.html" class="on">异常归因</a><a href="history.html">任务与报告</a></nav></div></div>
+<main class="incident-page">
+  <header class="incident-heading"><div><div class="eyebrow">Evidence-led attribution</div><h1>监测告警与异常归因</h1><p class="lead">综合分钟指标、配置变更和双位置探针，只给出证据与建议，不自动操作生产。</p></div><button id="reload" class="primary">刷新</button></header>
+  <div id="notice" class="notice err hide"></div>
+  <div class="boundary">安全边界：不会自动停用渠道、改变路由权重或封禁用户；所有归因均保留人工复核。</div>
+  <section class="incident-layout"><div class="card"><div class="section-head"><h2>异常事件</h2><span id="incident-count" class="soft-tag">0</span></div><div id="incident-list" class="incident-list"></div></div><div class="card detail-card" id="incident-detail"><div class="empty">选择一条事件查看证据。</div></div></section>
+  <details class="card advanced"><summary><strong>告警源与双位置探针配置</strong><small>高级运营配置</small></summary><div class="advanced-body">
+    <section><div class="section-head"><div><h2>签名告警源</h2><p>签名原文为 <code>timestamp.raw_body</code>，HMAC-SHA256，允许 5 分钟时差。</p></div></div><form id="source-form" class="inline-form"><input id="source-name" placeholder="监测平台名称" required><input id="source-secret" type="password" minlength="16" placeholder="独立 Webhook 密钥" required><button class="primary">创建</button></form><div id="source-list"></div></section>
+    <section><div class="section-head"><div><h2>专用账号探针位置</h2><p>至少配置生产位置和独立网络位置；调用受每小时频率上限控制。</p></div></div><form id="probe-form" class="probe-form"><input id="probe-name" placeholder="位置名称" required><select id="probe-type"><option value="production">生产位置</option><option value="independent">独立网络位置</option></select><input id="probe-endpoint" type="url" placeholder="专用轻量探针服务 URL" required><input id="probe-token" type="password" placeholder="只读专用 Token（可选）"><input id="probe-limit" type="number" min="1" max="120" value="12"><button class="primary">添加</button></form><div id="probe-list"></div></section>
+  </div></details>
+</main><script src="app.js"></script><script src="incidents.js"></script></body></html>

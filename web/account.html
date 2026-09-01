@@ -1,0 +1,40 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>账号安全 · 模型渠道测试平台</title>
+<link rel="stylesheet" href="style.css">
+</head>
+<body>
+<div class="topbar"><div class="inner">
+  <span class="logo">模型渠道测试平台</span>
+  <nav><a href="index.html">返回首页</a></nav>
+</div></div>
+<main class="page account-page">
+  <h1>账号安全</h1>
+  <p class="lead">修改密码后，其他设备上的会话会立即失效。</p>
+  <div id="notice" class="notice hide"></div>
+  <section class="card">
+    <form id="password-form">
+      <div class="field">
+        <label for="current-password">当前密码</label>
+        <input id="current-password" type="password" autocomplete="current-password" required>
+      </div>
+      <div class="field">
+        <label for="new-password">新密码</label>
+        <input id="new-password" type="password" autocomplete="new-password" minlength="12" required>
+        <div class="help">至少 12 位，建议使用密码管理器生成。</div>
+      </div>
+      <div class="field">
+        <label for="confirm-password">再次输入新密码</label>
+        <input id="confirm-password" type="password" autocomplete="new-password" minlength="12" required>
+      </div>
+      <button type="submit" class="primary">保存新密码</button>
+    </form>
+  </section>
+</main>
+<script src="app.js"></script>
+<script src="account.js"></script>
+</body>
+</html>

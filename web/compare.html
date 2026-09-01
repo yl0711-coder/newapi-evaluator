@@ -1,0 +1,54 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>双端准入 · 模型渠道测试平台</title>
+<link rel="stylesheet" href="style.css">
+<link rel="stylesheet" href="admission.css">
+<link rel="stylesheet" href="admission-batch.css?v=20260901-1">
+</head>
+<body>
+<div class="topbar"><div class="inner">
+  <span class="logo">模型渠道测试平台</span>
+  <nav><a href="index.html">首页</a><a href="workspace.html">渠道配置</a><a href="compare.html" class="on">双端准入</a><a href="scheduled.html">定时测试</a><a href="history.html">任务与报告</a></nav>
+</div></div>
+
+<main class="page admission-batch-page">
+  <header class="admission-heading"><div><h1>双端准入</h1><p class="lead">针对一份精确连接配置建立配置级准入批次。每个具体模型各自选择一个已上线标杆，系统只展示证据与差异，最终准入由人决定。</p></div><a href="workspace.html"><button type="button">返回渠道配置</button></a></header>
+  <div id="notice" class="notice err hide" role="alert"></div>
+
+  <ol class="paired-progress batch-progress" aria-label="配置级准入流程"><li data-progress="fidelity"><span>1</span><b>保真与配置确认</b></li><li data-progress="benchmarks"><span>2</span><b>逐模型标杆与双端测试</b></li><li data-progress="conclusion"><span>3</span><b>报告与人工结论</b></li></ol>
+
+  <section class="card batch-step" id="batch-configuration-step">
+    <div class="paired-step-heading"><div><span class="step-number">1</span><h2>选择精确连接配置</h2></div><span id="batch-configuration-state" class="tag">请选择配置</span></div>
+    <div id="batch-configuration-selector" class="field"><label for="batch-configuration">精确连接配置</label><select id="batch-configuration"></select><div class="help">只有已上线配置、或拥有有效人工保真“真”定义的待测试配置可以进入准入评测。</div></div>
+    <div id="batch-configuration-summary" class="batch-configuration-summary"></div>
+    <div id="batch-fidelity-guidance" class="notice info hide"></div>
+  </section>
+
+  <section class="card batch-step" id="batch-benchmark-step" aria-disabled="true">
+    <div class="paired-step-heading"><div><span class="step-number">2</span><h2>逐模型选择已上线标杆</h2></div><span id="batch-benchmark-state" class="tag">等待保真条件</span></div>
+    <div id="batch-benchmark-empty" class="empty">选择配置后显示待准入模型及可用标杆。</div>
+    <form id="batch-start-form" class="hide">
+      <div id="batch-benchmark-list" class="batch-benchmark-list"></div>
+      <section class="batch-scale"><h3>启动确认</h3><div id="batch-scale-preview" class="metrics"></div><label class="confirm-check paired-confirm"><input id="batch-scale-confirmed" type="checkbox"><span>我已确认候选配置、每个模型的标杆、采购倍率和预计测试规模，并开始双端测试。</span></label></section>
+      <div class="actions"><button type="submit" class="primary" id="batch-start" disabled>开始双端测试</button></div>
+    </form>
+  </section>
+
+  <section class="card batch-step" id="batch-conclusion-step" aria-disabled="true">
+    <div class="paired-step-heading"><div><span class="step-number">3</span><h2>报告与人工准入结论</h2></div><span id="batch-conclusion-state" class="tag">等待报告</span></div>
+    <div id="batch-report-empty" class="empty">每个模型成功封存正式报告后，会在这里汇总当前准入依据。</div>
+    <div id="batch-report" class="hide"></div>
+  </section>
+</main>
+
+<dialog class="batch-dialog" id="continue-dialog"><form method="dialog" id="continue-form"><div class="dialog-head"><div><div class="eyebrow">只补测指定模型</div><h2>继续补测</h2></div><button value="cancel" class="icon-button" aria-label="关闭">×</button></div><p class="help">选中的模型会停止使用本批次当前报告并新建子任务；未选模型的仍有效报告不会重跑。</p><div id="continue-models" class="continue-models"></div><div class="field"><label for="continue-reason">补测原因</label><textarea id="continue-reason" maxlength="4000" required placeholder="说明为什么需要补测这些具体模型"></textarea></div><div class="dialog-actions"><button value="cancel">取消</button><button type="submit" class="primary">创建补测子任务</button></div></form></dialog>
+
+<dialog class="batch-dialog" id="fidelity-dialog"><form method="dialog" id="fidelity-form"><div class="dialog-head"><div><div class="eyebrow">人工保真判断</div><h2>记录“真”或“不真”</h2></div><button value="cancel" class="icon-button" aria-label="关闭">×</button></div><p class="help">离开页面不会生成结论。只有记录为“真”后，配置才能进入逐模型标杆选择。</p><fieldset class="paired-choice-set"><legend>保真结论</legend><label><input type="radio" name="fidelity-value" value="true" required> 真</label><label><input type="radio" name="fidelity-value" value="false"> 不真</label></fieldset><div class="field"><label for="fidelity-reason">判断依据</label><textarea id="fidelity-reason" maxlength="2000" required placeholder="说明查看到的保真证据和判断依据"></textarea></div><div class="field"><label for="fidelity-refs">证据引用（可选）</label><input id="fidelity-refs" maxlength="1000" placeholder="例如：保真项 F-01、F-04"></div><div class="dialog-actions"><button value="cancel">取消</button><button type="submit" class="primary">保存判断</button></div></form></dialog>
+
+<script src="app.js?v=20260901-1"></script>
+<script src="compare.js?v=20260901-1"></script>
+</body>
+</html>

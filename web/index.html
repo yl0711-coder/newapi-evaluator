@@ -1,0 +1,117 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>我要做什么 · 模型渠道测试平台</title>
+<link rel="stylesheet" href="style.css">
+</head>
+<body>
+<div class="topbar"><div class="inner">
+  <span class="logo">模型渠道测试平台</span>
+  <nav>
+    <a href="index.html" class="on">首页</a>
+    <a href="workspace.html">模型工作台</a>
+    <a href="history.html">任务与报告</a>
+  </nav>
+</div></div>
+
+<div class="page">
+  <h1>我要做什么</h1>
+  <p class="lead">按目的选一个，参数已按该目的预设好。</p>
+
+  <div id="notice" class="notice err hide"></div>
+
+  <div class="entries">
+    <a class="entry" href="insights.html">
+      <div class="icon">📡</div>
+      <div class="title">生产洞察</div>
+      <div class="desc">查看真实请求健康、每日前三和需要补充的模型渠道。</div>
+      <div class="hint">只读分析，不修改生产路由 →</div>
+    </a>
+
+    <a class="entry" href="workspace.html">
+      <div class="icon">🗂️</div>
+      <div class="title">模型工作台</div>
+      <div class="desc">按渠道和倍率集中查看模型、标杆、状态与历史报告。</div>
+      <div class="hint">管理已接入的全部模型 →</div>
+    </a>
+
+    <a class="entry" href="admission.html" id="e-admission">
+      <div class="icon">🔍</div>
+      <div class="title">接入检测</div>
+      <div class="desc">新上游第一次接入：填一次连接信息就开始测，通过了才记录。</div>
+      <div class="hint" id="h-admission">加载中…</div>
+    </a>
+
+    <a class="entry" href="scheduled.html" id="e-inspect">
+      <div class="icon">🔁</div>
+      <div class="title">定时测试</div>
+      <div class="desc">每天可设置多个时间，三轮并发巡检后准时发送稳定性汇总。</div>
+      <div class="hint" id="h-inspect">加载中…</div>
+    </a>
+
+    <a class="entry" href="degrade.html" id="e-degrade">
+      <div class="icon">📉</div>
+      <div class="title">降智复核</div>
+      <div class="desc">怀疑变差了：与标杆和历史基线对比，看是不是真降智。</div>
+      <div class="hint" id="h-degrade">加载中…</div>
+    </a>
+
+    <a class="entry" href="compare.html">
+      <div class="icon">⚖️</div>
+      <div class="title">双端配对准入</div>
+      <div class="desc">候选端与标杆端按同一题面配对测试，分别展示速度、稳定性、能力与证据。</div>
+      <div class="hint">查看相对差异后由人工决定准入 →</div>
+    </a>
+
+    <a class="entry" href="load.html" id="e-load">
+      <div class="icon">📈</div>
+      <div class="title">压力测试</div>
+      <div class="desc">准入通过后：测安全并发、吞吐、速度衰减和错误率。</div>
+      <div class="hint" id="h-load">加载中…</div>
+    </a>
+  </div>
+
+  <div class="card" style="margin-top:22px" id="overview">
+    <div class="between">
+      <b>当前状态</b>
+      <a href="history.html" class="small">查看全部任务与报告 →</a>
+    </div>
+    <div class="metrics" style="margin-top:14px" id="stats"></div>
+  </div>
+</div>
+
+<script src="app.js"></script>
+<script>
+async function load() {
+  try {
+    const s = await get('/api/summary');
+    $('#h-admission').textContent = s.hints.admission;
+    $('#h-inspect').textContent = s.hints.inspect;
+    $('#h-degrade').textContent = s.hints.degrade;
+    $('#h-load').textContent = s.hints.load;
+
+    // 没有已接入渠道时，后两个入口先不让点，避免进去是空页面
+    if (!s.targets) {
+      $('#e-inspect').classList.add('disabled');
+      $('#e-degrade').classList.add('disabled');
+      $('#e-load').classList.add('disabled');
+    }
+
+    $('#stats').innerHTML = [
+      ['已接入渠道', s.targets],
+      ['定时测试计划', s.scheduled_tests],
+      ['进行中任务', s.running_tasks],
+      ['需要关注', s.risky_targets],
+    ].map(([k, v]) => `
+      <div class="metric"><div class="k">${k}</div><div class="v">${v}</div></div>
+    `).join('');
+  } catch (e) {
+    showError(e.message);
+  }
+}
+load();
+</script>
+</body>
+</html>
