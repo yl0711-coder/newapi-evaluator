@@ -2,7 +2,7 @@ import asyncio
 import json
 import unittest
 from pathlib import Path
-from unittest.mock import patch
+from unittest.mock import AsyncMock, patch
 
 import httpx
 
@@ -432,7 +432,9 @@ class MultiRoundRouteTests(unittest.IsolatedAsyncioTestCase):
                 }
 
         transport = httpx.ASGITransport(app=app)
-        with patch("main.run_question", fake_run_question):
+        with patch("main.run_question", fake_run_question), patch(
+            "main.wait_between_questions", new_callable=AsyncMock
+        ) as wait_between_questions:
             async with httpx.AsyncClient(transport=transport, base_url="http://test") as client:
                 response = await client.post(
                     "/api/compare",
@@ -451,6 +453,10 @@ class MultiRoundRouteTests(unittest.IsolatedAsyncioTestCase):
         finished = [event for event in events if event["type"] == "side_finished"]
         self.assertEqual(len(finished), 20)
         self.assertEqual({event["round"] for event in finished}, {1, 2})
+        cooldowns = [event for event in events if event["type"] == "question_cooldown"]
+        self.assertEqual(len(cooldowns), 9)
+        self.assertTrue(all(event["seconds"] == 3 for event in cooldowns))
+        self.assertEqual(wait_between_questions.await_count, 9)
 
 
 if __name__ == "__main__":

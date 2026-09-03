@@ -983,6 +983,11 @@ function handleEvent(event) {
     return;
   }
 
+  if (event.type === "question_cooldown") {
+    runStatus.textContent = `本题两端已完成，等待 ${event.seconds} 秒后继续。`;
+    return;
+  }
+
   if (event.type === "run_finished") {
     currentReport = buildSafeReport();
     const saved = saveReport(currentReport);

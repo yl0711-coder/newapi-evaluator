@@ -32,7 +32,7 @@
 2. 可直接粘贴渠道连接信息并提取 URL、Key，也可以手动填写。
 3. 在“参照来源”中选择官方接口或已上线渠道。国产模型可直接使用预置官方接口；Codex、Claude 使用已上线渠道作为参照。
 4. 需要维护标杆时，打开“管理已上线渠道”，保存渠道名称、URL 和 Key。之后可直接选作参照端。
-5. 点击“开始 5 题快测”。默认只跑 1 轮；需要看稳定性时，在“高级测试设置”中改为 3 轮或 5 轮。
+5. 点击“开始 5 题快测”。每题的两端会同时请求；两端均结束后，等待 3 秒再开始下一题。默认只跑 1 轮；需要看稳定性时，在“高级测试设置”中改为 3 轮或 5 轮。
 6. 完成后可查看本机历史，或导出 JSON / HTML 报告。
 
 Codex、GLM、Kimi、DeepSeek 使用 OpenAI-compatible Chat Completions 流式协议。Base URL 可填完整的 `/chat/completions`，也可只填服务根域名：DeepSeek 自动使用根 API，智谱 GLM 自动补为 `/api/paas/v4`，其他 OpenAI-compatible 渠道默认补为 `/v1`。如果渠道采用非标准路径，直接填写其完整 API 根路径或 `/chat/completions`。Claude 使用原生 Anthropic Messages 流式协议：Base URL 可填服务根路径、`/v1`，或完整的 `/v1/messages`；请求会使用 `x-api-key` 和 `anthropic-version`，不会套用 OpenAI 请求格式。

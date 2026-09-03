@@ -21,6 +21,7 @@ WEB_PATH = ROOT / "web"
 
 SYSTEM_PROMPT = "请直接完成任务。答案要清楚、紧凑；推理题给出必要推导，不要重复题目。"
 ANTHROPIC_VERSION = "2023-06-01"
+INTER_QUESTION_DELAY_SECONDS = 3
 
 MODEL_FAMILIES = [
     {
@@ -601,6 +602,10 @@ async def run_question(
         await asyncio.gather(*tasks, return_exceptions=True)
 
 
+async def wait_between_questions() -> None:
+    await asyncio.sleep(INTER_QUESTION_DELAY_SECONDS)
+
+
 def encode_event(event: dict[str, Any]) -> bytes:
     return (json.dumps(event, ensure_ascii=False) + "\n").encode("utf-8")
 
@@ -673,6 +678,16 @@ async def compare(body: CompareRequest, request: Request) -> StreamingResponse:
                             "total_question_runs": total_question_runs,
                         }
                     )
+                    if completed_question_runs < total_question_runs:
+                        yield encode_event(
+                            {
+                                "type": "question_cooldown",
+                                "seconds": INTER_QUESTION_DELAY_SECONDS,
+                                "round": round_number,
+                                "rounds": body.rounds,
+                            }
+                        )
+                        await wait_between_questions()
                 yield encode_event({"type": "round_finished", "round": round_number, "rounds": body.rounds})
         yield encode_event({"type": "run_finished"})
 
