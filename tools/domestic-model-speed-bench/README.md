@@ -35,7 +35,7 @@
 5. 点击“开始 5 题快测”。默认只跑 1 轮；需要看稳定性时，在“高级测试设置”中改为 3 轮或 5 轮。
 6. 完成后可查看本机历史，或导出 JSON / HTML 报告。
 
-Codex、GLM、Kimi、DeepSeek 使用 OpenAI-compatible Chat Completions 流式协议：Base URL 可填服务根路径、`/v1`，或完整的 `/chat/completions`。Claude 使用原生 Anthropic Messages 流式协议：Base URL 可填服务根路径、`/v1`，或完整的 `/v1/messages`；请求会使用 `x-api-key` 和 `anthropic-version`，不会套用 OpenAI 请求格式。
+Codex、GLM、Kimi、DeepSeek 使用 OpenAI-compatible Chat Completions 流式协议。Base URL 可填完整的 `/chat/completions`，也可只填服务根域名：DeepSeek 自动使用根 API，智谱 GLM 自动补为 `/api/paas/v4`，其他 OpenAI-compatible 渠道默认补为 `/v1`。如果渠道采用非标准路径，直接填写其完整 API 根路径或 `/chat/completions`。Claude 使用原生 Anthropic Messages 流式协议：Base URL 可填服务根路径、`/v1`，或完整的 `/v1/messages`；请求会使用 `x-api-key` 和 `anthropic-version`，不会套用 OpenAI 请求格式。
 
 当前内置 Codex 家族包含 GPT-5.6 Sol、GPT-5.6 Terra；Claude 家族包含 Fable 5、Opus 5、Sonnet 5；同时保留 GLM、Kimi、DeepSeek 测试模型。模型 ID 会随上游变化，若渠道实际名称不同，直接修改两端的“请求模型”即可。国产模型官方端点参考：
 

@@ -127,8 +127,20 @@ def _normalized_http_url(base_url: str) -> str:
     return normalized
 
 
-def chat_completions_url(base_url: str) -> str:
+def openai_api_base_url(base_url: str) -> str:
     normalized = _normalized_http_url(base_url)
+    parsed = urlparse(normalized)
+    if parsed.path not in {"", "/"}:
+        return normalized
+    if parsed.hostname == "api.deepseek.com":
+        return normalized
+    if parsed.hostname == "open.bigmodel.cn":
+        return f"{normalized}/api/paas/v4"
+    return f"{normalized}/v1"
+
+
+def chat_completions_url(base_url: str) -> str:
+    normalized = openai_api_base_url(base_url)
     if normalized.endswith("/chat/completions"):
         return normalized
     return f"{normalized}/chat/completions"

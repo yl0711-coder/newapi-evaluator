@@ -151,6 +151,18 @@ class StreamProtocolTests(unittest.TestCase):
             chat_completions_url("https://api.example.com/v1/"),
             "https://api.example.com/v1/chat/completions",
         )
+        self.assertEqual(
+            chat_completions_url("https://api.example.com"),
+            "https://api.example.com/v1/chat/completions",
+        )
+        self.assertEqual(
+            chat_completions_url("https://api.deepseek.com"),
+            "https://api.deepseek.com/chat/completions",
+        )
+        self.assertEqual(
+            chat_completions_url("https://open.bigmodel.cn"),
+            "https://open.bigmodel.cn/api/paas/v4/chat/completions",
+        )
         full = "https://api.example.com/v1/chat/completions"
         self.assertEqual(chat_completions_url(full), full)
         with self.assertRaises(ValueError):
@@ -327,6 +339,32 @@ class StreamingMeasurementTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(finished["status"], "unrecognized")
         self.assertGreater(finished["chars"], 0)
         self.assertIsNotNone(finished["ttft_ms"])
+
+    async def test_root_url_uses_the_v1_chat_completions_endpoint_without_a_probe(self) -> None:
+        requested_urls: list[str] = []
+
+        def handler(request: httpx.Request) -> httpx.Response:
+            requested_urls.append(str(request.url))
+            return httpx.Response(
+                200,
+                headers={"content-type": "text/event-stream"},
+                stream=MockStream(),
+            )
+
+        queue: asyncio.Queue = asyncio.Queue()
+        endpoint = EndpointConfig(
+            base_url="https://mock.example", api_key="secret", model="demo", protocol="openai"
+        )
+        async with httpx.AsyncClient(transport=httpx.MockTransport(handler)) as client:
+            await measure_side("candidate", endpoint, QUESTIONS[0], queue, client)
+
+        events = []
+        while not queue.empty():
+            events.append(queue.get_nowait())
+        finished = next(event for event in events if event["type"] == "side_finished")
+        self.assertEqual(requested_urls, ["https://mock.example/v1/chat/completions"])
+        self.assertTrue(finished["ok"])
+        self.assertEqual(finished["status"], "completed")
 
 
 class FrontendSafetyTests(unittest.TestCase):
