@@ -12,12 +12,13 @@ SCANNER = ROOT / "scripts" / "repo_security_scan.py"
 checks: list[tuple[str, bool, str]] = []
 
 
-def run_scan(files: dict[str, str | bytes]) -> subprocess.CompletedProcess[str]:
+def run_scan(
+    files: dict[str, str | bytes],
+    allowlist: str = "repo-allowlist.txt\napp/\n",
+) -> subprocess.CompletedProcess[str]:
     with tempfile.TemporaryDirectory(prefix="repo-security-selftest-") as directory:
         workspace = Path(directory)
-        (workspace / "repo-allowlist.txt").write_text(
-            "repo-allowlist.txt\napp/\n", encoding="utf-8",
-        )
+        (workspace / "repo-allowlist.txt").write_text(allowlist, encoding="utf-8")
         for relative, content in files.items():
             path = workspace / relative
             path.parent.mkdir(parents=True, exist_ok=True)
@@ -84,6 +85,30 @@ record("正常源码通过", clean.returncode == 0, clean.stdout.strip())
 
 question_bank = run_scan({"app/hard_items.json": "[]\n"})
 record("仅放行明确题库 JSON", question_bank.returncode == 0, question_bank.stdout.strip())
+
+speed_bench_allowlist = "repo-allowlist.txt\ntools/domestic-model-speed-bench/\n"
+speed_bench = run_scan(
+    {
+        "tools/domestic-model-speed-bench/.gitignore": "__pycache__/\n",
+        "tools/domestic-model-speed-bench/README.md": "# Speed bench\n",
+        "tools/domestic-model-speed-bench/main.py": "print('safe source')\n",
+        "tools/domestic-model-speed-bench/questions.json": "[]\n",
+        "tools/domestic-model-speed-bench/requirements.txt": "fastapi\n",
+        "tools/domestic-model-speed-bench/start.ps1": "python main.py\n",
+    },
+    speed_bench_allowlist,
+)
+record("仅放行独立速度快测工具", speed_bench.returncode == 0, speed_bench.stdout.strip())
+
+unlisted_tool = run_scan(
+    {"tools/other/main.py": "print('unexpected')\n"},
+    speed_bench_allowlist,
+)
+record(
+    "拒绝未登记工具目录",
+    unlisted_tool.returncode != 0 and "不在仓库白名单" in unlisted_tool.stdout,
+    unlisted_tool.stdout.strip(),
+)
 
 unknown_json = run_scan({"app/selected_items.json": "[]\n"})
 record(

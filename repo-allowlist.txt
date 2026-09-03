@@ -17,3 +17,4 @@ selftest_*.py
 app/
 web/
 scripts/
+tools/domestic-model-speed-bench/

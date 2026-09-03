@@ -1,0 +1,253 @@
+<!doctype html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <meta name="description" content="用 5 道流式题快速比较模型渠道端与参照端的响应速度。" />
+    <title>模型渠道速度快测</title>
+    <link rel="stylesheet" href="./styles.css?v=6" />
+  </head>
+  <body>
+    <a class="skip-link" href="#main">跳到主内容</a>
+    <header class="site-header">
+      <a class="wordmark" href="/" aria-label="模型渠道速度快测首页">
+        <span class="wordmark-mark" aria-hidden="true">↗</span>
+        <span>模型渠道速度快测</span>
+      </a>
+      <p class="privacy-note"><span aria-hidden="true">●</span> 本地运行 · 已上线渠道仅存当前浏览器</p>
+    </header>
+
+    <main id="main" class="workbench">
+      <section class="intro" aria-labelledby="page-title">
+        <p class="eyebrow">STREAM BENCH / 5</p>
+        <h1 id="page-title"><span>两端同时起跑，</span><span>直接看速度差。</span></h1>
+        <p class="lede">3 道基础题、2 道推理题。分开记录首包与首答，真实 Token 用量由上游返回。</p>
+      </section>
+
+      <div class="workbench-grid">
+        <aside class="setup-panel" aria-labelledby="setup-title">
+          <div class="section-heading">
+            <p class="section-index">01</p>
+            <div>
+              <h2 id="setup-title">测试配置</h2>
+              <p>待测渠道临时填写，参照端可直接选已上线渠道。</p>
+            </div>
+          </div>
+
+          <form id="compare-form" novalidate>
+            <div class="field">
+              <label for="preset">测试模型</label>
+              <select id="preset" name="preset" disabled></select>
+              <p id="protocol-help" class="field-help">预设会填入两端模型名，并按家族选择请求协议。</p>
+            </div>
+
+            <fieldset>
+              <legend><span>渠道端</span><small>待测线路</small></legend>
+              <div class="field">
+                <label for="channel-import">粘贴渠道连接信息</label>
+                <textarea id="channel-import" rows="4" placeholder="支持 JSON、curl、BASE_URL / API_KEY 或普通文本" autocomplete="off"></textarea>
+                <p class="field-help">仅提取 URL 和 Key，不会保存粘贴内容。</p>
+                <div class="utility-row">
+                  <button id="extract-channel" class="button button-secondary button-compact" type="button">提取 URL 与 Key</button>
+                  <span id="extract-status" class="inline-status" aria-live="polite"></span>
+                </div>
+              </div>
+              <div class="field">
+                <label for="channel-base-url">Base URL</label>
+                <input id="channel-base-url" name="channelBaseUrl" type="url" placeholder="https://channel.example.com/v1" autocomplete="off" required />
+              </div>
+              <div class="field">
+                <label for="channel-api-key">API Key</label>
+                <input id="channel-api-key" name="channelApiKey" type="password" placeholder="sk-..." autocomplete="off" required />
+              </div>
+              <div class="field">
+                <label for="channel-model">请求模型</label>
+                <input id="channel-model" name="channelModel" type="text" autocomplete="off" required />
+              </div>
+            </fieldset>
+
+            <fieldset>
+              <legend><span>参照端</span><small id="reference-kind-label">官方接口</small></legend>
+              <div class="field">
+                <label for="reference-source">参照来源</label>
+                <select id="reference-source" name="referenceSource"></select>
+                <p id="reference-help" class="field-help">默认使用模型厂商官方接口，也可以改为已上线渠道。</p>
+                <div class="utility-row">
+                  <button id="manage-online-channels" class="button button-secondary button-compact" type="button">管理已上线渠道</button>
+                </div>
+              </div>
+              <div class="field">
+                <label for="reference-base-url">Base URL</label>
+                <input id="reference-base-url" name="referenceBaseUrl" type="url" autocomplete="off" required />
+              </div>
+              <div class="field">
+                <label for="reference-api-key">API Key</label>
+                <input id="reference-api-key" name="referenceApiKey" type="password" placeholder="参照端 Key" autocomplete="off" required />
+                <div id="official-key-tools">
+                  <p class="field-help">官方 Key 按厂商保存在这个浏览器中，同厂商模型共用。</p>
+                  <div class="utility-row">
+                  <button id="save-official-key" class="button button-secondary button-compact" type="button">保存官方 Key</button>
+                  <button id="clear-official-key" class="text-button" type="button">清除保存</button>
+                  <span id="official-key-status" class="inline-status" aria-live="polite"></span>
+                  </div>
+                </div>
+              </div>
+              <div class="field">
+                <label for="reference-model">请求模型</label>
+                <input id="reference-model" name="referenceModel" type="text" autocomplete="off" required />
+                <p class="field-help">默认与待测模型一致，需要时可单独修改。</p>
+              </div>
+            </fieldset>
+
+            <p id="form-error" class="form-error" role="alert" hidden></p>
+            <div class="form-actions">
+              <button id="start-button" class="button button-primary" type="submit" disabled>
+                <span class="button-label">开始 5 题快测</span>
+                <span class="button-progress" aria-hidden="true"></span>
+              </button>
+              <button id="stop-button" class="button button-secondary" type="button" hidden>停止</button>
+            </div>
+          </form>
+        </aside>
+
+        <section class="results-panel" aria-labelledby="results-title">
+          <div class="results-head">
+            <div class="section-heading">
+              <p class="section-index">02</p>
+              <div>
+                <h2 id="results-title">实时对比</h2>
+                <p id="run-status" aria-live="polite">填好两端配置后开始。</p>
+              </div>
+            </div>
+            <p class="progress-count"><strong id="completed-count">0</strong><span>/ 5</span></p>
+          </div>
+
+          <div class="summary-strip" aria-label="本轮汇总">
+            <div>
+              <span>平均首包差</span>
+              <strong id="summary-ttft">—</strong>
+            </div>
+            <div>
+              <span>平均总耗时差</span>
+              <strong id="summary-total">—</strong>
+            </div>
+            <div>
+              <span>成功响应</span>
+              <strong id="summary-success">0 / 10</strong>
+            </div>
+          </div>
+
+          <div id="question-list" class="question-list" aria-live="off"></div>
+        </section>
+      </div>
+    </main>
+
+    <footer class="site-footer">
+      <p>本地极简工具台</p>
+      <p>OpenAI-compatible + Anthropic native · Streaming only</p>
+    </footer>
+
+    <dialog id="online-channel-dialog" aria-labelledby="online-channel-title">
+      <div class="dialog-shell">
+        <header class="dialog-head">
+          <div>
+            <h2 id="online-channel-title">已上线渠道库</h2>
+            <p>保存名称、URL 和 Key，测试时直接选作参照端。</p>
+          </div>
+          <button id="close-online-channels" class="icon-button" type="button" aria-label="关闭已上线渠道库">×</button>
+        </header>
+
+        <div class="channel-library-layout">
+          <section class="channel-library" aria-labelledby="channel-library-title">
+            <div class="subsection-head">
+              <h3 id="channel-library-title">已保存</h3>
+              <span id="online-channel-count">0 个</span>
+            </div>
+            <div id="online-channel-list" class="channel-list"></div>
+          </section>
+
+          <form id="online-channel-form" class="channel-editor" novalidate>
+            <div class="subsection-head">
+              <h3 id="channel-editor-title">添加渠道</h3>
+              <button id="cancel-channel-edit" class="text-button" type="button" hidden>取消编辑</button>
+            </div>
+            <div class="field">
+              <label for="online-channel-name">渠道名称</label>
+              <input id="online-channel-name" name="onlineChannelName" type="text" placeholder="例如：大蛇 0.7×" autocomplete="off" required />
+            </div>
+            <div class="field">
+              <label for="online-channel-import">粘贴连接信息</label>
+              <textarea id="online-channel-import" rows="3" placeholder="支持 JSON、curl、BASE_URL / API_KEY 或普通文本" autocomplete="off"></textarea>
+              <div class="utility-row">
+                <button id="extract-online-channel" class="button button-secondary button-compact" type="button">提取 URL 与 Key</button>
+                <span id="online-channel-extract-status" class="inline-status" aria-live="polite"></span>
+              </div>
+            </div>
+            <div class="field">
+              <label for="online-channel-base-url">Base URL</label>
+              <input id="online-channel-base-url" name="onlineChannelBaseUrl" type="url" placeholder="https://channel.example.com/v1" autocomplete="off" required />
+            </div>
+            <div class="field">
+              <label for="online-channel-api-key">API Key</label>
+              <input id="online-channel-api-key" name="onlineChannelApiKey" type="password" placeholder="sk-..." autocomplete="off" required />
+            </div>
+            <p id="online-channel-form-error" class="form-error" role="alert" hidden></p>
+            <button id="save-online-channel" class="button button-primary" type="submit">保存渠道</button>
+          </form>
+        </div>
+      </div>
+    </dialog>
+
+    <template id="question-template">
+      <article class="question" data-state="idle">
+        <header class="question-head">
+          <div class="question-id"></div>
+          <div class="question-title-wrap">
+            <h3 class="question-title"></h3>
+            <details class="prompt-details">
+              <summary>查看题目</summary>
+              <p class="question-prompt"></p>
+            </details>
+          </div>
+          <p class="question-verdict">等待</p>
+        </header>
+        <div class="lanes">
+          <section class="lane" data-side="candidate" aria-label="渠道端结果">
+            <div class="lane-head"><strong>渠道端</strong><span class="lane-state">未开始</span></div>
+            <dl class="metrics">
+              <div><dt>首包</dt><dd data-metric="ttft">—</dd></div>
+              <div><dt>首答</dt><dd data-metric="first-answer">—</dd></div>
+              <div><dt>总耗时</dt><dd data-metric="total">—</dd></div>
+              <div><dt>输出 Tokens</dt><dd data-metric="output-tokens">—</dd></div>
+              <div><dt>Token/s（含推理）</dt><dd data-metric="tokens-per-second">—</dd></div>
+              <div><dt>字符/秒</dt><dd data-metric="characters-per-second">—</dd></div>
+            </dl>
+            <details class="stream-details">
+              <summary>查看流式内容</summary>
+              <div class="stream-block"><p class="reasoning-label" hidden>推理过程</p><pre class="reasoning-output"></pre><p class="answer-label">回答</p><pre class="answer-output"></pre></div>
+            </details>
+            <p class="lane-error" role="status" hidden></p>
+          </section>
+          <section class="lane" data-side="reference" aria-label="参照端结果">
+            <div class="lane-head"><strong>参照端</strong><span class="lane-state">未开始</span></div>
+            <dl class="metrics">
+              <div><dt>首包</dt><dd data-metric="ttft">—</dd></div>
+              <div><dt>首答</dt><dd data-metric="first-answer">—</dd></div>
+              <div><dt>总耗时</dt><dd data-metric="total">—</dd></div>
+              <div><dt>输出 Tokens</dt><dd data-metric="output-tokens">—</dd></div>
+              <div><dt>Token/s（含推理）</dt><dd data-metric="tokens-per-second">—</dd></div>
+              <div><dt>字符/秒</dt><dd data-metric="characters-per-second">—</dd></div>
+            </dl>
+            <details class="stream-details">
+              <summary>查看流式内容</summary>
+              <div class="stream-block"><p class="reasoning-label" hidden>推理过程</p><pre class="reasoning-output"></pre><p class="answer-label">回答</p><pre class="answer-output"></pre></div>
+            </details>
+            <p class="lane-error" role="status" hidden></p>
+          </section>
+        </div>
+      </article>
+    </template>
+
+    <script src="./app.js?v=6" defer></script>
+  </body>
+</html>
