@@ -2,6 +2,7 @@ import asyncio
 import json
 import unittest
 from pathlib import Path
+from unittest.mock import patch
 
 import httpx
 
@@ -10,6 +11,7 @@ from main import (
     EndpointConfig,
     PRESETS,
     QUESTIONS,
+    app,
     build_headers,
     build_payload,
     chat_completions_url,
@@ -61,9 +63,19 @@ class QuestionBankTests(unittest.TestCase):
         endpoint = EndpointConfig(
             base_url="https://example.com/v1", api_key="secret", model="demo", protocol="openai"
         )
-        request = CompareRequest(candidate=endpoint, reference=endpoint)
+        request = CompareRequest(candidate=endpoint, reference=endpoint, rounds=3)
         self.assertEqual(request.candidate, endpoint)
         self.assertEqual(request.reference, endpoint)
+        self.assertEqual(request.rounds, 3)
+
+    def test_compare_rounds_are_bounded(self) -> None:
+        endpoint = EndpointConfig(
+            base_url="https://example.com/v1", api_key="secret", model="demo", protocol="openai"
+        )
+        with self.assertRaises(ValueError):
+            CompareRequest(candidate=endpoint, reference=endpoint, rounds=0)
+        with self.assertRaises(ValueError):
+            CompareRequest(candidate=endpoint, reference=endpoint, rounds=6)
 
     def test_original_codex_and_claude_families_are_available(self) -> None:
         by_id = {preset["id"]: preset for preset in PRESETS}
@@ -349,6 +361,58 @@ class FrontendSafetyTests(unittest.TestCase):
         self.assertIn('data-metric="first-answer"', source)
         self.assertIn('data-metric="output-tokens"', source)
         self.assertIn('data-metric="tokens-per-second"', source)
+
+    def test_frontend_reports_are_key_free_and_support_rounds(self) -> None:
+        html = (Path(__file__).parent / "web" / "index.html").read_text(encoding="utf-8")
+        source = (Path(__file__).parent / "web" / "app.js").read_text(encoding="utf-8")
+        self.assertIn('id="rounds"', html)
+        self.assertIn('id="report-history"', html)
+        self.assertIn("REPORTS_STORAGE_KEY", source)
+        self.assertIn("function buildSafeReport", source)
+        report_builder = source[source.index("function buildSafeReport"):source.index("function saveReport")]
+        self.assertNotIn("api_key", report_builder)
+        self.assertNotIn("ApiKey", report_builder)
+
+
+class MultiRoundRouteTests(unittest.IsolatedAsyncioTestCase):
+    async def test_compare_stream_labels_every_round(self) -> None:
+        endpoint = EndpointConfig(
+            base_url="https://example.com/v1", api_key="secret", model="demo", protocol="openai"
+        )
+
+        async def fake_run_question(body, question, client):
+            for side in ("candidate", "reference"):
+                yield {
+                    "type": "side_finished",
+                    "question_id": question["id"],
+                    "side": side,
+                    "ok": True,
+                    "status": "completed",
+                    "ttft_ms": 100,
+                    "first_answer_ms": 120,
+                    "total_ms": 500,
+                }
+
+        transport = httpx.ASGITransport(app=app)
+        with patch("main.run_question", fake_run_question):
+            async with httpx.AsyncClient(transport=transport, base_url="http://test") as client:
+                response = await client.post(
+                    "/api/compare",
+                    json={
+                        "candidate": endpoint.model_dump(),
+                        "reference": endpoint.model_dump(),
+                        "rounds": 2,
+                    },
+                )
+
+        self.assertEqual(response.status_code, 200)
+        events = [json.loads(line) for line in response.text.splitlines()]
+        self.assertEqual(events[0]["rounds"], 2)
+        self.assertEqual(events[0]["total_question_runs"], 10)
+        self.assertEqual([event["round"] for event in events if event["type"] == "round_started"], [1, 2])
+        finished = [event for event in events if event["type"] == "side_finished"]
+        self.assertEqual(len(finished), 20)
+        self.assertEqual({event["round"] for event in finished}, {1, 2})
 
 
 if __name__ == "__main__":

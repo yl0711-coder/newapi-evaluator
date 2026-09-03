@@ -95,6 +95,7 @@ class EndpointConfig(BaseModel):
 class CompareRequest(BaseModel):
     candidate: EndpointConfig
     reference: EndpointConfig
+    rounds: int = Field(default=1, ge=1, le=5)
 
 
 class ExtractRequest(BaseModel):
@@ -621,28 +622,46 @@ async def extract_channel(body: ExtractRequest) -> JSONResponse:
 @app.post("/api/compare")
 async def compare(body: CompareRequest, request: Request) -> StreamingResponse:
     async def stream() -> AsyncIterator[bytes]:
-        yield encode_event({"type": "run_started", "question_count": len(QUESTIONS)})
+        total_question_runs = len(QUESTIONS) * body.rounds
+        yield encode_event(
+            {
+                "type": "run_started",
+                "question_count": len(QUESTIONS),
+                "rounds": body.rounds,
+                "total_question_runs": total_question_runs,
+            }
+        )
         timeout = httpx.Timeout(connect=20.0, read=240.0, write=20.0, pool=20.0)
         async with httpx.AsyncClient(timeout=timeout, follow_redirects=True) as client:
-            for index, question in enumerate(QUESTIONS, start=1):
-                if await request.is_disconnected():
-                    return
-                yield encode_event(
-                    {
-                        "type": "question_started",
-                        "question_id": question["id"],
-                        "index": index,
-                    }
-                )
-                async for event in run_question(body, question, client):
-                    yield encode_event(event)
-                yield encode_event(
-                    {
-                        "type": "question_finished",
-                        "question_id": question["id"],
-                        "index": index,
-                    }
-                )
+            for round_number in range(1, body.rounds + 1):
+                yield encode_event({"type": "round_started", "round": round_number, "rounds": body.rounds})
+                for index, question in enumerate(QUESTIONS, start=1):
+                    if await request.is_disconnected():
+                        return
+                    completed_question_runs = (round_number - 1) * len(QUESTIONS) + index
+                    yield encode_event(
+                        {
+                            "type": "question_started",
+                            "question_id": question["id"],
+                            "index": index,
+                            "round": round_number,
+                            "rounds": body.rounds,
+                        }
+                    )
+                    async for event in run_question(body, question, client):
+                        yield encode_event({**event, "round": round_number})
+                    yield encode_event(
+                        {
+                            "type": "question_finished",
+                            "question_id": question["id"],
+                            "index": index,
+                            "round": round_number,
+                            "rounds": body.rounds,
+                            "completed_question_runs": completed_question_runs,
+                            "total_question_runs": total_question_runs,
+                        }
+                    )
+                yield encode_event({"type": "round_finished", "round": round_number, "rounds": body.rounds})
         yield encode_event({"type": "run_finished"})
 
     return StreamingResponse(

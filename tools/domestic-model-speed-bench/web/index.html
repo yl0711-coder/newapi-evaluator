@@ -5,7 +5,7 @@
     <meta name="viewport" content="width=device-width, initial-scale=1" />
     <meta name="description" content="用 5 道流式题快速比较模型渠道端与参照端的响应速度。" />
     <title>模型渠道速度快测</title>
-    <link rel="stylesheet" href="./styles.css?v=6" />
+    <link rel="stylesheet" href="./styles.css?v=7" />
   </head>
   <body>
     <a class="skip-link" href="#main">跳到主内容</a>
@@ -99,6 +99,19 @@
               </div>
             </fieldset>
 
+            <details class="advanced-settings">
+              <summary>高级测试设置</summary>
+              <div class="field">
+                <label for="rounds">测试轮数</label>
+                <select id="rounds" name="rounds">
+                  <option value="1">1 轮 · 10 次请求</option>
+                  <option value="3">3 轮 · 30 次请求</option>
+                  <option value="5">5 轮 · 50 次请求</option>
+                </select>
+                <p class="field-help">默认一轮最快；多轮会汇总 P50 / P95，更适合判断线路稳定性。</p>
+              </div>
+            </details>
+
             <p id="form-error" class="form-error" role="alert" hidden></p>
             <div class="form-actions">
               <button id="start-button" class="button button-primary" type="submit" disabled>
@@ -119,25 +132,49 @@
                 <p id="run-status" aria-live="polite">填好两端配置后开始。</p>
               </div>
             </div>
-            <p class="progress-count"><strong id="completed-count">0</strong><span>/ 5</span></p>
+            <div class="results-actions">
+              <button id="export-json" class="button button-secondary button-compact" type="button" disabled>导出 JSON</button>
+              <button id="export-html" class="button button-secondary button-compact" type="button" disabled>导出 HTML</button>
+              <p class="progress-count"><strong id="completed-count">0</strong><span id="total-question-runs">/ 5</span></p>
+            </div>
           </div>
 
           <div class="summary-strip" aria-label="本轮汇总">
             <div>
-              <span>平均首包差</span>
+              <span>首包 P50</span>
               <strong id="summary-ttft">—</strong>
             </div>
             <div>
-              <span>平均总耗时差</span>
+              <span>首包 P95</span>
+              <strong id="summary-ttft-p95">—</strong>
+            </div>
+            <div>
+              <span>总耗时 P50</span>
               <strong id="summary-total">—</strong>
             </div>
             <div>
-              <span>成功响应</span>
+              <span>Token/s P50</span>
+              <strong id="summary-token-speed">—</strong>
+            </div>
+            <div>
+              <span>完整响应</span>
               <strong id="summary-success">0 / 10</strong>
             </div>
           </div>
 
           <div id="question-list" class="question-list" aria-live="off"></div>
+
+          <section class="history-section" aria-labelledby="history-title">
+            <div class="subsection-head">
+              <div>
+                <p class="section-index">03</p>
+                <h3 id="history-title">本机测试历史</h3>
+              </div>
+              <span>最多保留 12 份</span>
+            </div>
+            <p class="history-help">报告只保存脱敏地址、指标和回答，不保存任何 Key。</p>
+            <div id="report-history" class="report-history"></div>
+          </section>
         </section>
       </div>
     </main>
@@ -198,6 +235,23 @@
       </div>
     </dialog>
 
+    <dialog id="report-dialog" aria-labelledby="report-title">
+      <div class="dialog-shell">
+        <header class="dialog-head">
+          <div>
+            <h2 id="report-title">测试报告</h2>
+            <p id="report-subtitle"></p>
+          </div>
+          <button id="close-report" class="icon-button" type="button" aria-label="关闭测试报告">×</button>
+        </header>
+        <div id="report-content" class="report-content"></div>
+        <div class="report-dialog-actions">
+          <button id="dialog-export-json" class="button button-secondary" type="button">导出 JSON</button>
+          <button id="dialog-export-html" class="button button-primary" type="button">导出 HTML</button>
+        </div>
+      </div>
+    </dialog>
+
     <template id="question-template">
       <article class="question" data-state="idle">
         <header class="question-head">
@@ -248,6 +302,6 @@
       </article>
     </template>
 
-    <script src="./app.js?v=6" defer></script>
+    <script src="./app.js?v=7" defer></script>
   </body>
 </html>
