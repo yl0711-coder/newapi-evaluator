@@ -1,0 +1,123 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>定时稳定性测试</title>
+  <link rel="stylesheet" href="./static/styles.css">
+  <link rel="stylesheet" href="/assets/nav.css">
+  <script src="/assets/common.js" defer></script>
+</head>
+<body>
+  <div class="grain" aria-hidden="true"></div>
+  <header class="hero">
+    <div>
+      <p class="eyebrow">CHANNEL RELIABILITY DESK</p>
+      <h1>定时稳定性测试</h1>
+      <p class="lede">每天按时检查连通、流式传输、延迟与基础回答质量。只做巡检，不修改线上渠道。</p>
+    </div>
+    <div class="health-card" id="health-card">
+      <span class="pulse"></span>
+      <div><strong id="health-label">正在连接</strong><small id="health-detail">读取调度器状态</small></div>
+    </div>
+  </header>
+
+  <main>
+    <nav class="tabs" aria-label="功能导航">
+      <button class="tab active" data-view="overview">运行记录</button>
+      <button class="tab" data-view="channels">渠道</button>
+      <button class="tab" data-view="schedules">定时计划</button>
+      <button class="tab" data-view="settings">通知</button>
+    </nav>
+
+    <section class="view active" id="view-overview">
+      <div class="section-head">
+        <div><p class="section-index">01 / HISTORY</p><h2>最近运行</h2></div>
+        <button class="ghost" id="refresh-runs">刷新</button>
+      </div>
+      <div class="stats" id="summary-stats"></div>
+      <div class="records" id="run-list"><p class="empty">还没有运行记录。</p></div>
+    </section>
+
+    <section class="view" id="view-channels">
+      <div class="section-head">
+        <div><p class="section-index">02 / INVENTORY</p><h2>渠道资料库</h2></div>
+      </div>
+      <p class="section-note">这里只保存上游地址、加密密钥和倍率，不会自动加入定时测试。</p>
+      <div class="card-grid" id="inventory-list"></div>
+      <div class="section-head subsection">
+        <div><p class="section-index">02B / TARGETS</p><h2>巡检目标</h2></div>
+        <button class="primary" id="new-channel">新增巡检目标</button>
+      </div>
+      <div class="card-grid" id="channel-list"></div>
+    </section>
+
+    <section class="view" id="view-schedules">
+      <div class="section-head">
+        <div><p class="section-index">03 / SCHEDULES</p><h2>测试计划</h2></div>
+        <button class="primary" id="new-schedule">新增计划</button>
+      </div>
+      <div class="card-grid" id="schedule-list"></div>
+    </section>
+
+    <section class="view" id="view-settings">
+      <div class="section-head"><div><p class="section-index">04 / DELIVERY</p><h2>飞书通知</h2></div></div>
+      <form class="panel compact" id="feishu-form">
+        <label>机器人 Webhook<input type="password" id="feishu-webhook" placeholder="https://open.feishu.cn/open-apis/bot/v2/hook/..."></label>
+        <p class="hint" id="feishu-state">未配置时，测试结果只保存在本地。</p>
+        <div class="actions"><button class="primary" type="submit">保存</button><button class="ghost" type="button" id="test-feishu">发送测试</button></div>
+      </form>
+      <div class="section-head subsection"><div><p class="section-index">04B / GROUPS</p><h2>报告分组</h2></div></div>
+      <p class="section-note">报告倍率独立于公共渠道倍率；同一实测结果可以复用于多个分组。</p>
+      <div class="card-grid" id="report-group-list"><p class="empty">还没有报告分组。</p></div>
+    </section>
+  </main>
+
+  <dialog id="channel-dialog">
+    <form method="dialog" class="dialog-card" id="channel-form">
+      <input type="hidden" id="channel-id">
+      <div class="dialog-head"><div><p class="section-index">TARGET</p><h2 id="channel-title">新增渠道</h2></div><button class="icon" type="button" data-close="channel-dialog" aria-label="关闭">×</button></div>
+      <div class="form-grid">
+        <label>渠道名称<input id="channel-name" required maxlength="80" placeholder="例如：生产渠道 A"></label>
+        <label>协议<select id="channel-protocol"><option value="openai">OpenAI compatible</option><option value="anthropic">Anthropic Messages</option></select></label>
+        <label class="wide">公共渠道<select id="channel-registry" required></select><a href="/channels/" target="_blank" rel="noopener">新增或编辑公共渠道</a></label>
+        <label>模型 ID<input id="channel-model" required placeholder="model-name"></label>
+        <label class="check"><input type="checkbox" id="channel-enabled" checked> 启用渠道</label>
+      </div>
+      <p class="form-error" id="channel-error"></p>
+      <div class="actions"><button class="primary" type="submit">保存渠道</button><button class="ghost" type="button" data-close="channel-dialog">取消</button></div>
+    </form>
+  </dialog>
+
+  <dialog id="schedule-dialog">
+    <form method="dialog" class="dialog-card wide-dialog" id="schedule-form">
+      <input type="hidden" id="schedule-id">
+      <div class="dialog-head"><div><p class="section-index">SCHEDULE</p><h2 id="schedule-title">新增计划</h2></div><button class="icon" type="button" data-close="schedule-dialog" aria-label="关闭">×</button></div>
+      <div class="form-grid three">
+        <label>计划名称<input id="schedule-name" required maxlength="80" placeholder="例如：每日四次巡检"></label>
+        <label>执行时刻<input id="schedule-times" required value="10:30,14:00,18:00" placeholder="10:30,14:00"></label>
+        <label>时区<input id="schedule-timezone" required value="Asia/Shanghai"></label>
+        <label>测试轮数<input type="number" id="schedule-rounds" value="3" min="1" max="10"></label>
+        <label>轮次间隔（秒）<input type="number" id="schedule-interval" value="15" min="0" max="3600"></label>
+        <label>报告延迟（分钟）<input type="number" id="schedule-notify-delay" value="0" min="0" max="1440"></label>
+        <label>渠道并发<input type="number" id="schedule-concurrency" value="3" min="1" max="10"></label>
+        <label>最低成功率<input type="number" id="schedule-success" value="0.95" min="0" max="1" step="0.01"></label>
+        <label>最高超时率<input type="number" id="schedule-timeout" value="0.05" min="0" max="1" step="0.01"></label>
+        <label>最高断流率<input type="number" id="schedule-break" value="0" min="0" max="1" step="0.01"></label>
+        <label>速度阈值模式<select id="schedule-speed-mode"><option value="adaptive">历史中位数</option><option value="fixed">固定 P95</option><option value="off">不判定速度</option></select></label>
+        <label>基线稳定批次<input type="number" id="schedule-baseline-runs" value="5" min="3" max="30"></label>
+        <label>慢速倍率<input type="number" id="schedule-slow-ratio" value="1.5" min="1.1" max="5" step="0.1"></label>
+        <label>最大 P95（毫秒）<input type="number" id="schedule-p95" value="30000" min="100" max="600000"></label>
+        <label class="check"><input type="checkbox" id="schedule-enabled" checked> 启用计划</label>
+      </div>
+      <fieldset><legend>选择渠道</legend><div class="channel-picker" id="channel-picker"></div></fieldset>
+      <p class="form-error" id="schedule-error"></p>
+      <div class="actions"><button class="primary" type="submit">保存计划</button><button class="ghost" type="button" data-close="schedule-dialog">取消</button></div>
+    </form>
+  </dialog>
+
+  <dialog id="run-dialog"><div class="dialog-card wide-dialog"><div class="dialog-head"><div><p class="section-index">EVIDENCE</p><h2>运行详情</h2></div><button class="icon" data-close="run-dialog" aria-label="关闭">×</button></div><div id="run-detail"></div></div></dialog>
+  <div class="toast" id="toast" role="status"></div>
+  <script src="./static/app.js" defer></script>
+</body>
+</html>

@@ -1,0 +1,9 @@
+.venv
+data
+backups
+.env
+.git
+__pycache__
+*.pyc
+*.db*
+*.key

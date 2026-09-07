@@ -1,0 +1,24 @@
+name: model-test-workbench
+
+services:
+  workbench:
+    build: .
+    init: true
+    restart: unless-stopped
+    ports:
+      - "${PLATFORM_BIND_ADDRESS:-127.0.0.1}:${PLATFORM_PORT:-8090}:8090"
+    environment:
+      PLATFORM_USERNAME: ${PLATFORM_USERNAME:-admin}
+      PLATFORM_PASSWORD: ${PLATFORM_PASSWORD:?set PLATFORM_PASSWORD in .env}
+      PLATFORM_EGRESS_ALLOWLIST: ${PLATFORM_EGRESS_ALLOWLIST:-}
+      STABILITY_TIMEZONE: ${STABILITY_TIMEZONE:-Asia/Shanghai}
+      TZ: ${STABILITY_TIMEZONE:-Asia/Shanghai}
+    volumes:
+      - ./data:/app/data
+    healthcheck:
+      test: ["CMD", "python", "-c", "import base64,os,urllib.request; r=urllib.request.Request('http://127.0.0.1:8090/api/health'); token=base64.b64encode(f\"{os.environ['PLATFORM_USERNAME']}:{os.environ['PLATFORM_PASSWORD']}\".encode()).decode(); r.add_header('Authorization',f'Basic {token}'); urllib.request.urlopen(r,timeout=5).read()"]
+      interval: 15s
+      timeout: 6s
+      retries: 5
+      start_period: 15s
+    stop_grace_period: 30s

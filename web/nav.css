@@ -1,0 +1,7 @@
+.platform-nav { display:flex; gap:22px; flex-wrap:wrap; align-items:center; padding:16px max(20px,calc((100vw - 1240px)/2)); background:#fffef9ed; border-bottom:1px solid #d7ded5; font:14px/1.5 "Avenir Next","PingFang SC",sans-serif; }
+.platform-nav a { color:#172c29; text-decoration:none; }
+.platform-nav a:first-child { font-weight:750; margin-right:auto; }
+.platform-nav a[aria-current=page] { color:#0a675d; text-decoration:underline; text-underline-offset:4px; }
+body.reasoning-page { padding:0; }
+.reasoning-page main { padding:28px 20px 64px; }
+@media(max-width:800px) { .platform-nav { gap:12px; padding:12px 16px; } .platform-nav a:first-child { width:100%; } .reasoning-page main { padding:24px 12px; } }

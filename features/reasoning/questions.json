@@ -1,0 +1,37 @@
+[
+  {
+    "id": "chain-1",
+    "title": "多步约束推理",
+    "difficulty": "hard",
+    "reasoning_required": true,
+    "prompt": "五个人 A、B、C、D、E 参加比赛，名次互不相同。已知：①A 比 B 快，但比 C 慢；②D 不是第一也不是最后；③E 比 B 慢；④C 不是第一。请判断这些约束能否同时满足。给出可核查的关键依据；若有解，列出所有可能名次；若无解，说明矛盾所在，并给出明确结论。"
+  },
+  {
+    "id": "chain-2",
+    "title": "反例构造",
+    "difficulty": "hard",
+    "reasoning_required": true,
+    "prompt": "有人声称：对任意正整数 n，若 n 能被 3 整除且能被 4 整除，则 n 必能被 24 整除。请判断该命题真假。若为假，给出最小反例并说明推理过程；若为真，给出严谨证明。"
+  },
+  {
+    "id": "chain-3",
+    "title": "计算链",
+    "difficulty": "hard",
+    "reasoning_required": true,
+    "prompt": "一个水池有进水管和出水管。单开进水管 6 小时注满，单开出水管 8 小时排空。水池已有三分之一的水时同时打开两管，问多少小时后水池注满？请写出完整计算步骤，包括每一步的中间结果。"
+  },
+  {
+    "id": "chain-4",
+    "title": "歧义识别",
+    "difficulty": "medium",
+    "reasoning_required": true,
+    "prompt": "需求描述：『用户下单后 24 小时内未支付则自动取消订单，但 VIP 用户延长到 72 小时。』请找出这段描述中所有可能引发实现分歧的歧义点，逐条说明每个歧义会导致哪两种不同实现。"
+  },
+  {
+    "id": "short-1",
+    "title": "短答基线",
+    "difficulty": "easy",
+    "reasoning_required": false,
+    "prompt": "用一句话说明 HTTP 状态码 502 和 504 的区别。只输出一句话。"
+  }
+]

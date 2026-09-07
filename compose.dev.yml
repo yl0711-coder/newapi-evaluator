@@ -1,0 +1,10 @@
+services:
+  workbench:
+    command: ["python", "run.py", "--host", "0.0.0.0", "--port", "8090", "--reload"]
+    volumes:
+      - ./data:/app/data
+      - ./features:/app/features
+      - ./shared:/app/shared
+      - ./web:/app/web
+      - ./run.py:/app/run.py
+      - ./workbench.py:/app/workbench.py
