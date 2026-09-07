@@ -16,7 +16,10 @@ def backup(output: Path):
     target.mkdir(parents=True, mode=0o700)
     output.chmod(0o700)
     try:
-        for relative in ("channels.db", "channels.key", "stability/stability.db", "stability/secret.key"):
+        for relative in (
+            "channels.db", "channels.key", "admission/reports.db",
+            "stability/stability.db", "stability/secret.key",
+        ):
             source = DATA_DIR / relative
             if not source.exists():
                 continue

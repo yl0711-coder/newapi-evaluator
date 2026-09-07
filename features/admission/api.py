@@ -1,5 +1,6 @@
+from contextlib import asynccontextmanager
 from pathlib import Path
-from typing import AsyncIterator, Literal
+from typing import Any, AsyncIterator, Literal
 
 import httpx
 from fastapi import FastAPI, HTTPException, Request
@@ -11,7 +12,7 @@ from shared.api import Selection, resolve
 from shared.network import guarded_transport
 from shared.redaction import EventRedactor
 from shared.registry import RegistryError, normalize
-from . import main as engine
+from . import main as engine, storage
 
 
 class CandidateInput(BaseModel):
@@ -29,7 +30,70 @@ class CompareInput(BaseModel):
     rounds: int = Field(default=1, ge=1, le=5)
 
 
-app = FastAPI(docs_url=None, redoc_url=None, openapi_url=None)
+class ReportEndpointInput(BaseModel):
+    model_config = ConfigDict(extra="forbid", str_strip_whitespace=True)
+    base_url: str = Field(min_length=1, max_length=1000)
+    model: str = Field(min_length=1, max_length=160)
+    protocol: Literal["openai", "anthropic"]
+    name: str | None = Field(default=None, max_length=160)
+    channel_id: int | None = Field(default=None, ge=1)
+    multiplier: float | None = None
+
+
+class ReportQuestionInput(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    id: str = Field(min_length=1, max_length=80)
+    title: str = Field(min_length=1, max_length=200)
+    difficulty: str = Field(min_length=1, max_length=40)
+    prompt: str = Field(max_length=20_000)
+
+
+class ReportResponseInput(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    round: int = Field(ge=1, le=5)
+    question_id: str = Field(min_length=1, max_length=80)
+    side: Literal["candidate", "reference"]
+    content: str = Field(default="", max_length=200_000)
+    reasoning: str = Field(default="", max_length=200_000)
+
+
+class AdmissionReportInput(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    version: Literal[1]
+    created_at: str = Field(min_length=1, max_length=80)
+    status: Literal["completed", "canceled", "failed"]
+    rounds: int = Field(ge=1, le=5)
+    candidate: ReportEndpointInput
+    reference: ReportEndpointInput
+    questions: list[ReportQuestionInput] = Field(min_length=1, max_length=5)
+    measurements: list[dict[str, Any]] = Field(default_factory=list, max_length=50)
+    responses: list[ReportResponseInput] = Field(default_factory=list, max_length=50)
+    summary: dict[str, Any] = Field(default_factory=dict)
+
+
+def _contains_secret_field(value: Any) -> bool:
+    if isinstance(value, dict):
+        for key, child in value.items():
+            normalized = str(key).casefold().replace("-", "_")
+            if normalized in {"api_key", "apikey", "authorization", "password", "secret", "token"}:
+                return True
+            if _contains_secret_field(child):
+                return True
+    elif isinstance(value, list):
+        return any(_contains_secret_field(item) for item in value)
+    return False
+
+
+@asynccontextmanager
+async def lifespan(_app):
+    storage.init()
+    try:
+        yield
+    finally:
+        storage.close()
+
+
+app = FastAPI(docs_url=None, redoc_url=None, openapi_url=None, lifespan=lifespan)
 app.state.upstream_transport = None
 app.get("/api/meta")(engine.meta)
 
@@ -84,6 +148,37 @@ async def compare(body: CompareInput, request: Request):
         yield engine.encode_event({"type": "run_finished"})
 
     return StreamingResponse(stream(), media_type="application/x-ndjson")
+
+
+@app.post("/api/reports", status_code=201)
+async def save_report(body: AdmissionReportInput):
+    report = body.model_dump()
+    if _contains_secret_field(report):
+        raise HTTPException(status_code=400, detail="报告中不能包含密钥或密码字段")
+    try:
+        return storage.save_report(report)
+    except ValueError as exc:
+        raise HTTPException(status_code=413, detail=str(exc)) from exc
+
+
+@app.get("/api/reports")
+async def reports():
+    return {"reports": storage.list_reports()}
+
+
+@app.get("/api/reports/{report_id}")
+async def report_detail(report_id: int):
+    report = storage.get_report(report_id)
+    if report is None:
+        raise HTTPException(status_code=404, detail="准入报告不存在")
+    return report
+
+
+@app.delete("/api/reports/{report_id}")
+async def remove_report(report_id: int):
+    if not storage.delete_report(report_id):
+        raise HTTPException(status_code=404, detail="准入报告不存在")
+    return {"deleted": True}
 
 
 app.mount("/", StaticFiles(directory=Path(__file__).parent / "web", html=True))

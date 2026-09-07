@@ -46,9 +46,12 @@ const upstream = http.createServer(async (req, res) => {
   await page.locator('#candidate-model').fill('demo-model'); await page.locator('#reference-model').fill('demo-model');
   await page.locator('#reference-id').selectOption(String(channelId));
   await page.locator('#start').click(); await page.waitForFunction(()=>document.querySelector('#run-status').textContent.includes('本轮测试完成'),{},{timeout:40000});
+  await page.locator('#report-history article').waitFor({state:'visible'});
   assert.equal(requests.length,10); assert.equal(requests.filter(x=>x.key==='Bearer ui-ephemeral-candidate-key').length,5);
   assert.equal(requests.filter(x=>x.key==='Bearer ui-saved-reference-key').length,5);
   assert.equal((await (await fetch(base+'/api/registry/channels')).json()).channels.length,1);
+  const admissionReports = await (await fetch(base+'/admission/api/reports')).json(); assert.equal(admissionReports.reports.length,1);
+  assert.ok(!JSON.stringify(admissionReports).includes('ui-ephemeral-candidate-key')); assert.ok(!JSON.stringify(admissionReports).includes('ui-saved-reference-key'));
   const downloadPromise = page.waitForEvent('download'); await page.locator('#export-json').click();
   const download = await downloadPromise; const report = fs.readFileSync(await download.path(),'utf8');
   assert.ok(!report.includes('ui-ephemeral-candidate-key')); assert.ok(!report.includes('ui-saved-reference-key'));

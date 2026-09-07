@@ -12,7 +12,7 @@ import httpx
 from shared.network import guarded_transport
 
 from . import storage, transport
-from .config import CATCHUP_HOURS, MAX_ACTIVE_RUNS, TIMEZONE
+from .config import CATCHUP_HOURS, MAX_ACTIVE_RUNS, RETENTION_DAYS, TIMEZONE
 from .security import scrub
 
 
@@ -26,6 +26,7 @@ _loop_task: asyncio.Task[None] | None = None
 _active: dict[int, asyncio.Task[None]] = {}
 _notifications: dict[int, asyncio.Task[None]] = {}
 _last_tick_at: float | None = None
+_last_retention_at: float | None = None
 
 
 def parse_daily_times(value: str) -> list[str]:
@@ -432,8 +433,11 @@ async def execute_run(run_id: int) -> None:
 
 
 async def tick(now_epoch: float | None = None) -> None:
-    global _last_tick_at
+    global _last_retention_at, _last_tick_at
     now_epoch = time.time() if now_epoch is None else now_epoch
+    if _last_retention_at is None or now_epoch - _last_retention_at >= 3600:
+        storage.prune_run_history(now_epoch, RETENTION_DAYS)
+        _last_retention_at = now_epoch
     ensure_due_runs(now_epoch)
     storage.recover_expired_runs(now_epoch)
     available = max(0, MAX_ACTIVE_RUNS - len(_active))
@@ -468,9 +472,10 @@ async def _loop() -> None:
 
 
 async def start() -> None:
-    global _loop_task
+    global _last_retention_at, _loop_task
     storage.recover_all_running()
     storage.recover_sending_notifications()
+    _last_retention_at = None
     if not _loop_task or _loop_task.done():
         _loop_task = asyncio.create_task(_loop(), name="stability-scheduler")
 
@@ -497,4 +502,5 @@ def status() -> dict[str, Any]:
         "active_runs": len(_active),
         "active_notifications": len(_notifications),
         "last_tick_at": _last_tick_at,
+        "retention_days": RETENTION_DAYS,
     }

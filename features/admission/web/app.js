@@ -2,6 +2,7 @@ const $ = id => document.getElementById(id);
 const names = {candidate:'候选端', reference:'参照端'};
 let metadata, references = [], controller = null, report = null;
 const rows = new Map();
+const reportStatus = {completed:'已完成',canceled:'已停止',failed:'未完成'};
 const duration = v => Number.isFinite(v) ? `${(v / 1000).toFixed(2)} s` : '-';
 function percentile(values, p) { const sorted = values.filter(Number.isFinite).sort((a,b) => a-b); return sorted.length ? sorted[Math.ceil(sorted.length*p)-1] : null; }
 async function loadReferences() {
@@ -81,6 +82,38 @@ async function consume(response) {
   buffer += decoder.decode(); if (buffer.trim()) handleEvent(JSON.parse(buffer));
   if (report.status !== 'completed') throw new Error('测试连接中断，当前保留的是部分结果');
 }
+async function loadReportHistory() {
+  const history = (await Workbench.api('./api/reports')).reports;
+  const root = $('report-history');
+  if (!history.length) { root.replaceChildren(Workbench.node('p','还没有准入报告记录。','empty')); return; }
+  root.replaceChildren(...history.map(item => {
+    const card = Workbench.node('article','','run-card');
+    const title = Workbench.node('h3',`${item.candidate_model} 对比 ${item.reference_model}`);
+    const when = new Date(item.reported_at || item.created_at * 1000).toLocaleString('zh-CN',{hour12:false});
+    const detail = Workbench.node('p',`${when} · ${reportStatus[item.status] || item.status}\n候选端：${item.candidate_url}\n参照端：${item.reference_name}`,'hint');
+    detail.style.whiteSpace = 'pre-line';
+    const actions = Workbench.node('div','','actions');
+    const download = Workbench.node('button','下载 JSON','secondary'); download.type = 'button';
+    download.addEventListener('click',async()=>{
+      try { const saved = await Workbench.api(`./api/reports/${item.id}`); Workbench.download(saved,`admission-saved-${item.id}.json`); }
+      catch (e) { $('error').textContent = e.message; }
+    });
+    const remove = Workbench.node('button','删除','secondary'); remove.type = 'button';
+    remove.addEventListener('click',async()=>{
+      if (!confirm(`删除准入报告 #${item.id}？`)) return;
+      try { await Workbench.api(`./api/reports/${item.id}`,{method:'DELETE'}); await loadReportHistory(); }
+      catch (e) { $('error').textContent = e.message; }
+    });
+    actions.append(download,remove); card.append(title,detail,actions); return card;
+  }));
+}
+async function persistReport() {
+  if (!report || report.status === 'running') return;
+  const {id: _id, ...payload} = report;
+  const saved = await Workbench.api('./api/reports',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(payload)});
+  report.id = saved.id;
+  await loadReportHistory();
+}
 $('extract').addEventListener('click', async () => {
   const text = $('candidate-import').value.trim(); if (!text) return;
   $('extract').disabled = true;
@@ -103,12 +136,15 @@ $('compare-form').addEventListener('submit', async event => {
   $('export-json').disabled = true; $('export-html').disabled = true;
   try { await consume(await fetch('./api/compare',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(payload),signal:controller.signal})); }
   catch (e) { report.status = e.name === 'AbortError' ? 'canceled' : 'failed'; $('run-status').textContent = e.name === 'AbortError' ? '已停止，当前为部分结果。' : '本轮未完成。'; if (e.name !== 'AbortError') $('error').textContent = e.message; }
-  finally { payload.candidate.api_key = ''; controller = null; $('setup').disabled = false; $('start').disabled = false; $('stop').hidden = true;
+  finally { payload.candidate.api_key = '';
+    try { await persistReport(); } catch (e) { $('error').textContent = `${$('error').textContent ? `${$('error').textContent}；` : ''}报告历史保存失败：${e.message}`; }
+    controller = null; $('setup').disabled = false; $('start').disabled = false; $('stop').hidden = true;
     $('export-json').disabled = false; $('export-html').disabled = false; }
 });
 $('stop').addEventListener('click',()=>controller?.abort()); $('preset').addEventListener('change',applyPreset);
 $('reference-id').addEventListener('change',showReference);
 $('refresh-reference').addEventListener('click',()=>loadReferences().catch(e=>$('error').textContent=e.message));
+$('refresh-reports').addEventListener('click',()=>loadReportHistory().catch(e=>$('error').textContent=e.message));
 $('export-json').addEventListener('click',()=>report && Workbench.download(report,`admission-${Date.now()}.json`));
 $('export-html').addEventListener('click',()=>{
   if (!report) return;
@@ -119,5 +155,5 @@ $('export-html').addEventListener('click',()=>{
 (async()=>{
   metadata = await Workbench.api('./api/meta'); $('preset').replaceChildren(new Option('手动填写模型',''));
   for (const p of metadata.presets) $('preset').append(new Option(`${p.provider} · ${p.label}`,p.id));
-  await loadReferences(); renderSummary();
+  await Promise.all([loadReferences(),loadReportHistory()]); renderSummary();
 })().catch(e=>{$('error').textContent=e.message;});

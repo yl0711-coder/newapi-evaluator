@@ -401,6 +401,15 @@ class FrontendSafetyTests(unittest.TestCase):
         for field in ("first_answer_ms", "output_tokens", "tokens_per_second"):
             self.assertIn(field, source)
 
+    def test_frontend_exposes_capped_server_report_history(self) -> None:
+        html = (Path(__file__).parent / "web" / "index.html").read_text(encoding="utf-8")
+        source = (Path(__file__).parent / "web" / "app.js").read_text(encoding="utf-8")
+        self.assertIn('id="report-history"', html)
+        self.assertIn("最近 30 条", html)
+        self.assertIn("./api/reports", source)
+        self.assertNotIn("localStorage", source)
+        self.assertNotIn("sessionStorage", source)
+
     def test_frontend_reports_are_key_free_and_support_rounds(self) -> None:
         html = (Path(__file__).parent / "web" / "index.html").read_text(encoding="utf-8")
         source = (Path(__file__).parent / "web" / "app.js").read_text(encoding="utf-8")

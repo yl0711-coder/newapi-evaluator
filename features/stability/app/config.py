@@ -13,6 +13,7 @@ SECRET_PATH = DATA_DIR / "secret.key"
 TIMEZONE = os.getenv("STABILITY_TIMEZONE", "Asia/Shanghai")
 CATCHUP_HOURS = max(1, int(os.getenv("STABILITY_CATCHUP_HOURS", "6")))
 MAX_ACTIVE_RUNS = max(1, int(os.getenv("STABILITY_MAX_ACTIVE_RUNS", "2")))
+RETENTION_DAYS = max(1, int(os.getenv("STABILITY_RETENTION_DAYS", "5")))
 EGRESS_ALLOWLIST = tuple(
     item.strip() for item in os.getenv("PLATFORM_EGRESS_ALLOWLIST", os.getenv("STABILITY_EGRESS_ALLOWLIST", "")).split(",") if item.strip()
 )

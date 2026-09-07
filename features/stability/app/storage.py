@@ -113,6 +113,7 @@ CREATE TABLE IF NOT EXISTS report_groups (
   UNIQUE(family, label)
 );
 CREATE INDEX IF NOT EXISTS idx_runs_status_due ON runs(status, scheduled_for);
+CREATE INDEX IF NOT EXISTS idx_runs_retention ON runs(status,notify_status,finished_at);
 CREATE INDEX IF NOT EXISTS idx_results_run ON probe_results(run_id);
 """
 
@@ -132,6 +133,7 @@ def init() -> None:
             pass
         _connection.row_factory = sqlite3.Row
         _connection.execute("PRAGMA journal_mode=WAL")
+        _connection.execute("PRAGMA secure_delete=ON")
         _connection.execute("PRAGMA foreign_keys=ON")
         _connection.execute("PRAGMA busy_timeout=5000")
         _connection.executescript(SCHEMA)
@@ -513,6 +515,22 @@ def get_run(run_id: int) -> dict[str, Any] | None:
     output["summary"] = loads(output.pop("summary_json"), {})
     output["results"] = results
     return output
+
+
+def prune_run_history(now: float, retention_days: int) -> int:
+    """Delete settled stability reports older than the retention window.
+
+    Pending/running tests and reports whose notification is pending or being sent are never removed.
+    probe_results are removed by the existing ON DELETE CASCADE relationship.
+    """
+    cutoff = float(now) - max(1, int(retention_days)) * 86400
+    with cursor() as cur:
+        return cur.execute(
+            "DELETE FROM runs WHERE status IN ('completed','failed') "
+            "AND notify_status NOT IN ('pending','sending') "
+            "AND COALESCE(finished_at,created_at)<?",
+            (cutoff,),
+        ).rowcount
 
 
 def set_setting(key: str, value: str) -> None:

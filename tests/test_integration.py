@@ -19,6 +19,7 @@ from shared.network import PublicNetwork
 from shared.scheduler_lock import scheduler_lock
 from shared.redaction import EventRedactor
 from features.admission import api as admission
+from features.admission import storage as admission_storage
 from features.reasoning import main as reasoning
 from features.stability.app import storage, scheduler
 from workbench import create_app
@@ -30,6 +31,8 @@ class IntegrationTests(unittest.IsolatedAsyncioTestCase):
         self.directory = Path(self.temp.name)
         self.registry = Registry(self.directory)
         registry_module._registry = self.registry
+        admission_storage.close()
+        admission_storage.DB_PATH = self.directory / "admission" / "reports.db"
         storage.close()
         storage.DB_PATH = self.directory / "stability.db"
         self.app = create_app()
@@ -41,6 +44,7 @@ class IntegrationTests(unittest.IsolatedAsyncioTestCase):
 
     async def asyncTearDown(self):
         await scheduler.stop()
+        admission_storage.close()
         storage.close()
         admission.app.state.upstream_transport = None
         reasoning.app.state.upstream_transport = None
@@ -83,7 +87,7 @@ class IntegrationTests(unittest.IsolatedAsyncioTestCase):
                 outputs[key] = outputs.get(key, "") + event["content"]
         self.assertTrue(all(value == "[REDACTED] answer" for value in outputs.values()), outputs)
         self.assertEqual(self.registry.list(), before)
-        for path in self.directory.glob("*.db*"):
+        for path in self.directory.rglob("*.db*"):
             self.assertNotIn(candidate["api_key"].encode(), path.read_bytes())
             self.assertNotIn(self.key.encode(), path.read_bytes())
         self.assertEqual(storage.list_channels(), [])
@@ -159,6 +163,60 @@ class IntegrationTests(unittest.IsolatedAsyncioTestCase):
         ]})
         self.assertEqual(invalid.status_code, 400)
 
+    async def test_admission_reports_roll_over_at_thirty_without_keys(self):
+        base_report = {
+            "version": 1,
+            "created_at": "2026-09-07T10:30:00.000Z",
+            "status": "completed",
+            "rounds": 1,
+            "candidate": {
+                "base_url": "https://candidate.example/v1", "model": "candidate-model",
+                "protocol": "openai",
+            },
+            "reference": {
+                "channel_id": self.channel["id"], "name": "reference", "base_url": self.channel["base_url"],
+                "model": "reference-model", "protocol": "openai", "multiplier": 0.7,
+            },
+            "questions": [{
+                "id": "easy-1", "title": "信息提取", "difficulty": "easy", "prompt": "测试题",
+            }],
+            "measurements": [{
+                "type": "side_finished", "question_id": "easy-1", "side": "candidate",
+                "round": 1, "ok": True, "status": "completed", "total_ms": 500,
+            }],
+            "responses": [{
+                "round": 1, "question_id": "easy-1", "side": "candidate",
+                "content": "safe answer", "reasoning": "",
+            }],
+            "summary": {"candidate": {"completed": 1}},
+        }
+        ids = []
+        for index in range(31):
+            response = await self.client.post(
+                "/admission/api/reports",
+                json={**base_report, "created_at": f"2026-09-07T10:30:{index:02d}.000Z"},
+            )
+            self.assertEqual(response.status_code, 201, response.text)
+            ids.append(response.json()["id"])
+
+        reports = (await self.client.get("/admission/api/reports")).json()["reports"]
+        self.assertEqual(len(reports), 30)
+        self.assertEqual(reports[0]["id"], ids[-1])
+        self.assertEqual(reports[-1]["id"], ids[1])
+        self.assertEqual((await self.client.get(f"/admission/api/reports/{ids[0]}")).status_code, 404)
+        detail = await self.client.get(f"/admission/api/reports/{ids[-1]}")
+        self.assertEqual(detail.status_code, 200)
+        self.assertNotIn("api_key", detail.text)
+        self.assertNotIn(self.key, detail.text)
+        deleted = await self.client.delete(f"/admission/api/reports/{ids[-1]}")
+        self.assertEqual(deleted.status_code, 200)
+        self.assertEqual(len((await self.client.get("/admission/api/reports")).json()["reports"]), 29)
+
+        unsafe = {**base_report, "candidate": {**base_report["candidate"], "api_key": self.key}}
+        response = await self.client.post("/admission/api/reports", json=unsafe)
+        self.assertEqual(response.status_code, 422)
+        self.assertNotIn(self.key, response.text)
+
     async def test_scheduled_report_waits_for_configured_delay(self):
         target = {
             "name": "delayed-report-target", "registry_channel_id": self.channel["id"],
@@ -227,6 +285,54 @@ class IntegrationTests(unittest.IsolatedAsyncioTestCase):
         baseline = storage.channel_latency_baseline(channel_id, "demo-model")
         self.assertEqual(baseline["sample_count"], 5)
         self.assertEqual(baseline["median_p95_latency_ms"], 1400)
+
+    async def test_stability_history_keeps_five_days_and_unsettled_reports(self):
+        target = {
+            "name": "retention-target", "registry_channel_id": self.channel["id"],
+            "model": "demo-model", "protocol": "openai", "enabled": True,
+        }
+        channel_id = (await self.client.post("/stability/api/channels", json=target)).json()["id"]
+        schedule_id = storage.upsert_schedule({
+            "name": "retention-plan", "daily_times": "09:30", "timezone": "Asia/Shanghai",
+            "channel_ids": [channel_id], "rounds": 1, "round_interval_seconds": 0,
+            "notification_delay_seconds": 0, "max_concurrency": 1,
+            "min_success_rate": 0.95, "max_timeout_rate": 0.05,
+            "max_stream_break_rate": 0, "max_p95_ms": 30000,
+            "speed_threshold_mode": "adaptive", "speed_baseline_min_runs": 5,
+            "speed_slow_ratio": 1.5, "enabled": True,
+        })
+        schedule = storage.get_schedule(schedule_id)
+        now = 1_900_000_000.0
+
+        old_settled = storage.create_run(schedule, now - 7 * 86400)
+        storage.add_probe_result(old_settled, {
+            "channel_id": channel_id, "channel_name": "retention-target", "model": "demo-model",
+            "round_number": 1, "probe_id": "old", "ok": True,
+            "status": "completed", "latency_ms": 1000,
+        })
+        storage.finish_run(old_settled, "completed", {"verdict": "pass"})
+        storage.update_notification(old_settled, "sent")
+
+        old_pending_notice = storage.create_run(schedule, now - 6 * 86400)
+        storage.finish_run(old_pending_notice, "completed", {"verdict": "pass"})
+
+        recent_settled = storage.create_run(schedule, now - 4 * 86400)
+        storage.finish_run(recent_settled, "completed", {"verdict": "pass"})
+        storage.update_notification(recent_settled, "sent")
+
+        with storage.cursor() as cur:
+            cur.execute("UPDATE runs SET finished_at=? WHERE id=?", (now - 7 * 86400, old_settled))
+            cur.execute("UPDATE runs SET finished_at=? WHERE id=?", (now - 6 * 86400, old_pending_notice))
+            cur.execute("UPDATE runs SET finished_at=? WHERE id=?", (now - 4 * 86400, recent_settled))
+
+        self.assertEqual(storage.prune_run_history(now, 5), 1)
+        self.assertIsNone(storage.get_run(old_settled))
+        self.assertIsNotNone(storage.get_run(old_pending_notice))
+        self.assertIsNotNone(storage.get_run(recent_settled))
+        with storage.cursor() as cur:
+            self.assertEqual(cur.execute(
+                "SELECT count(*) FROM probe_results WHERE run_id=?", (old_settled,)
+            ).fetchone()[0], 0)
 
     async def test_read_and_validation_interfaces_do_not_leak_keys(self):
         for url in ("/api/registry/channels","/stability/api/channel-inventory","/stability/api/channels"):
