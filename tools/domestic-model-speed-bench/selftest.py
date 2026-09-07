@@ -83,6 +83,7 @@ class QuestionBankTests(unittest.TestCase):
             "gpt-6-astra": ("Codex", "GPT-6 Astra"),
             "gpt-5.6-sol": ("Codex", "GPT-5.6 Sol"),
             "gpt-5.6-terra": ("Codex", "GPT-5.6 Terra"),
+            "claude-fable-5-1": ("Claude", "Fable 5.1"),
             "claude-fable-5": ("Claude", "Fable 5"),
             "claude-opus-5": ("Claude", "Opus 5"),
             "claude-sonnet-5": ("Claude", "Sonnet 5"),
