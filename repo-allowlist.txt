@@ -17,3 +17,4 @@ selftest_*.py
 app/
 web/
 scripts/
+.agents/
