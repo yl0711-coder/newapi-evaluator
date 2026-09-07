@@ -29,6 +29,7 @@ MODEL_FAMILIES = [
         "protocol": "openai",
         "official_base_url": "",
         "models": [
+            ("gpt-6-astra", "GPT-6 Astra"),
             ("gpt-5.6-sol", "GPT-5.6 Sol"),
             ("gpt-5.6-terra", "GPT-5.6 Terra"),
         ],
