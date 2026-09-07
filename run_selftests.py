@@ -38,6 +38,7 @@ SUITES = [
     ("selftest_admission_pack.py", False),
     ("selftest_rules.py", False),
     ("selftest_transport.py", False),
+    ("selftest_channel_snapshot.py", False),
     ("selftest_load.py", False),
     ("selftest_repository_security.py", False),
     ("selftest_security.py", True),

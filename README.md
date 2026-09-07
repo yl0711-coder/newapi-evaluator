@@ -114,6 +114,18 @@ python run.py
 
 默认仅监听 `127.0.0.1:8000`。账号密码不写入源码；也可在首次部署时提供 `TEST_BOOTSTRAP_USERNAME` 和 `TEST_BOOTSTRAP_PASSWORD`。
 
+### 一键渠道快照
+
+测试机先在本机安全环境中设置 `CHANNEL_SNAPSHOT_CONFIG`，使其指向仓库外的渠道配置文件。文件复用现有导入格式，支持 JSON、`KEY=VALUE`、curl 或普通文本。也可以由密钥管理器注入 `CHANNEL_SNAPSHOT_INPUT`，或分别注入 `CHANNEL_SNAPSHOT_ALIAS`、`CHANNEL_SNAPSHOT_BASE_URL`、`CHANNEL_SNAPSHOT_MODEL`、`CHANNEL_SNAPSHOT_API_KEY` 和 `CHANNEL_SNAPSHOT_PROTOCOL`。不要把这些值写入仓库、PR 或报告。
+
+环境准备好后，一键命令固定为：
+
+```powershell
+python scripts/channel_snapshot.py
+```
+
+命令把 JSON 快照写到系统临时目录下权限受限的唯一运行目录，并打印实际路径。可用 `CHANNEL_SNAPSHOT_OUTPUT` 指定其他仓库外路径。快照只保留渠道别名、稳定标识、协议、移除用户信息/路径/查询参数/片段的主机信息、模型数量、UTC 提取时间、探测状态、固定错误摘要与不含凭据的配置指纹。它不保存 API Key/Token/Cookie、认证头、完整 URL 查询参数、客户信息、原始请求/响应或原始错误载荷。上游未通过时仍会写出脱敏的“待确认”快照，命令以状态码 `2` 结束。
+
 容器部署：
 
 ```powershell
