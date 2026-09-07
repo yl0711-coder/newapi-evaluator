@@ -54,6 +54,9 @@ FORBIDDEN_SUFFIXES = {
 }
 SOURCE_SUFFIXES = {".py", ".js", ".css", ".html", ".mjs"}
 ALLOWED_EXACT_FILES = {
+    ".agents/evaluator-workflow.md",
+    ".agents/skills/evaluator-development/SKILL.md",
+    ".agents/skills/evaluator-testing/SKILL.md",
     ".dockerignore",
     ".env.example",
     ".gitignore",
