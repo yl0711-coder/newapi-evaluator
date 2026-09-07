@@ -1,0 +1,404 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>单渠道非流式完整性测试</title>
+<style>
+* { box-sizing: border-box; }
+body { margin: 0; padding: 28px 20px; background: #f5f6f8; color: #243041; font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif; line-height: 1.65; }
+main { max-width: 1040px; margin: 0 auto; }
+h1 { margin: 0 0 8px; font-size: 26px; }
+h2 { margin: 0 0 16px; font-size: 19px; }
+h3 { margin: 0; font-size: 17px; }
+p { margin: 8px 0; }
+.muted, .help { color: #606d7e; font-size: 14px; }
+.section { padding: 24px; margin-top: 20px; background: #fff; border: 1px solid #e0e5ec; border-radius: 8px; }
+fieldset { margin: 0; padding: 0; border: 0; min-width: 0; }
+.fields { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 16px 20px; }
+.wide { grid-column: 1 / -1; }
+label { display: block; margin-bottom: 5px; font-size: 14px; font-weight: 600; }
+input, select, textarea { width: 100%; padding: 10px 12px; border: 1px solid #bdc8d6; border-radius: 5px; background: #fff; color: inherit; font: inherit; font-size: 14px; }
+textarea { min-height: 104px; resize: vertical; font-family: Consolas, "SFMono-Regular", monospace; }
+input:focus, select:focus, textarea:focus, button:focus-visible, summary:focus-visible { outline: 3px solid #bfdbfe; outline-offset: 2px; }
+input:disabled, select:disabled, textarea:disabled { background: #f4f6f8; }
+.actions { display: flex; align-items: center; flex-wrap: wrap; gap: 12px; margin-top: 20px; }
+.utility-row { display: flex; align-items: center; flex-wrap: wrap; gap: 12px; margin: 8px 0 20px; }
+.inline-status { font-size: 14px; color: #536173; overflow-wrap: anywhere; }
+button { padding: 10px 18px; border: 1px solid #2359ba; border-radius: 5px; background: #2359ba; color: #fff; font: inherit; font-size: 14px; font-weight: 600; cursor: pointer; }
+button:hover { background: #174694; }
+button:disabled { opacity: .55; cursor: wait; }
+.secondary { background: #fff; color: #2359ba; }
+.secondary:hover { background: #eef4ff; }
+.status { margin-top: 14px; font-size: 14px; }
+.error { color: #a51e2e; overflow-wrap: anywhere; }
+.summary-grid { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 12px; margin: 16px 0; }
+.stat { padding: 16px; background: #f5f7fa; border-radius: 6px; }
+.stat-label { color: #536173; font-size: 13px; }
+.stat-value { margin-top: 4px; font-size: 25px; font-weight: 700; }
+.result-card { margin-top: 16px; padding: 18px; border: 1px solid #dce2ea; border-radius: 6px; }
+.result-heading { display: flex; align-items: baseline; justify-content: space-between; gap: 12px; flex-wrap: wrap; }
+.badge { display: inline-block; padding: 2px 9px; border-radius: 4px; font-size: 13px; font-weight: 600; }
+.good { color: #14663d; background: #e9f6ee; }
+.warning { color: #84530b; background: #fff4dc; }
+.bad { color: #9c2632; background: #fdeef0; }
+.neutral { color: #4d6075; background: #edf1f6; }
+dl { display: grid; grid-template-columns: minmax(130px, 1fr) minmax(0, 2fr); margin: 12px 0; font-size: 14px; }
+dt, dd { padding: 5px 0; border-bottom: 1px solid #eef1f5; }
+dt { color: #606d7e; }
+dd { margin: 0; overflow-wrap: anywhere; }
+details { margin-top: 10px; }
+summary { cursor: pointer; color: #294e82; font-size: 14px; }
+pre { margin: 10px 0; padding: 14px; max-height: 420px; overflow: auto; white-space: pre-wrap; overflow-wrap: anywhere; border-radius: 5px; background: #f5f7fa; color: #273548; font: 13px/1.7 Consolas, "SFMono-Regular", monospace; }
+ul { margin: 8px 0; padding-left: 22px; }
+.report-header { display: flex; justify-content: space-between; gap: 14px; align-items: baseline; flex-wrap: wrap; }
+.report-header h2 { margin: 0; }
+[hidden] { display: none !important; }
+@media (max-width: 640px) {
+  body { padding: 20px 12px; }
+  .section { padding: 18px; }
+  .fields, .summary-grid { grid-template-columns: 1fr; }
+  h1 { font-size: 23px; }
+  dl { grid-template-columns: minmax(115px, 1fr) minmax(0, 1.5fr); }
+}
+</style>
+</head>
+<body>
+<main>
+  <h1>单渠道非流式完整性测试</h1>
+  <p class="muted">检查一个渠道的非流式响应，并完整展示上游回答、独立推理字段和原始 JSON。</p>
+  <p class="help">页面只报告客观信号，不替你判断正文有没有推理过程。reasoning_tokens 表示模型使用了推理 token，不代表接口返回了独立推理文本。</p>
+
+  <form id="test_form" class="section" autocomplete="off">
+    <h2>渠道配置</h2>
+    <fieldset id="endpoint_fields">
+      <div>
+        <label for="channel_import">粘贴渠道连接信息</label>
+        <textarea id="channel_import" maxlength="100000" placeholder="支持 JSON、curl、BASE_URL / API_KEY、模型名或普通文本" autocomplete="off" spellcheck="false"></textarea>
+        <p class="help">一键提取 URL、Key、模型和协议；提取成功后清空粘贴内容，不做持久保存。</p>
+        <div class="utility-row">
+          <button id="extract_channel" class="secondary" type="button">一键提取渠道信息</button>
+          <span id="extract_status" class="inline-status" role="status" aria-live="polite"></span>
+        </div>
+      </div>
+      <div class="fields">
+        <div class="wide">
+          <label for="base_url">Base URL / 完整请求地址</label>
+          <input id="base_url" type="url" required placeholder="https://api.example.com/v1" spellcheck="false">
+          <p class="help">可填写服务根地址、/v1 地址或完整的协议端点。</p>
+        </div>
+        <div>
+          <label for="api_key">API Key</label>
+          <input id="api_key" type="password" required placeholder="sk-..." autocomplete="off" spellcheck="false">
+        </div>
+        <div>
+          <label for="model">模型名称</label>
+          <input id="model" type="text" required placeholder="填写渠道实际支持的模型名称" spellcheck="false">
+        </div>
+        <div>
+          <label for="protocol">请求协议</label>
+          <select id="protocol">
+            <option value="openai">OpenAI 兼容 Chat Completions</option>
+            <option value="anthropic">Anthropic Messages</option>
+          </select>
+        </div>
+        <div>
+          <label for="max_tokens">最大输出 tokens</label>
+          <input id="max_tokens" type="number" min="1" max="131072" step="1" value="8192" required>
+        </div>
+        <div>
+          <label for="timeout_seconds">单题超时（秒）</label>
+          <input id="timeout_seconds" type="number" min="1" max="600" step="1" value="120" required>
+        </div>
+      </div>
+      <div id="anthropic_fields" class="fields" style="margin-top: 16px" hidden>
+        <div>
+          <label for="thinking_mode">Anthropic thinking 模式</label>
+          <select id="thinking_mode">
+            <option value="enabled">enabled · 指定思考预算</option>
+            <option value="adaptive">adaptive · 模型自适应</option>
+            <option value="disabled">disabled · 不启用</option>
+          </select>
+        </div>
+        <div id="thinking_budget_field">
+          <label for="thinking_budget_tokens">思考预算 tokens</label>
+          <input id="thinking_budget_tokens" type="number" min="1024" step="1" value="1024">
+        </div>
+        <p class="help wide">thinking 模式需与渠道及模型支持的参数匹配。enabled 的思考预算必须小于最大输出 tokens；adaptive 无需指定预算。</p>
+      </div>
+    </fieldset>
+    <p class="help">API Key 仅用于当前请求；页面不持久保存 Key 或测试历史。</p>
+    <div class="actions">
+      <button id="start_btn" type="submit">开始非流式测试</button>
+      <span id="elapsed" class="muted" hidden></span>
+    </div>
+    <p id="run_status" class="status" role="status" aria-live="polite">全部题目完成后统一显示结果，耗时取决于模型响应和单题超时设置。</p>
+  </form>
+
+  <section class="section" aria-labelledby="questions_title">
+    <h2 id="questions_title">测试题目</h2>
+    <p id="questions_status" class="muted">正在读取题目…</p>
+    <div id="questions"></div>
+  </section>
+
+  <section id="results" class="section" aria-labelledby="results_title" hidden>
+    <div class="report-header">
+      <h2 id="results_title">测试报告</h2>
+      <button id="download_btn" class="secondary" type="button">下载 JSON 报告</button>
+    </div>
+    <p id="report_endpoint" class="muted"></p>
+    <div id="summary"></div>
+    <ul id="report_notes" class="help"></ul>
+    <h2 style="margin-top: 24px">逐题结果与原始样本</h2>
+    <div id="details"></div>
+  </section>
+</main>
+<script>
+'use strict';
+
+const byId = (id) => document.getElementById(id);
+const completionLabels = {complete: '正常结束', truncated: '已截断', empty: '内容为空', unknown: '结束状态待复核', error: '请求错误'};
+const completionStyles = {complete: 'good', truncated: 'warning', empty: 'bad', unknown: 'warning', error: 'bad'};
+const reasoningLabels = {returned: '有独立推理文本', missing: '无独立推理文本', redacted: '含不可见推理', not_required: '本题不要求推理', error: '请求错误'};
+let report = null;
+
+function node(tag, text, className) {
+  const element = document.createElement(tag);
+  if (text !== undefined && text !== null) element.textContent = String(text);
+  if (className) element.className = className;
+  return element;
+}
+
+function formatMilliseconds(value) {
+  return Number.isFinite(value) ? `${Math.round(value)} ms` : '—';
+}
+
+function formatRate(value) {
+  return Number.isFinite(value) ? `${(value * 100).toFixed(1)}%` : '—';
+}
+
+function addMetric(list, label, value) {
+  list.append(node('dt', label), node('dd', value ?? '—'));
+}
+
+function addSample(container, label, text, emptyText, expanded = false) {
+  const disclosure = node('details');
+  disclosure.open = expanded;
+  disclosure.append(node('summary', label), node('pre', text || emptyText));
+  container.append(disclosure);
+}
+
+function syncThinkingFields() {
+  const anthropic = byId('protocol').value === 'anthropic';
+  const budgetRequired = anthropic && byId('thinking_mode').value === 'enabled';
+  byId('anthropic_fields').hidden = !anthropic;
+  byId('thinking_mode').disabled = !anthropic;
+  byId('thinking_budget_field').hidden = !budgetRequired;
+  byId('thinking_budget_tokens').disabled = !budgetRequired;
+  byId('thinking_budget_tokens').required = budgetRequired;
+  byId('thinking_budget_tokens').setCustomValidity('');
+}
+
+async function readResponse(response) {
+  const text = await response.text();
+  let data;
+  try {
+    data = JSON.parse(text);
+  } catch {
+    throw new Error(`服务返回了非 JSON 响应（HTTP ${response.status}）。请检查本地服务。`);
+  }
+  if (!response.ok) {
+    const detail = typeof data.detail === 'string' ? data.detail : JSON.stringify(data.detail ?? data);
+    throw new Error(`HTTP ${response.status}：${detail}`);
+  }
+  return data;
+}
+
+async function loadQuestions() {
+  try {
+    const questions = await readResponse(await fetch('/api/questions'));
+    byId('questions_status').textContent = `${questions.length} 道题 · ${questions.filter((question) => question.reasoning_required).length} 道要求可见推理 · 全量完成后统一返回报告`;
+    byId('questions').replaceChildren();
+    for (const question of questions) {
+      addSample(byId('questions'), `${question.id} · ${question.title}${question.reasoning_required ? '' : '（短答基线）'}`, question.prompt, '题目内容为空');
+    }
+  } catch (error) {
+    byId('questions_status').textContent = `题目读取失败：${error.message}`;
+    byId('questions_status').className = 'error';
+  }
+}
+
+function renderResults(data) {
+  const summary = data.summary;
+  byId('report_endpoint').textContent = `${data.endpoint.model} · ${data.endpoint.protocol} · ${data.endpoint.request_url}`;
+  byId('summary').replaceChildren();
+  const stats = node('div', undefined, 'summary-grid');
+  for (const [label, value, detail] of [
+    ['响应正常结束率', formatRate(summary.complete_rate), `${summary.complete_count} / ${summary.total} 道题`],
+    ['独立推理字段返回率', formatRate(summary.reasoning_return_rate), `${summary.reasoning_returned} / ${summary.reasoning_expected} 道要求推理的题目`],
+    ['上游报告推理 tokens', summary.reasoning_tokens_total, `${summary.reasoning_token_responses} 份响应提供了 reasoning_tokens`],
+  ]) {
+    const stat = node('div', undefined, 'stat');
+    stat.append(node('div', label, 'stat-label'), node('div', value, 'stat-value'), node('div', detail, 'help'));
+    stats.append(stat);
+  }
+  const counts = node('p', `共 ${summary.total} 题 · 请求成功 ${summary.success_count} · 请求错误 ${summary.error_count} · 已截断 ${summary.truncated_count} · 内容为空 ${summary.empty_count} · 待复核 ${summary.unknown_count}`, 'help');
+  const times = node('p', `非流式总响应时间：最短 ${formatMilliseconds(summary.min_time_ms)} · 中位数 ${formatMilliseconds(summary.median_time_ms)} · 最长 ${formatMilliseconds(summary.max_time_ms)}`, 'help');
+  byId('summary').append(stats, counts, times);
+  byId('report_notes').replaceChildren(...data.notes.map((note) => node('li', note)));
+  byId('details').replaceChildren();
+  for (const result of data.results) {
+    const card = node('article', undefined, 'result-card');
+    const heading = node('div', undefined, 'result-heading');
+    heading.append(node('h3', `${result.question_id} · ${result.title}`), node('span', completionLabels[result.completion.status] ?? result.completion.status, `badge ${completionStyles[result.completion.status] ?? 'neutral'}`));
+    card.append(heading, node('p', result.completion.detail, 'help'));
+    const metrics = node('dl');
+    addMetric(metrics, 'HTTP 状态', result.http_status);
+    addMetric(metrics, '总响应时间', formatMilliseconds(result.total_time_ms));
+    addMetric(metrics, '响应首字节', formatMilliseconds(result.first_byte_ms));
+    addMetric(metrics, '响应体大小', `${result.response_bytes} bytes`);
+    addMetric(metrics, '结束标记', result.completion.finish_reason);
+    addMetric(metrics, '独立推理文本', reasoningLabels[result.reasoning.status] ?? result.reasoning.status);
+    addMetric(metrics, '推理字段 / 来源', result.reasoning.source || (result.reasoning.field_present ? '字段存在' : '未返回'));
+    addMetric(metrics, '独立推理长度', `${result.reasoning.characters} 字符`);
+    addMetric(metrics, '上游报告 reasoning_tokens', result.reasoning.reported_tokens);
+    if (result.reasoning.redacted_blocks) addMetric(metrics, '隐藏推理块', result.reasoning.redacted_blocks);
+    card.append(metrics, node('p', result.reasoning.detail, 'help'));
+    if (result.error) card.append(node('p', `错误：${result.error}`, 'error'));
+    addSample(card, '查看上游原始回答（content）', result.answer, '上游没有返回可展示的答案正文。', true);
+    addSample(card, '查看独立推理文本', result.reasoning_text, '上游没有返回独立推理文本。');
+    addSample(card, '查看完整原始响应 JSON（已脱敏）', result.raw_response, '未收到响应体。');
+    addSample(card, '查看测试题目', result.prompt, '题目内容为空');
+    if (result.usage) addSample(card, '查看 token 用量', JSON.stringify(result.usage, null, 2), '未返回用量信息。');
+    byId('details').append(card);
+  }
+  byId('results').hidden = false;
+}
+
+async function extractChannelInformation() {
+  const textArea = byId('channel_import');
+  const button = byId('extract_channel');
+  const status = byId('extract_status');
+  const text = textArea.value.trim();
+  status.className = 'inline-status';
+  if (!text) {
+    status.textContent = '请先粘贴渠道连接信息。';
+    textArea.focus();
+    return;
+  }
+  button.disabled = true;
+  button.textContent = '正在提取…';
+  try {
+    const extracted = await readResponse(await fetch('/api/extract-channel', {
+      method: 'POST',
+      headers: {'Content-Type': 'application/json'},
+      body: JSON.stringify({text}),
+    }));
+    if (extracted.base_url) byId('base_url').value = extracted.base_url;
+    if (extracted.api_key) byId('api_key').value = extracted.api_key;
+    if (extracted.model) byId('model').value = extracted.model;
+    if (extracted.protocol) byId('protocol').value = extracted.protocol;
+    syncThinkingFields();
+    const found = [
+      extracted.has_url && 'URL',
+      extracted.has_key && 'Key',
+      extracted.has_model && '模型',
+      extracted.has_protocol && '协议',
+    ].filter(Boolean);
+    if (!found.length) throw new Error('没有识别到渠道信息，请检查粘贴内容。');
+    textArea.value = '';
+    status.textContent = `已提取：${found.join('、')}；粘贴内容已清空。`;
+  } catch (error) {
+    status.className = 'inline-status error';
+    status.textContent = error.message;
+  } finally {
+    button.disabled = false;
+    button.textContent = '一键提取渠道信息';
+  }
+}
+
+async function startTest(event) {
+  event.preventDefault();
+  const maxTokens = Number(byId('max_tokens').value);
+  const protocol = byId('protocol').value;
+  const thinkingMode = byId('thinking_mode').value;
+  const thinkingBudget = Number(byId('thinking_budget_tokens').value);
+  if (protocol === 'anthropic' && thinkingMode === 'enabled' && thinkingBudget >= maxTokens) {
+    byId('thinking_budget_tokens').setCustomValidity('思考预算必须小于最大输出 tokens。');
+    byId('thinking_budget_tokens').reportValidity();
+    return;
+  }
+  const payload = {
+    endpoint: {
+      base_url: byId('base_url').value.trim(),
+      api_key: byId('api_key').value.trim(),
+      model: byId('model').value.trim(),
+      protocol,
+    },
+    max_tokens: maxTokens,
+    timeout_seconds: Number(byId('timeout_seconds').value),
+  };
+  if (protocol === 'anthropic') {
+    payload.endpoint.thinking_mode = thinkingMode;
+    if (thinkingMode === 'enabled') payload.endpoint.thinking_budget_tokens = thinkingBudget;
+  }
+  report = null;
+  byId('results').hidden = true;
+  byId('endpoint_fields').disabled = true;
+  byId('start_btn').disabled = true;
+  byId('start_btn').textContent = '正在测试…';
+  byId('run_status').className = 'status';
+  byId('run_status').textContent = '正在等待全部题目的非流式响应，结束后将统一显示报告。请保持页面打开。';
+  byId('elapsed').hidden = false;
+  byId('elapsed').textContent = '已用时 0 秒';
+  const startedAt = performance.now();
+  const timer = setInterval(() => {
+    byId('elapsed').textContent = `已用时 ${Math.floor((performance.now() - startedAt) / 1000)} 秒`;
+  }, 1000);
+  try {
+    const response = await fetch('/api/test', {
+      method: 'POST',
+      headers: {'Content-Type': 'application/json'},
+      body: JSON.stringify(payload),
+    });
+    const data = await readResponse(response);
+    renderResults(data);
+    report = data;
+    byId('run_status').textContent = `测试完成：共 ${data.summary.total} 题，请结合逐题结果复核可见推理和最终答案。`;
+  } catch (error) {
+    byId('run_status').className = 'status error';
+    byId('run_status').textContent = `测试未完成：${error.message}`;
+  } finally {
+    clearInterval(timer);
+    byId('elapsed').textContent = `本次用时 ${Math.round((performance.now() - startedAt) / 1000)} 秒`;
+    byId('endpoint_fields').disabled = false;
+    byId('start_btn').disabled = false;
+    byId('start_btn').textContent = '开始非流式测试';
+    syncThinkingFields();
+  }
+}
+
+function downloadReport() {
+  if (!report) return;
+  const url = URL.createObjectURL(new Blob([JSON.stringify(report, null, 2)], {type: 'application/json;charset=utf-8'}));
+  const link = node('a');
+  link.href = url;
+  link.download = `nonstream-report-${new Date().toISOString().replace(/[:.]/g, '-')}.json`;
+  document.body.append(link);
+  link.click();
+  link.remove();
+  setTimeout(() => URL.revokeObjectURL(url), 1000);
+}
+
+byId('protocol').addEventListener('change', syncThinkingFields);
+byId('thinking_mode').addEventListener('change', syncThinkingFields);
+byId('thinking_budget_tokens').addEventListener('input', () => byId('thinking_budget_tokens').setCustomValidity(''));
+byId('max_tokens').addEventListener('input', () => byId('thinking_budget_tokens').setCustomValidity(''));
+byId('test_form').addEventListener('submit', startTest);
+byId('extract_channel').addEventListener('click', extractChannelInformation);
+byId('download_btn').addEventListener('click', downloadReport);
+syncThinkingFields();
+loadQuestions();
+</script>
+</body>
+</html>

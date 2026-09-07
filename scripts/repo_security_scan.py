@@ -66,8 +66,16 @@ ALLOWED_EXACT_FILES = {
     "compose.yml",
     "repo-allowlist.txt",
     "requirements.txt",
+    "tools/thinking-integrity-test/.gitignore",
+    "tools/thinking-integrity-test/README.md",
+    "tools/thinking-integrity-test/requirements.txt",
+    "tools/thinking-integrity-test/run_selftest.bat",
+    "tools/thinking-integrity-test/start.ps1",
 }
-QUESTION_BANK_FILES = {"app/hard_items.json"}
+QUESTION_BANK_FILES = {
+    "app/hard_items.json",
+    "tools/thinking-integrity-test/questions.json",
+}
 SECRET_PATTERNS = {
     "private_key": re.compile(r"-----BEGIN (?:RSA |EC |OPENSSH )?PRIVATE KEY-----"),
     "github_token": re.compile(r"\b(?:ghp|github_pat)_[A-Za-z0-9_]{30,}\b"),
@@ -108,10 +116,14 @@ def rules(root: Path) -> list[str]:
 def allowed(relative: str, patterns: list[str]) -> bool:
     top = relative.split("/", 1)[0]
     for pattern in patterns:
-        if pattern.endswith("/") and (
-            relative == pattern[:-1] or relative.startswith(pattern)
-        ):
-            return True
+        if pattern.endswith("/"):
+            subtree = pattern[:-1]
+            if (
+                relative == subtree
+                or relative.startswith(pattern)
+                or subtree.startswith(f"{relative}/")
+            ):
+                return True
         if fnmatch.fnmatch(relative, pattern) or fnmatch.fnmatch(top, pattern):
             return True
     return False
