@@ -1,0 +1,67 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width,initial-scale=1">
+  <title>准入人工确认与飞书记录框架</title>
+  <link rel="stylesheet" href="styles.css">
+</head>
+<body>
+  <main>
+    <header>
+      <p class="eyebrow">独立小项目 · 尚未接入主应用</p>
+      <h1>准入人工确认与飞书记录框架</h1>
+      <p>先收集渠道信息，再接入准入测试；测试结束后必须人工判定，最后生成飞书待同步记录。当前不连接飞书，也不会发送数据。</p>
+    </header>
+
+    <p id="message" role="status"></p>
+
+    <section class="card">
+      <span class="step">1</span>
+      <h2>填写渠道信息并开始</h2>
+      <form id="start-form">
+        <label>渠道名称<input id="channel-name" required maxlength="160"></label>
+        <label>渠道地址<input id="base-url" type="url" required maxlength="1000" placeholder="https://example.com/v1"></label>
+        <label>临时访问凭据<input id="api-key" type="password" required maxlength="4096" autocomplete="off"></label>
+        <label>模型<input id="model" required maxlength="160"></label>
+        <label>协议<select id="protocol"><option value="openai">OpenAI</option><option value="anthropic">Anthropic</option></select></label>
+        <button type="submit">创建准入测试</button>
+      </form>
+      <p class="hint">框架只记录“已提供凭据”，不保存凭据本身；URL 查询参数和片段会被移除。</p>
+    </section>
+
+    <section class="card" id="test-card" hidden>
+      <span class="step">2</span>
+      <h2>准入测试</h2>
+      <p id="run-summary"></p>
+      <p class="hint">这里是后续接入正式准入引擎的位置。当前按钮用于验证状态流转。</p>
+      <div class="actions">
+        <button id="test-complete" type="button">模拟测试完成</button>
+        <button id="test-failed" class="secondary" type="button">模拟测试失败</button>
+      </div>
+    </section>
+
+    <section class="card" id="review-card" hidden>
+      <span class="step">3</span>
+      <h2>人工确认</h2>
+      <form id="review-form">
+        <p id="review-result" class="ok" hidden></p>
+        <label>确认人<input id="reviewer" required maxlength="120"></label>
+        <label>备注<textarea id="review-note" maxlength="2000"></textarea></label>
+        <div class="actions">
+          <button type="submit" name="decision" value="qualified">确认合格</button>
+          <button type="submit" name="decision" value="not_qualified" class="danger">确认不合格</button>
+        </div>
+      </form>
+    </section>
+
+    <section class="card">
+      <span class="step">4</span>
+      <h2>飞书待同步记录</h2>
+      <p class="hint">字段映射待确认，因此任务只进入“等待字段映射”，不会访问飞书。</p>
+      <div id="outbox" class="list"></div>
+    </section>
+  </main>
+  <script src="app.js"></script>
+</body>
+</html>
