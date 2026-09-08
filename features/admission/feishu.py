@@ -10,10 +10,26 @@ from urllib.parse import quote
 
 import httpx
 
-from .mapping import DEFAULT_CHANNEL_FIELD, DEFAULT_GROUP_FIELD
+try:
+    from .main import PRESETS
+except ImportError:  # Direct execution of features/admission/selftest.py.
+    from main import PRESETS
 
 
 FEISHU_ORIGIN = "https://open.feishu.cn"
+DEFAULT_CHANNEL_FIELD = "渠道"
+DEFAULT_GROUP_FIELD = "测试分组"
+MODEL_GROUPS = {
+    str(item["id"]).casefold(): str(item["provider"])
+    for item in PRESETS
+}
+FAMILY_MARKERS = (
+    (("claude",), "Claude"),
+    (("codex", "gpt-"), "Codex"),
+    (("glm-",), "智谱"),
+    (("kimi-",), "Kimi"),
+    (("deepseek-",), "DeepSeek"),
+)
 
 
 class FeishuError(RuntimeError):
@@ -58,6 +74,31 @@ class FeishuSettings:
         if any(values):
             return "incomplete"
         return "missing"
+
+
+def group_for_model(model: str) -> str:
+    normalized = model.strip().casefold()
+    if normalized in MODEL_GROUPS:
+        return MODEL_GROUPS[normalized]
+    for markers, group in FAMILY_MARKERS:
+        if any(marker in normalized for marker in markers):
+            return group
+    return "未识别"
+
+
+def build_fields(
+    channel_url: str,
+    test_group: str,
+    settings: FeishuSettings,
+) -> dict[str, str]:
+    if not settings.channel_field or not settings.group_field:
+        raise ValueError("飞书渠道字段和测试分组字段不能为空")
+    if settings.channel_field == settings.group_field:
+        raise ValueError("飞书渠道字段和测试分组字段不能同名")
+    return {
+        settings.channel_field: channel_url,
+        settings.group_field: test_group,
+    }
 
 
 class BitableWriter:
