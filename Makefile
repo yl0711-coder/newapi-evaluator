@@ -1,4 +1,4 @@
-.PHONY: up dev down restart logs ps test
+.PHONY: up dev down restart logs ps test prod-up prod-down prod-logs prod-ps
 
 up:
 	docker compose up -d --build
@@ -20,3 +20,16 @@ ps:
 
 test:
 	docker compose run --rm workbench python scripts/test_all.py
+
+prod-up:
+	docker compose -f compose.prod.yml pull
+	docker compose -f compose.prod.yml up -d
+
+prod-down:
+	docker compose -f compose.prod.yml down
+
+prod-logs:
+	docker compose -f compose.prod.yml logs -f --tail=200 workbench
+
+prod-ps:
+	docker compose -f compose.prod.yml ps

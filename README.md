@@ -76,6 +76,19 @@ make restart  # 只重启服务
 make down     # 停止容器
 ```
 
+服务器也可以直接使用 GitHub Container Registry 中已经测试通过的镜像，省去本机编译时间：
+
+```bash
+cp .env.example .env
+# 编辑 .env，至少更换 PLATFORM_PASSWORD；需要固定版本时把 WORKBENCH_IMAGE 改为对应的 v* 标签。
+make prod-up
+make prod-ps
+```
+
+`compose.prod.yml` 会拉取 `WORKBENCH_IMAGE`，默认是 `ghcr.io/yl0711-coder/newapi-evaluator:latest`。如果容器包保持私有，服务器需要先执行 `docker login ghcr.io`；设为公开后可匿名拉取。更新时再次执行 `make prod-up`，数据仍保存在宿主机的 `./data`。
+
+仓库的版本标签触发 `.github/workflows/release.yml`。形如 `v1.1.0` 的标签会先运行全部自动测试，再构建并启动一次临时容器验证健康状态；全部通过后才发布 `linux/amd64`、`linux/arm64` 镜像，并生成版本号、提交 SHA 和 `latest` 三类镜像标签。GitHub Actions 使用仓库自带的 `GITHUB_TOKEN` 发布，不需要在仓库中保存个人访问令牌。
+
 需要边改代码边看效果时运行 `make dev`。它会把 `features/`、`shared/`、`web/` 和入口文件挂载到容器；Python 代码保存后自动重启，HTML/CSS/JS 保存后刷新浏览器即可。依赖或 Dockerfile 变更后重新执行 `make dev`。稳定模式下代码变更后执行 `make up` 重建。Linux 宿主机需保证容器 UID 10001 可读写 `./data`。
 
 上游连接默认禁止内网、回环和保留地址，并在实际建连时校验和固定解析出的 IP，保留原始 TLS SNI。确有内部测试服务时，由部署者设置 `PLATFORM_EGRESS_ALLOWLIST` 为逗号分隔的主机名或 CIDR。测试请求不读取系统代理、不跟随重定向、不自动重试。

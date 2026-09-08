@@ -2,7 +2,8 @@ name: model-test-workbench
 
 services:
   workbench:
-    build: .
+    image: ${WORKBENCH_IMAGE:-ghcr.io/yl0711-coder/newapi-evaluator:latest}
+    pull_policy: always
     init: true
     restart: unless-stopped
     ports:
