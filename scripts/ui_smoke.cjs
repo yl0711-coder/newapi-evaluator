@@ -46,7 +46,10 @@ const upstream = http.createServer(async (req, res) => {
   await page.locator('#candidate-model').fill('demo-model'); await page.locator('#reference-model').fill('demo-model');
   await page.locator('#reference-id').selectOption(String(channelId));
   await page.locator('#start').click(); await page.waitForFunction(()=>document.querySelector('#run-status').textContent.includes('本轮测试完成'),{},{timeout:40000});
+  const historyPanel = page.locator('#report-history-panel'), historySummary = historyPanel.locator('summary');
+  assert.equal(await historyPanel.getAttribute('open'),null); await historySummary.click();
   await page.locator('#report-history article').waitFor({state:'visible'});
+  await historySummary.click(); await page.locator('#report-history article').waitFor({state:'hidden'});
   assert.equal(requests.length,10); assert.equal(requests.filter(x=>x.key==='Bearer ui-ephemeral-candidate-key').length,5);
   assert.equal(requests.filter(x=>x.key==='Bearer ui-saved-reference-key').length,5);
   assert.equal((await (await fetch(base+'/api/registry/channels')).json()).channels.length,1);

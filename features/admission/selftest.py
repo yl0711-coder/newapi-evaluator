@@ -405,6 +405,8 @@ class FrontendSafetyTests(unittest.TestCase):
         html = (Path(__file__).parent / "web" / "index.html").read_text(encoding="utf-8")
         source = (Path(__file__).parent / "web" / "app.js").read_text(encoding="utf-8")
         self.assertIn('id="report-history"', html)
+        self.assertIn('<details class="panel report-history-panel"', html)
+        self.assertLess(html.index('id="results"'), html.index('id="report-history-panel"'))
         self.assertIn("最近 30 条", html)
         self.assertIn("./api/reports", source)
         self.assertNotIn("localStorage", source)

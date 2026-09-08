@@ -34,7 +34,21 @@ dialog::backdrop { background:#12282466; } .dialog-heading { display:flex; justi
 pre { white-space:pre-wrap; overflow-wrap:anywhere; background:#f3f5ef; border-radius:6px; padding:14px; font:13px/1.7 "SFMono-Regular",Consolas,monospace; max-height:420px; overflow:auto; }
 .metric-grid { display:grid; grid-template-columns:repeat(3,1fr); gap:8px; margin:15px 0; } .metric-grid div { padding:10px; background:var(--soft); border-radius:6px; } .metric-grid small { display:block; color:var(--muted); font-size:11px; }
 details>summary { cursor:pointer; } .run-card { margin:16px 0; } .run-card>summary { font-size:17px; font-weight:650; } .run-card .two { margin-top:16px; }
+.report-history-panel { padding:0; overflow:hidden; }
+.report-history-summary { display:flex; justify-content:space-between; align-items:center; gap:18px; padding:20px 24px; list-style:none; }
+.report-history-summary::-webkit-details-marker { display:none; }
+.report-history-summary:focus-visible { outline:3px solid #659e92; outline-offset:-3px; }
+.report-history-heading { min-width:0; }
+.report-history-heading strong { display:block; font-size:21px; }
+.report-history-heading .hint { display:block; margin:2px 0 0; font-weight:400; }
+.report-history-toggle { flex:none; color:var(--accent); font-size:14px; font-weight:650; }
+.report-history-toggle::before { content:"展开记录"; }
+.report-history-panel[open]>.report-history-summary { border-bottom:1px solid var(--line); }
+.report-history-panel[open] .report-history-toggle::before { content:"收起记录"; }
+.report-history-body { padding:20px 24px 24px; }
+.report-history-controls { margin-bottom:12px; }
+.report-history-controls .hint { margin:0; }
 .table-wrap { overflow:auto; } table { width:100%; border-collapse:collapse; font-size:14px; } td,th { text-align:left; border-bottom:1px solid var(--line); padding:12px; white-space:nowrap; }
 [hidden] { display:none!important; }
-@media(max-width:800px) { .cards,.two,.three { grid-template-columns:1fr; } .page { padding:28px 16px; } .panel { padding:18px; } .platform-nav { gap:12px; padding:12px 16px; } .platform-nav a:first-child { width:100%; } .metric-grid { grid-template-columns:repeat(2,1fr); } }
+@media(max-width:800px) { .cards,.two,.three { grid-template-columns:1fr; } .page { padding:28px 16px; } .panel { padding:18px; } .report-history-panel { padding:0; } .report-history-summary,.report-history-body { padding:18px; } .report-history-controls { align-items:flex-start; } .platform-nav { gap:12px; padding:12px 16px; } .platform-nav a:first-child { width:100%; } .metric-grid { grid-template-columns:repeat(2,1fr); } }
 @media(prefers-reduced-motion:reduce) { * { transition:none!important; } }

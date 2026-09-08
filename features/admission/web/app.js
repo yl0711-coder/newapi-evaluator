@@ -85,6 +85,9 @@ async function consume(response) {
 async function loadReportHistory() {
   const history = (await Workbench.api('./api/reports')).reports;
   const root = $('report-history');
+  $('report-history-count').textContent = history.length
+    ? `已保存 ${history.length} 条 · 最多保留最近 30 条`
+    : '暂无记录 · 最多保留最近 30 条';
   if (!history.length) { root.replaceChildren(Workbench.node('p','还没有准入报告记录。','empty')); return; }
   root.replaceChildren(...history.map(item => {
     const card = Workbench.node('article','','run-card');
