@@ -1,4 +1,4 @@
-"""Admission intake, human review, and Feishu outbox framework."""
+"""Admission channel and model-family recording for Feishu Bitable."""
 
 from .api import create_app
 

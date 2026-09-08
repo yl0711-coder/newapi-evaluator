@@ -6,7 +6,7 @@ import uvicorn
 
 
 def main() -> None:
-    parser = argparse.ArgumentParser(description="启动准入人工确认与飞书记录框架")
+    parser = argparse.ArgumentParser(description="启动准入渠道与测试分组飞书记录框架")
     parser.add_argument("--host", default="127.0.0.1")
     parser.add_argument("--port", type=int, default=8095)
     parser.add_argument("--reload", action="store_true")

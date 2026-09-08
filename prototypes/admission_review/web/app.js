@@ -1,5 +1,5 @@
 const $ = id => document.getElementById(id);
-let currentRun = null;
+let metadata = null;
 
 function node(tag, text = '', className = '') {
   const element = document.createElement(tag);
@@ -23,90 +23,85 @@ function show(message, error = false) {
   $('message').className = error ? 'error' : 'ok';
 }
 
-function renderRun() {
-  if (!currentRun) return;
-  $('test-card').hidden = false;
-  $('run-summary').textContent = `#${currentRun.id} · ${currentRun.channel_name} · ${currentRun.model} · ${currentRun.status}`;
-  const testing = currentRun.status === 'testing';
-  const reviewed = currentRun.status === 'reviewed';
-  $('test-complete').disabled = !testing;
-  $('test-failed').disabled = !testing;
-  $('review-card').hidden = !reviewed && currentRun.status !== 'awaiting_review';
-  $('reviewer').disabled = reviewed;
-  $('review-note').disabled = reviewed;
-  document.querySelectorAll('[name="decision"]').forEach(button => {
-    button.disabled = reviewed;
-  });
-  $('review-result').hidden = !reviewed;
-  if (reviewed) {
-    const decision = currentRun.review_decision === 'qualified' ? '合格' : '不合格';
-    $('review-result').textContent = `已由 ${currentRun.reviewer} 人工确认：${decision}`;
+function statusText(item) {
+  const labels = {
+    synced: '已写入飞书',
+    sending: '正在写入',
+    pending: '等待写入',
+    failed: '写入失败，可重试',
+    not_configured: '飞书尚未配置',
+  };
+  return labels[item.sync_status] || item.sync_status;
+}
+
+function updateGroupHint() {
+  const selected = metadata?.models.find(item => item.id === $('model').value);
+  $('group-preview').textContent = selected ? `将记录到分组：${selected.group}` : '';
+}
+
+async function retry(id) {
+  try {
+    const item = await api(`/api/participations/${id}/retry`, {method: 'POST'});
+    await loadParticipations();
+    show(statusText(item));
+  } catch (error) {
+    show(error.message, true);
   }
 }
 
-async function loadOutbox() {
-  const data = await api('/api/outbox');
-  const items = data.jobs.map(job => {
-    const card = node('article', '', 'outbox-item');
+async function loadParticipations() {
+  const data = await api('/api/participations');
+  const cards = data.participations.map(item => {
+    const card = node('article', '', 'record-item');
     card.append(
-      node('strong', `任务 #${job.id} · 准入 #${job.run_id}`),
-      node('span', `状态：${job.status} · 字段数：${Object.keys(job.payload.fields).length}`),
+      node('strong', item.channel_name),
+      node('span', `测试分组：${item.test_group}`),
+      node('span', `同步状态：${statusText(item)}`, `sync-${item.sync_status}`),
     );
+    if (metadata.feishu.configured && ['failed', 'not_configured'].includes(item.sync_status)) {
+      const button = node('button', '重试写入', 'secondary');
+      button.type = 'button';
+      button.addEventListener('click', () => retry(item.id));
+      card.append(button);
+    }
     return card;
   });
-  $('outbox').replaceChildren(...(items.length ? items : [node('p', '尚无待同步记录。', 'hint')]));
+  $('records').replaceChildren(
+    ...(cards.length ? cards : [node('p', '尚无准入参与记录。', 'hint')]),
+  );
 }
 
-$('start-form').addEventListener('submit', async event => {
+$('record-form').addEventListener('submit', async event => {
   event.preventDefault();
+  $('submit').disabled = true;
   try {
-    currentRun = await api('/api/runs', {method: 'POST', body: JSON.stringify({
-      channel_name: $('channel-name').value,
-      base_url: $('base-url').value,
-      api_key: $('api-key').value,
-      model: $('model').value,
-      protocol: $('protocol').value,
-    })});
-    $('api-key').value = '';
-    $('base-url').value = currentRun.channel_url;
-    $('reviewer').value = '';
-    $('review-note').value = '';
-    renderRun();
-    show('准入测试记录已创建，临时凭据未保存。');
-  } catch (error) { show(error.message, true); }
-});
-
-async function finish(outcome) {
-  try {
-    currentRun = await api(`/api/runs/${currentRun.id}/test-result`, {
-      method: 'POST',
-      body: JSON.stringify({outcome, summary: {framework_demo: true}}),
-    });
-    renderRun();
-    show('测试结果已记录，等待人工确认。');
-  } catch (error) { show(error.message, true); }
-}
-
-$('test-complete').addEventListener('click', () => finish('completed'));
-$('test-failed').addEventListener('click', () => finish('failed'));
-
-$('review-form').addEventListener('submit', async event => {
-  event.preventDefault();
-  const decision = event.submitter?.value;
-  if (!decision) return show('请选择人工判定结果。', true);
-  try {
-    currentRun = await api(`/api/runs/${currentRun.id}/review`, {
+    const item = await api('/api/participations', {
       method: 'POST',
       body: JSON.stringify({
-        decision,
-        reviewer: $('reviewer').value,
-        note: $('review-note').value,
+        channel: $('channel').value,
+        model: $('model').value,
       }),
     });
-    renderRun();
-    await loadOutbox();
-    show('人工判定已记录，飞书任务正在等待字段映射。');
-  } catch (error) { show(error.message, true); }
+    $('channel').value = '';
+    await loadParticipations();
+    show(`${item.channel_name} · ${item.test_group}：${statusText(item)}`);
+  } catch (error) {
+    show(error.message, true);
+  } finally {
+    $('submit').disabled = false;
+  }
 });
 
-loadOutbox().catch(error => show(error.message, true));
+(async () => {
+  metadata = await api('/api/meta');
+  $('model').replaceChildren(...metadata.models.map(item =>
+    new Option(`${item.group} · ${item.label}`, item.id),
+  ));
+  $('model').addEventListener('change', updateGroupHint);
+  updateGroupHint();
+  const fields = metadata.feishu.written_fields.join('、');
+  $('feishu-state').textContent = metadata.feishu.configured
+    ? `飞书已配置；程序只写入：${fields}。`
+    : `飞书尚未配置；当前会保留待写记录。程序只负责：${fields}。`;
+  await loadParticipations();
+})().catch(error => show(error.message, true));

@@ -1,36 +1,23 @@
-"""Field-mapping seam for the future Feishu Bitable integration.
-
-No business field is selected yet.  Human review creates an outbox intent, and
-this module will become the only place that turns a reviewed run into Feishu
-fields after the owner confirms the exact record schema.
-"""
+"""The complete application-owned Feishu field contract."""
 from __future__ import annotations
 
-from dataclasses import dataclass
-from typing import Any, Callable
+
+DEFAULT_CHANNEL_FIELD = "渠道"
+DEFAULT_GROUP_FIELD = "测试分组"
 
 
-@dataclass(frozen=True)
-class FieldMapping:
-    feishu_field: str
-    value: Callable[[dict[str, Any]], Any]
+def build_feishu_fields(
+    channel: str,
+    test_group: str,
+    *,
+    channel_field: str = DEFAULT_CHANNEL_FIELD,
+    group_field: str = DEFAULT_GROUP_FIELD,
+) -> dict[str, str]:
+    """Build exactly the two fields owned by the admission application.
 
-
-# Deliberately empty until the owner supplies the fields to record.
-FEISHU_FIELD_MAPPINGS: tuple[FieldMapping, ...] = ()
-
-
-def build_outbox_payload(run: dict[str, Any]) -> dict[str, Any]:
-    fields = {
-        item.feishu_field: item.value(run)
-        for item in FEISHU_FIELD_MAPPINGS
-    }
-    return {
-        "schema_version": 1,
-        "record_key": f"admission-run:{run['id']}",
-        "source_run_id": run["id"],
-        "mapping_status": (
-            "ready" if FEISHU_FIELD_MAPPINGS else "awaiting_field_definition"
-        ),
-        "fields": fields,
-    }
+    The human evaluation column is intentionally absent: it belongs entirely
+    to the Bitable operator and must never be read or overwritten here.
+    """
+    if channel_field == group_field:
+        raise ValueError("渠道字段和测试分组字段不能同名")
+    return {channel_field: channel, group_field: test_group}

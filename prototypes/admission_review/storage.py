@@ -8,49 +8,40 @@ from contextlib import contextmanager
 from pathlib import Path
 from typing import Any, Iterator
 
-from .mapping import build_outbox_payload
-
 
 SCHEMA = """
 PRAGMA foreign_keys=ON;
-CREATE TABLE IF NOT EXISTS admission_runs (
+CREATE TABLE IF NOT EXISTS admission_participations (
   id INTEGER PRIMARY KEY AUTOINCREMENT,
-  status TEXT NOT NULL,
   channel_name TEXT NOT NULL,
-  channel_url TEXT NOT NULL,
-  model TEXT NOT NULL,
-  protocol TEXT NOT NULL,
-  credential_supplied INTEGER NOT NULL,
-  test_outcome TEXT NOT NULL DEFAULT '',
-  test_summary_json TEXT NOT NULL DEFAULT '{}',
-  review_decision TEXT NOT NULL DEFAULT '',
-  review_note TEXT NOT NULL DEFAULT '',
-  reviewer TEXT NOT NULL DEFAULT '',
-  reviewed_at REAL,
+  test_group TEXT NOT NULL,
   created_at REAL NOT NULL,
   updated_at REAL NOT NULL
 );
-CREATE INDEX IF NOT EXISTS idx_framework_runs_created
-  ON admission_runs(created_at DESC,id DESC);
-CREATE TABLE IF NOT EXISTS feishu_outbox (
+CREATE INDEX IF NOT EXISTS idx_participations_created
+  ON admission_participations(created_at DESC,id DESC);
+CREATE TABLE IF NOT EXISTS feishu_participation_outbox (
   id INTEGER PRIMARY KEY AUTOINCREMENT,
-  run_id INTEGER NOT NULL UNIQUE,
-  provider TEXT NOT NULL DEFAULT 'feishu',
+  participation_id INTEGER NOT NULL UNIQUE,
   status TEXT NOT NULL,
-  record_key TEXT NOT NULL UNIQUE,
-  payload_json TEXT NOT NULL,
+  fields_json TEXT NOT NULL,
   attempts INTEGER NOT NULL DEFAULT 0,
   last_error TEXT NOT NULL DEFAULT '',
+  feishu_record_id TEXT NOT NULL DEFAULT '',
   created_at REAL NOT NULL,
   updated_at REAL NOT NULL,
-  FOREIGN KEY(run_id) REFERENCES admission_runs(id)
+  FOREIGN KEY(participation_id) REFERENCES admission_participations(id)
 );
-CREATE INDEX IF NOT EXISTS idx_framework_outbox_status
-  ON feishu_outbox(status,created_at,id);
+CREATE INDEX IF NOT EXISTS idx_participation_outbox_status
+  ON feishu_participation_outbox(status,created_at,id);
 """
 
 
-class FlowError(ValueError):
+class StoreError(ValueError):
+    pass
+
+
+class StoreConflict(StoreError):
     pass
 
 
@@ -75,6 +66,11 @@ class Store:
             self._connection.execute("PRAGMA secure_delete=ON")
             self._connection.execute("PRAGMA busy_timeout=5000")
             self._connection.executescript(SCHEMA)
+            self._connection.execute(
+                "UPDATE feishu_participation_outbox SET status='failed',"
+                "last_error='上次写入未完成，可安全重试',updated_at=? WHERE status='sending'",
+                (time.time(),),
+            )
             self._connection.commit()
             try:
                 self.db_path.chmod(0o600)
@@ -103,139 +99,126 @@ class Store:
                 current.close()
 
     @staticmethod
-    def _run_out(row: sqlite3.Row | None) -> dict[str, Any] | None:
+    def _entry_out(row: sqlite3.Row | None) -> dict[str, Any] | None:
         if row is None:
             return None
         result = dict(row)
-        result["credential_supplied"] = bool(result["credential_supplied"])
-        result["test_summary"] = json.loads(result.pop("test_summary_json"))
+        result["fields"] = json.loads(result.pop("fields_json"))
         return result
 
     @staticmethod
-    def _outbox_out(row: sqlite3.Row | None) -> dict[str, Any] | None:
-        if row is None:
-            return None
-        result = dict(row)
-        result["payload"] = json.loads(result.pop("payload_json"))
-        return result
+    def _select_sql() -> str:
+        return (
+            "SELECT p.id,p.channel_name,p.test_group,p.created_at,p.updated_at,"
+            "o.id AS outbox_id,o.status AS sync_status,o.fields_json,o.attempts,"
+            "o.last_error,o.feishu_record_id "
+            "FROM admission_participations p "
+            "JOIN feishu_participation_outbox o ON o.participation_id=p.id"
+        )
 
-    def create_run(self, channel: dict[str, Any]) -> dict[str, Any]:
+    def create(
+        self,
+        channel_name: str,
+        test_group: str,
+        fields: dict[str, str],
+        *,
+        delivery_configured: bool,
+    ) -> dict[str, Any]:
         now = time.time()
+        encoded = json.dumps(fields, ensure_ascii=False, separators=(",", ":"))
+        status = "pending" if delivery_configured else "not_configured"
         with self.cursor() as cur:
             cur.execute(
-                "INSERT INTO admission_runs(status,channel_name,channel_url,model,protocol,"
-                "credential_supplied,created_at,updated_at) VALUES(?,?,?,?,?,?,?,?)",
-                (
-                    "testing", channel["channel_name"], channel["base_url"],
-                    channel["model"], channel["protocol"],
-                    1 if channel["credential_supplied"] else 0, now, now,
-                ),
+                "INSERT INTO admission_participations(channel_name,test_group,created_at,updated_at) "
+                "VALUES(?,?,?,?)",
+                (channel_name, test_group, now, now),
             )
-            run_id = int(cur.lastrowid)
-            row = cur.execute("SELECT * FROM admission_runs WHERE id=?", (run_id,)).fetchone()
-        result = self._run_out(row)
+            participation_id = int(cur.lastrowid)
+            cur.execute(
+                "INSERT INTO feishu_participation_outbox(participation_id,status,fields_json,"
+                "created_at,updated_at) VALUES(?,?,?,?,?)",
+                (participation_id, status, encoded, now, now),
+            )
+            row = cur.execute(
+                f"{self._select_sql()} WHERE p.id=?", (participation_id,)
+            ).fetchone()
+        result = self._entry_out(row)
         assert result is not None
         return result
 
-    def get_run(self, run_id: int) -> dict[str, Any] | None:
-        with self.cursor() as cur:
-            row = cur.execute("SELECT * FROM admission_runs WHERE id=?", (run_id,)).fetchone()
-        return self._run_out(row)
-
-    def latest_run(self) -> dict[str, Any] | None:
+    def get(self, participation_id: int) -> dict[str, Any] | None:
         with self.cursor() as cur:
             row = cur.execute(
-                "SELECT * FROM admission_runs ORDER BY created_at DESC,id DESC LIMIT 1"
+                f"{self._select_sql()} WHERE p.id=?", (participation_id,)
             ).fetchone()
-        return self._run_out(row)
+        return self._entry_out(row)
 
-    def list_runs(self, limit: int = 50) -> list[dict[str, Any]]:
+    def latest(self) -> dict[str, Any] | None:
+        with self.cursor() as cur:
+            row = cur.execute(
+                f"{self._select_sql()} ORDER BY p.created_at DESC,p.id DESC LIMIT 1"
+            ).fetchone()
+        return self._entry_out(row)
+
+    def list(self, limit: int = 100) -> list[dict[str, Any]]:
         with self.cursor() as cur:
             rows = cur.execute(
-                "SELECT * FROM admission_runs ORDER BY created_at DESC,id DESC LIMIT ?",
-                (min(100, max(1, limit)),),
-            ).fetchall()
-        return [item for row in rows if (item := self._run_out(row)) is not None]
-
-    def finish_test(
-        self, run_id: int, outcome: str, summary: dict[str, Any],
-    ) -> dict[str, Any]:
-        encoded = json.dumps(summary, ensure_ascii=False, separators=(",", ":"))
-        now = time.time()
-        with self.cursor() as cur:
-            row = cur.execute("SELECT * FROM admission_runs WHERE id=?", (run_id,)).fetchone()
-            if row is None:
-                raise FlowError("准入测试记录不存在")
-            if row["status"] == "awaiting_review":
-                if row["test_outcome"] == outcome and row["test_summary_json"] == encoded:
-                    result = self._run_out(row)
-                    assert result is not None
-                    return result
-                raise FlowError("该准入测试已经提交人工确认")
-            if row["status"] != "testing":
-                raise FlowError("当前状态不能提交测试结果")
-            cur.execute(
-                "UPDATE admission_runs SET status='awaiting_review',test_outcome=?,"
-                "test_summary_json=?,updated_at=? WHERE id=?",
-                (outcome, encoded, now, run_id),
-            )
-            updated = cur.execute("SELECT * FROM admission_runs WHERE id=?", (run_id,)).fetchone()
-        result = self._run_out(updated)
-        assert result is not None
-        return result
-
-    def review(
-        self, run_id: int, decision: str, reviewer: str, note: str,
-    ) -> dict[str, Any]:
-        now = time.time()
-        with self.cursor() as cur:
-            row = cur.execute("SELECT * FROM admission_runs WHERE id=?", (run_id,)).fetchone()
-            if row is None:
-                raise FlowError("准入测试记录不存在")
-            existing = self._run_out(row)
-            assert existing is not None
-            if row["status"] == "reviewed":
-                if row["review_decision"] == decision:
-                    return existing
-                raise FlowError("该准入测试已经完成人工判定")
-            if row["status"] != "awaiting_review":
-                raise FlowError("必须先完成测试，才能进行人工判定")
-            reviewed = {
-                **existing,
-                "status": "reviewed",
-                "review_decision": decision,
-                "reviewer": reviewer,
-                "review_note": note,
-                "reviewed_at": now,
-                "updated_at": now,
-            }
-            payload = build_outbox_payload(reviewed)
-            outbox_status = (
-                "pending" if payload["mapping_status"] == "ready"
-                else "awaiting_field_mapping"
-            )
-            cur.execute(
-                "UPDATE admission_runs SET status='reviewed',review_decision=?,reviewer=?,"
-                "review_note=?,reviewed_at=?,updated_at=? WHERE id=?",
-                (decision, reviewer, note, now, now, run_id),
-            )
-            cur.execute(
-                "INSERT INTO feishu_outbox(run_id,status,record_key,payload_json,created_at,updated_at) "
-                "VALUES(?,?,?,?,?,?)",
-                (
-                    run_id, outbox_status, payload["record_key"],
-                    json.dumps(payload, ensure_ascii=False, separators=(",", ":")), now, now,
-                ),
-            )
-            updated = cur.execute("SELECT * FROM admission_runs WHERE id=?", (run_id,)).fetchone()
-        result = self._run_out(updated)
-        assert result is not None
-        return result
-
-    def list_outbox(self, limit: int = 100) -> list[dict[str, Any]]:
-        with self.cursor() as cur:
-            rows = cur.execute(
-                "SELECT * FROM feishu_outbox ORDER BY created_at DESC,id DESC LIMIT ?",
+                f"{self._select_sql()} ORDER BY p.created_at DESC,p.id DESC LIMIT ?",
                 (min(200, max(1, limit)),),
             ).fetchall()
-        return [item for row in rows if (item := self._outbox_out(row)) is not None]
+        return [item for row in rows if (item := self._entry_out(row)) is not None]
+
+    def begin_delivery(self, participation_id: int) -> dict[str, Any]:
+        now = time.time()
+        with self.cursor() as cur:
+            row = cur.execute(
+                "SELECT status FROM feishu_participation_outbox WHERE participation_id=?",
+                (participation_id,),
+            ).fetchone()
+            if row is None:
+                raise StoreError("准入参与记录不存在")
+            if row["status"] == "synced":
+                existing = self.get(participation_id)
+                assert existing is not None
+                return existing
+            if row["status"] == "sending":
+                raise StoreConflict("该记录正在写入飞书，请勿重复提交")
+            cur.execute(
+                "UPDATE feishu_participation_outbox SET status='sending',attempts=attempts+1,"
+                "last_error='',updated_at=? WHERE participation_id=?",
+                (now, participation_id),
+            )
+            updated = cur.execute(
+                f"{self._select_sql()} WHERE p.id=?", (participation_id,)
+            ).fetchone()
+        result = self._entry_out(updated)
+        assert result is not None
+        return result
+
+    def mark_synced(self, participation_id: int, record_id: str) -> dict[str, Any]:
+        now = time.time()
+        with self.cursor() as cur:
+            cur.execute(
+                "UPDATE feishu_participation_outbox SET status='synced',feishu_record_id=?,"
+                "last_error='',updated_at=? WHERE participation_id=?",
+                (record_id, now, participation_id),
+            )
+            if cur.rowcount != 1:
+                raise StoreError("准入参与记录不存在")
+        result = self.get(participation_id)
+        assert result is not None
+        return result
+
+    def mark_failed(self, participation_id: int, message: str) -> dict[str, Any]:
+        now = time.time()
+        with self.cursor() as cur:
+            cur.execute(
+                "UPDATE feishu_participation_outbox SET status='failed',last_error=?,updated_at=? "
+                "WHERE participation_id=?",
+                (message[:300], now, participation_id),
+            )
+            if cur.rowcount != 1:
+                raise StoreError("准入参与记录不存在")
+        result = self.get(participation_id)
+        assert result is not None
+        return result
