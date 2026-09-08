@@ -20,13 +20,26 @@ POLL_SECONDS = 15
 LEASE_SECONDS = 120
 HEARTBEAT_SECONDS = 30
 WEBHOOK_KEY = "feishu_webhook"
+MAX_CONCURRENT_PROBES = 2
 
 logger = logging.getLogger(__name__)
 _loop_task: asyncio.Task[None] | None = None
 _active: dict[int, asyncio.Task[None]] = {}
 _notifications: dict[int, asyncio.Task[None]] = {}
+_probe_semaphore: asyncio.Semaphore | None = None
+_probe_loop: asyncio.AbstractEventLoop | None = None
 _last_tick_at: float | None = None
 _last_retention_at: float | None = None
+
+
+def probe_semaphore() -> asyncio.Semaphore:
+    """Return the process-wide request limiter for the current event loop."""
+    global _probe_loop, _probe_semaphore
+    loop = asyncio.get_running_loop()
+    if _probe_semaphore is None or _probe_loop is not loop:
+        _probe_loop = loop
+        _probe_semaphore = asyncio.Semaphore(MAX_CONCURRENT_PROBES)
+    return _probe_semaphore
 
 
 def parse_daily_times(value: str) -> list[str]:
@@ -127,17 +140,27 @@ def _apply_speed_threshold(
     return output
 
 
-async def _measure_channel(run_id: int, channel: dict[str, Any], snapshot: dict[str, Any]) -> dict[str, Any]:
+async def _measure_channel(
+    run_id: int,
+    channel: dict[str, Any],
+    snapshot: dict[str, Any],
+    request_limit: asyncio.Semaphore | None = None,
+) -> dict[str, Any]:
     rounds = int(snapshot["rounds"])
     interval = float(snapshot["round_interval_seconds"])
     results: list[dict[str, Any]] = []
+    request_limit = request_limit or probe_semaphore()
     timeout = httpx.Timeout(connect=20, read=180, write=20, pool=20)
     async with httpx.AsyncClient(timeout=timeout, follow_redirects=False, trust_env=False, transport=guarded_transport()) as client:
+        async def run_limited(probe: dict[str, Any]) -> dict[str, Any]:
+            async with request_limit:
+                return await transport.run_probe(client, channel, probe)
+
         async def run_round(round_number: int) -> list[dict[str, Any]]:
             if round_number > 1 and interval:
                 await asyncio.sleep(interval * (round_number - 1))
             batch = await asyncio.gather(
-                *(transport.run_probe(client, channel, probe) for probe in transport.PROBES),
+                *(run_limited(probe) for probe in transport.PROBES),
                 return_exceptions=True,
             )
             round_results: list[dict[str, Any]] = []
@@ -403,10 +426,11 @@ async def execute_run(run_id: int) -> None:
             storage.finish_run(run_id, "failed", summary, "计划没有可用渠道")
             return
         semaphore = asyncio.Semaphore(int(snapshot["max_concurrency"]))
+        request_limit = probe_semaphore()
 
         async def worker(channel: dict[str, Any]) -> dict[str, Any]:
             async with semaphore:
-                return await _measure_channel(run_id, channel, snapshot)
+                return await _measure_channel(run_id, channel, snapshot, request_limit)
 
         channel_summaries = await asyncio.gather(*(worker(channel) for channel in channels))
         detail = storage.get_run(run_id)
@@ -501,6 +525,7 @@ def status() -> dict[str, Any]:
         "running": bool(_loop_task and not _loop_task.done()),
         "active_runs": len(_active),
         "active_notifications": len(_notifications),
+        "max_concurrent_probes": MAX_CONCURRENT_PROBES,
         "last_tick_at": _last_tick_at,
         "retention_days": RETENTION_DAYS,
     }

@@ -88,17 +88,25 @@ async def protocol_checks() -> None:
 async def round_checks(run_id: int, channel_id: int, snapshot: dict[str, object]) -> None:
     original = transport.run_probe
     starts: list[tuple[str, float]] = []
+    active = 0
+    peak_active = 0
 
     async def fake_probe(_client: object, _channel: dict, probe: dict) -> dict[str, object]:
+        nonlocal active, peak_active
         starts.append((probe["id"], time.perf_counter()))
-        await asyncio.sleep(0.08)
-        return {
-            "probe_id": probe["id"], "probe_name": probe["name"], "ok": True,
-            "status": "completed", "latency_ms": 80, "ttft_ms": 10,
-            "tokens_per_second": 20.0, "output_tokens": 10, "finish_reason": "stop",
-            "actual_model": "selftest-model", "usage_complete": True,
-            "model_mismatch": False, "error": "",
-        }
+        active += 1
+        peak_active = max(peak_active, active)
+        try:
+            await asyncio.sleep(0.08)
+            return {
+                "probe_id": probe["id"], "probe_name": probe["name"], "ok": True,
+                "status": "completed", "latency_ms": 80, "ttft_ms": 10,
+                "tokens_per_second": 20.0, "output_tokens": 10, "finish_reason": "stop",
+                "actual_model": "selftest-model", "usage_complete": True,
+                "model_mismatch": False, "error": "",
+            }
+        finally:
+            active -= 1
 
     fast_snapshot = {**snapshot, "rounds": 3, "round_interval_seconds": 0.02}
     transport.run_probe = fake_probe
@@ -114,10 +122,13 @@ async def round_checks(run_id: int, channel_id: int, snapshot: dict[str, object]
     connect_starts = [value for probe_id, value in starts if probe_id == "connect"]
     check("三轮共执行 18 个请求", len(starts) == 18 and summary["total"] == 18, len(starts))
     check(
-        "三轮按间隔错峰并可重叠",
-        len(connect_starts) == 3
-        and 0.01 < connect_starts[1] - connect_starts[0] < 0.06
-        and 0.03 < connect_starts[2] - connect_starts[0] < 0.10,
+        "巡检题目全局最多并发 2 个",
+        peak_active == scheduler.MAX_CONCURRENT_PROBES == 2,
+        peak_active,
+    )
+    check(
+        "并发受限时三轮仍完整执行",
+        len(connect_starts) == 3 and connect_starts == sorted(connect_starts),
         connect_starts,
     )
 
