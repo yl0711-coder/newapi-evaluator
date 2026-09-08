@@ -119,7 +119,11 @@ async def health() -> JSONResponse:
 @app.get("/api/meta")
 async def meta() -> JSONResponse:
     return JSONResponse({
-        "test_pack": {"version": transport.INSPECT_VERSION, "requests_per_round": len(transport.PROBES)},
+        "test_pack": {
+            "version": transport.INSPECT_VERSION,
+            "requests_per_round": len(transport.PROBES),
+            "max_concurrent_probes": scheduler.MAX_CONCURRENT_PROBES,
+        },
         "default_timezone": TIMEZONE,
     })
 

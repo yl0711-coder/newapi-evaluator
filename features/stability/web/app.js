@@ -1,4 +1,7 @@
-const state = { inventory: [], channels: [], schedules: [], runs: [], reportGroups: [] };
+const state = {
+  inventory: [], channels: [], schedules: [], runs: [], reportGroups: [],
+  maxConcurrentProbes: 2,
+};
 const $ = (selector) => document.querySelector(selector);
 const $$ = (selector) => [...document.querySelectorAll(selector)];
 
@@ -43,9 +46,14 @@ async function loadHealth() {
   try {
     const data = await api("/api/health");
     const okay = data.status === "ok";
+    const configuredLimit = Number(data.scheduler.max_concurrent_probes);
+    if (Number.isInteger(configuredLimit) && configuredLimit > 0) {
+      state.maxConcurrentProbes = configuredLimit;
+      $("#probe-concurrency-hint").textContent = `实际请求全局最多同时执行 ${configuredLimit} 个`;
+    }
     $("#health-card").classList.toggle("bad", !okay);
     $("#health-label").textContent = okay ? "服务正常" : "服务降级";
-    $("#health-detail").textContent = `${data.scheduler.active_runs} 个任务运行中`;
+    $("#health-detail").textContent = `${data.scheduler.active_runs} 个任务运行中 · 请求最多 ${state.maxConcurrentProbes} 并发`;
   } catch {
     $("#health-card").classList.add("bad");
     $("#health-label").textContent = "无法连接";
@@ -152,7 +160,7 @@ function renderSchedules() {
     const card = text("article", "", "panel");
     card.append(text("h3", schedule.name));
     const reportDelay = Number(schedule.notification_delay_seconds || 0) / 60;
-    card.append(text("p", `${schedule.daily_times} · ${schedule.timezone} · ${schedule.rounds} 轮 · 开始后 ${reportDelay} 分钟发报告`));
+    card.append(text("p", `${schedule.daily_times} · ${schedule.timezone} · ${schedule.rounds} 轮 · 请求全局最多 ${state.maxConcurrentProbes} 并发 · 开始后 ${reportDelay} 分钟发报告`));
     const names = schedule.channel_ids.map((id) => state.channels.find((item) => item.id === id)?.name || `#${id}`);
     card.append(text("p", `渠道：${names.join("、")} · ${schedule.enabled ? "已启用" : "已停用"}`));
     const speedRule = schedule.speed_threshold_mode === "adaptive"
