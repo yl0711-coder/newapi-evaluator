@@ -20,6 +20,7 @@ from main import (
     measure_side,
     parse_stream_line,
 )
+from feishu import BitableWriter, FeishuSettings, build_fields, group_for_model
 
 
 class QuestionBankTests(unittest.TestCase):
@@ -374,6 +375,72 @@ class StreamingMeasurementTests(unittest.IsolatedAsyncioTestCase):
         )
         self.assertTrue(finished["ok"])
         self.assertEqual(finished["status"], "completed")
+
+
+class FeishuAdmissionTests(unittest.IsolatedAsyncioTestCase):
+    def settings(self) -> FeishuSettings:
+        return FeishuSettings(
+            app_id="test-app",
+            app_secret="synthetic-" + "app-secret",
+            app_token="test_app_token",
+            table_id="test_table_id",
+        )
+
+    async def test_model_family_and_two_field_contract(self) -> None:
+        expected = {
+            "gpt-5.6-sol": "Codex",
+            "claude-opus-5": "Claude",
+            "glm-5.3": "智谱",
+            "kimi-k3": "Kimi",
+            "deepseek-v4-pro": "DeepSeek",
+        }
+        for model, group in expected.items():
+            self.assertEqual(group_for_model(model), group)
+        self.assertEqual(group_for_model("custom-model"), "未识别")
+        self.assertEqual(
+            build_fields("https://candidate.example/v1", "Claude", self.settings()),
+            {"渠道": "https://candidate.example/v1", "测试分组": "Claude"},
+        )
+
+    async def test_bitable_request_contains_no_human_result_field(self) -> None:
+        tenant_token = "synthetic-" + "tenant-token"
+        requests: list[httpx.Request] = []
+
+        def handler(request: httpx.Request) -> httpx.Response:
+            requests.append(request)
+            if request.url.path.endswith("/tenant_access_token/internal"):
+                return httpx.Response(200, json={
+                    "code": 0,
+                    "tenant_access_token": tenant_token,
+                    "expire": 7200,
+                })
+            self.assertEqual(
+                request.url.path,
+                "/open-apis/bitable/v1/apps/test_app_token/tables/test_table_id/records",
+            )
+            self.assertEqual(request.headers["Authorization"], f"Bearer {tenant_token}")
+            self.assertEqual(
+                json.loads(request.content),
+                {
+                    "fields": {
+                        "渠道": "https://candidate.example/v1",
+                        "测试分组": "Claude",
+                    }
+                },
+            )
+            self.assertNotIn("人工评判结果", json.loads(request.content)["fields"])
+            return httpx.Response(200, json={
+                "code": 0,
+                "data": {"record": {"record_id": "record-from-feishu"}},
+            })
+
+        writer = BitableWriter(self.settings(), transport=httpx.MockTransport(handler))
+        record_id = await writer.create_record({
+            "渠道": "https://candidate.example/v1",
+            "测试分组": "Claude",
+        })
+        self.assertEqual(record_id, "record-from-feishu")
+        self.assertEqual(len(requests), 2)
 
 
 class FrontendSafetyTests(unittest.TestCase):

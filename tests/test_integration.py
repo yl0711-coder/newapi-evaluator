@@ -10,6 +10,13 @@ _root = tempfile.TemporaryDirectory(prefix="workbench-tests-")
 os.environ["PLATFORM_DATA_DIR"] = _root.name
 os.environ.pop("PLATFORM_USERNAME", None)
 os.environ.pop("PLATFORM_PASSWORD", None)
+for _name in (
+    "ADMISSION_FEISHU_APP_ID",
+    "ADMISSION_FEISHU_APP_SECRET",
+    "ADMISSION_FEISHU_APP_TOKEN",
+    "ADMISSION_FEISHU_TABLE_ID",
+):
+    os.environ.pop(_name, None)
 
 import httpcore
 import httpx
@@ -19,9 +26,11 @@ from shared.network import PublicNetwork
 from shared.scheduler_lock import scheduler_lock
 from shared.redaction import EventRedactor
 from features.admission import api as admission
+from features.admission import feishu as admission_feishu
 from features.admission import storage as admission_storage
 from features.reasoning import main as reasoning
 from features.stability.app import storage, scheduler
+from scripts.admission_channel_snapshot import sanitized_snapshot
 from workbench import create_app
 
 
@@ -47,6 +56,8 @@ class IntegrationTests(unittest.IsolatedAsyncioTestCase):
         admission_storage.close()
         storage.close()
         admission.app.state.upstream_transport = None
+        admission.app.state.feishu_settings = admission_feishu.FeishuSettings()
+        admission.app.state.feishu_writer = None
         reasoning.app.state.upstream_transport = None
         await self.client.aclose()
         self.temp.cleanup()
@@ -92,6 +103,91 @@ class IntegrationTests(unittest.IsolatedAsyncioTestCase):
             self.assertNotIn(self.key.encode(), path.read_bytes())
         self.assertEqual(storage.list_channels(), [])
         self.assertEqual(storage.list_schedules(), [])
+
+    async def test_valid_admission_submission_queues_url_and_model_family(self):
+        calls = []
+
+        class Writer:
+            async def create_record(self, fields):
+                calls.append(fields)
+                return "test-record-id"
+
+        candidate = {
+            **self.candidate(),
+            "base_url": "https://candidate.example/v1",
+            "model": "claude-opus-5",
+            "protocol": "anthropic",
+        }
+        admission.app.state.feishu_settings = admission_feishu.FeishuSettings()
+        admission.app.state.feishu_writer = Writer()
+
+        async def fake_run_question(body, question, client):
+            for side in ("candidate", "reference"):
+                yield {
+                    "type": "side_finished",
+                    "question_id": question["id"],
+                    "side": side,
+                    "ok": True,
+                    "status": "completed",
+                }
+
+        with patch.object(admission.engine, "run_question", fake_run_question), patch.object(
+            admission.engine, "wait_between_questions", new=AsyncMock()
+        ):
+            response = await self.client.post(
+                "/admission/api/compare",
+                json={"candidate": candidate, "reference": self.selection(), "rounds": 1},
+            )
+        self.assertEqual(response.status_code, 200, response.text)
+        if admission._feishu_tasks:
+            await asyncio.gather(*tuple(admission._feishu_tasks))
+        entry = admission_storage.latest_feishu_record()
+        assert entry is not None
+        self.assertEqual(entry["channel_url"], "https://candidate.example/v1")
+        self.assertEqual(entry["test_group"], "Claude")
+        self.assertEqual(entry["status"], "synced")
+        self.assertEqual(
+            calls,
+            [{"渠道": "https://candidate.example/v1", "测试分组": "Claude"}],
+        )
+        self.assertNotIn("人工评判结果", entry["fields"])
+        snapshot = sanitized_snapshot(entry)
+        self.assertEqual(snapshot["test_group"], "Claude")
+        self.assertNotIn(entry["channel_url"], json.dumps(snapshot, ensure_ascii=False))
+
+    async def test_feishu_failure_does_not_block_admission_submission(self):
+        class FailingWriter:
+            async def create_record(self, fields):
+                raise admission_feishu.FeishuError("飞书网络请求失败：synthetic")
+
+        candidate = {**self.candidate(), "model": "gpt-5.6-sol"}
+        admission.app.state.feishu_settings = admission_feishu.FeishuSettings()
+        admission.app.state.feishu_writer = FailingWriter()
+
+        async def fake_run_question(body, question, client):
+            for side in ("candidate", "reference"):
+                yield {
+                    "type": "side_finished",
+                    "question_id": question["id"],
+                    "side": side,
+                    "ok": True,
+                    "status": "completed",
+                }
+
+        with patch.object(admission.engine, "run_question", fake_run_question), patch.object(
+            admission.engine, "wait_between_questions", new=AsyncMock()
+        ):
+            response = await self.client.post(
+                "/admission/api/compare",
+                json={"candidate": candidate, "reference": self.selection(), "rounds": 1},
+            )
+        self.assertEqual(response.status_code, 200, response.text)
+        if admission._feishu_tasks:
+            await asyncio.gather(*tuple(admission._feishu_tasks))
+        entry = admission_storage.latest_feishu_record()
+        assert entry is not None
+        self.assertEqual(entry["status"], "failed")
+        self.assertEqual(entry["test_group"], "Codex")
 
     async def test_frontend_create_online_edit_keep_key_and_reject_stale_edit(self):
         response = await self.client.post("/api/registry/channels", json={**self.record,"base_url":"https://second.example/v1"})
@@ -366,6 +462,7 @@ class IntegrationTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(response.status_code,400)
         response = await self.client.post("/admission/api/compare",json={"candidate":self.candidate(),"reference":self.selection()})
         self.assertEqual(response.status_code,400)
+        self.assertIsNone(admission_storage.latest_feishu_record())
 
     async def test_authentication_and_cross_site_writes(self):
         with patch.dict(os.environ,{"PLATFORM_USERNAME":"admin","PLATFORM_PASSWORD":"long-enough-test-password"}):

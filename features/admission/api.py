@@ -1,3 +1,4 @@
+import asyncio
 from contextlib import asynccontextmanager
 from pathlib import Path
 from typing import Any, AsyncIterator, Literal
@@ -12,7 +13,10 @@ from shared.api import Selection, resolve
 from shared.network import guarded_transport
 from shared.redaction import EventRedactor
 from shared.registry import RegistryError, normalize
-from . import main as engine, storage
+from . import feishu, main as engine, storage
+
+
+_feishu_tasks: set[asyncio.Task[None]] = set()
 
 
 class CandidateInput(BaseModel):
@@ -84,17 +88,65 @@ def _contains_secret_field(value: Any) -> bool:
     return False
 
 
+async def _deliver_feishu_record(entry_id: int) -> None:
+    writer = app.state.feishu_writer
+    if writer is None:
+        return
+    try:
+        entry = storage.begin_feishu_delivery(entry_id)
+        if entry["status"] == "synced":
+            return
+        record_id = await writer.create_record(entry["fields"])
+        storage.finish_feishu_delivery(entry_id, record_id)
+    except (feishu.FeishuError, ValueError) as exc:
+        storage.fail_feishu_delivery(entry_id, str(exc))
+    except (KeyError, RuntimeError):
+        return
+    except Exception as exc:
+        storage.fail_feishu_delivery(entry_id, f"飞书写入内部错误：{type(exc).__name__}")
+
+
+def _schedule_feishu_record(entry_id: int) -> None:
+    if app.state.feishu_writer is None:
+        return
+    task = asyncio.create_task(_deliver_feishu_record(entry_id))
+    _feishu_tasks.add(task)
+    task.add_done_callback(_finish_feishu_task)
+
+
+def _finish_feishu_task(task: asyncio.Task[None]) -> None:
+    _feishu_tasks.discard(task)
+    try:
+        task.result()
+    except Exception:
+        pass
+
+
 @asynccontextmanager
 async def lifespan(_app):
     storage.init()
+    storage.recover_feishu_deliveries()
+    settings = feishu.FeishuSettings.from_env()
+    app.state.feishu_settings = settings
+    try:
+        app.state.feishu_writer = feishu.BitableWriter(settings) if settings.configured else None
+    except ValueError:
+        app.state.feishu_writer = None
+    for entry in storage.list_unsynced_feishu_records():
+        _schedule_feishu_record(entry["id"])
     try:
         yield
     finally:
+        if _feishu_tasks:
+            await asyncio.gather(*tuple(_feishu_tasks), return_exceptions=True)
+        app.state.feishu_writer = None
         storage.close()
 
 
 app = FastAPI(docs_url=None, redoc_url=None, openapi_url=None, lifespan=lifespan)
 app.state.upstream_transport = None
+app.state.feishu_settings = feishu.FeishuSettings()
+app.state.feishu_writer = None
 app.get("/api/meta")(engine.meta)
 
 
@@ -120,6 +172,21 @@ async def compare(body: CompareInput, request: Request):
     candidate = {"base_url": clean["base_url"], "api_key": clean["api_key"],
                  "model": body.candidate.model, "protocol": body.candidate.protocol}
     reference = resolve(body.reference)
+    test_group = feishu.group_for_model(body.candidate.model)
+    try:
+        fields = feishu.build_fields(clean["base_url"], test_group, app.state.feishu_settings)
+    except ValueError:
+        fields = {
+            feishu.DEFAULT_CHANNEL_FIELD: clean["base_url"],
+            feishu.DEFAULT_GROUP_FIELD: test_group,
+        }
+    entry = storage.enqueue_feishu_record(
+        clean["base_url"],
+        test_group,
+        fields,
+        delivery_configured=app.state.feishu_writer is not None,
+    )
+    _schedule_feishu_record(entry["id"])
     run = engine.CompareRequest(candidate=engine.EndpointConfig(**candidate),
                                 reference=engine.EndpointConfig(**reference), rounds=body.rounds)
     redactor = EventRedactor([candidate["api_key"], reference["api_key"]])
