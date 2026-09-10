@@ -80,11 +80,12 @@ def main():
     for r in results:
         lines.append(f"| {r['check']} | {r['exit_code']} | {r['seconds']:.2f} | {r['check']}.log |")
     lines += ['', '## 结论', '', '通过' if passed else '失败', '',
-              'Mock功能与独立验收完成，真实环境验证尚未开始。' if passed else '本提交未通过独立验收，返回开发目录修复后对新 SHA 重验。', '',
+              '本提交的 Mock 功能与独立验收完成；本次未对真实上游发起验证请求。' if passed else '本提交未通过独立验收，返回开发目录修复后对新 SHA 重验。', '',
               '- 五种模式均为本地 Mock；gateway 阶梯覆盖 10、20、50、100、200、400、800、1200。',
               '- Ctrl+C 部分报告、检查点恢复、脱敏与安全边界由自动测试复核。',
               '- 验收目录保持干净 detached HEAD；未修改业务代码、未 push、PR 或合并。',
-              '- 前端 JavaScript 语法检查：不适用，本项目为 Python CLI，无前端 JavaScript。',
+              '- 前端 JavaScript 语法检查：已列入 javascript 验收项，结果见上表与 javascript.log。',
+              '- 持续模式验证并发 1、3、5 的请求补发、接收重叠与完整时长；结果见 sustained/summary.json。',
               '- Mock 崩溃为本地短暂不可用模拟；未终止真实网关进程。',
               '- 真实 Sub2API 调度、真实账号和真实网关容量均未验证。', '']
     (output / 'acceptance-report.md').write_text('\n'.join(lines))
