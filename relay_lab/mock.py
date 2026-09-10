@@ -41,6 +41,7 @@ class MockServer:
         self.cursor = 0
         self.executions = {}
         self.requests_received = 0
+        self.slot_changed = asyncio.Condition()
 
     async def start(self, port=0):
         self.server = await asyncio.start_server(self._accept, '127.0.0.1', port, backlog=4096)
@@ -142,7 +143,20 @@ class MockServer:
         if now < self.outage_until:
             await self._json(writer, 503, {}, {'X-Relay-Collapse': '1'})
             return
-        index = self._pick(headers.get('x-relay-account'))
+        if self.config.get('admission_policy') == 'queue':
+            try:
+                async with asyncio.timeout(self.config['queue_timeout']):
+                    async with self.slot_changed:
+                        while True:
+                            index = self._pick(headers.get('x-relay-account'))
+                            if index is not None and self.accounts[index].active < self.accounts[index].capacity:
+                                break
+                            await self.slot_changed.wait()
+            except TimeoutError:
+                await self._json(writer, 429, {})
+                return
+        else:
+            index = self._pick(headers.get('x-relay-account'))
         if index is None:
             await self._json(writer, 429, {}, {'Retry-After': '0.04'})
             return
@@ -219,3 +233,5 @@ class MockServer:
         finally:
             self.active -= 1
             account.active -= 1
+            async with self.slot_changed:
+                self.slot_changed.notify_all()

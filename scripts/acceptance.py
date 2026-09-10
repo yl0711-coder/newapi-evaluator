@@ -34,13 +34,16 @@ def main():
     env = {**os.environ, 'PYTHONDONTWRITEBYTECODE': '1', 'TMPDIR': str(tmp)}
     commands = [
         ('inspect', [sys.executable, '-m', 'relay_lab', 'inspect-config', '--config', 'config.example.yaml']),
-        ('focused', [sys.executable, '-m', 'unittest', 'tests.test_sustained', 'tests.test_protocol', 'tests.test_modes_recovery', '-v']),
+        ('focused', [sys.executable, '-m', 'unittest', 'tests.test_mixed_burst', 'tests.test_sustained', 'tests.test_protocol', 'tests.test_modes_recovery', '-v']),
         ('full', [sys.executable, 'scripts/test_all.py']),
         ('security', [sys.executable, 'scripts/repo_security_scan.py', '.']),
         ('javascript', ['node', '--check', 'relay_lab/web/app.js']),
+        ('ui-contract', ['node', 'scripts/test_web.js']),
         ('e2e', [sys.executable, 'scripts/e2e.py', '--output', str(output / 'examples')]),
         ('sustained-cli', [sys.executable, '-m', 'relay_lab', 'account-test', '--config', 'configs/sustained.yaml',
                            '--output', str(output / 'sustained')]),
+        ('mixed-burst-cli', [sys.executable, '-m', 'relay_lab', 'account-test', '--config', 'configs/mixed-burst.yaml',
+                            '--output', str(output / 'mixed-burst')]),
     ]
     results = []
     for name, command in commands:
@@ -62,12 +65,19 @@ def main():
                            and s['occupancy']['mean_inflight'] >= .9 * s['concurrency']
                            and s['occupancy']['peak_receiving'] == s['concurrency'] for s in sustained['stages'])
         sustained_ok = sustained_ok and len(sustained['stages']) == 3 and sustained['revision']['commit_sha'] == sha
-    passed = len(results) == len(commands) and all(r['exit_code'] == 0 for r in results) and clean and unchanged and sustained_ok
+    burst_ok = False
+    if (output / 'mixed-burst/summary.json').exists():
+        mixed = json.loads((output / 'mixed-burst/summary.json').read_text())
+        b = mixed.get('analysis', {}).get('burst', {})
+        burst_ok = (mixed['revision']['commit_sha'] == sha and mixed['result_count'] == 10 and not mixed['recoveries']
+                    and b.get('peak_receiving') == 5 and b.get('received_output_requests') == 10
+                    and any(e['waiting_labels'] and e['later_output'] for e in b.get('release_observations', [])))
+    passed = len(results) == len(commands) and all(r['exit_code'] == 0 for r in results) and clean and unchanged and sustained_ok and burst_ok
     value = {'commit_sha': sha, 'checks': results, 'complete': True, 'passed': passed,
              'detached_head': not git('branch', '--show-current'), 'clean_worktree': clean,
              'head_unchanged': unchanged, 'remotes': git('remote').splitlines(),
              'environment': {'python': platform.python_version(), 'os': platform.platform(), 'interpreter': sys.executable},
-             'real_environment_validated': False, 'sustained_occupancy_verified': sustained_ok}
+             'real_environment_validated': False, 'sustained_occupancy_verified': sustained_ok, 'mixed_burst_verified': burst_ok}
     atomic_json(output / 'acceptance.json', value)
     lines = ['# 独立测试报告', '', '- PR：不适用，本项目仅本地 Git，未创建 PR。',
              '- 分支：开发 feature/mock-capacity-lab；本副本 detached HEAD。',
@@ -86,6 +96,7 @@ def main():
               '- 验收目录保持干净 detached HEAD；未修改业务代码、未 push、PR 或合并。',
               '- 前端 JavaScript 语法检查：已列入 javascript 验收项，结果见上表与 javascript.log。',
               '- 持续模式验证并发 1、3、5 的请求补发、接收重叠与完整时长；结果见 sustained/summary.json。',
+              '- 固定混合批次验证 2 短、2 中、6 长同时发出，容量 5 的 Mock 排队释放、不补发及逐条时间线；见 mixed-burst/summary.json。',
               '- Mock 崩溃为本地短暂不可用模拟；未终止真实网关进程。',
               '- 真实 Sub2API 调度、真实账号和真实网关容量均未验证。', '']
     (output / 'acceptance-report.md').write_text('\n'.join(lines))

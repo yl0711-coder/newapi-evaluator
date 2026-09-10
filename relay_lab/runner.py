@@ -3,6 +3,7 @@ import copy
 import hashlib
 import os
 import time
+import threading
 import uuid
 from contextlib import asynccontextmanager, nullcontext
 
@@ -29,6 +30,8 @@ class Lab:
         self.stages = []
         self.live_occupancy = None
         self.current_phase = 'preparing'
+        self.burst_rows = {}
+        self.burst_lock = threading.RLock()
         self.recoveries = []
         self.started = time.time()
         self.network = {'loopback_connections': 0, 'blocked_external_attempts': 0}
@@ -46,7 +49,8 @@ class Lab:
                 async with OpenAIAdapter(self.cfg['base_url'] or mock.base_url,
                                          timeout=self.cfg['timeout'], connection_limit=self.cfg['connection_limit'],
                                          confirm_live=self.confirm_live, api_key=(self.api_key if self.api_key is not None else os.environ.get('RELAY_LAB_API_KEY')) if self.confirm_live else None,
-                                         model=self.cfg.get('model', 'relay-lab-model')) as adapter:
+                                         model=self.cfg.get('model', 'relay-lab-model'),
+                                         burst_timeouts=self.cfg['mixed_burst'] if self.cfg['mixed_burst']['enabled'] else None) as adapter:
                     yield adapter, mock
         finally:
             if mock:
@@ -155,7 +159,72 @@ class Lab:
                 times.append(rec['recovery_time'])
         return group, limits(group, max(times) if times else None)
 
+    def burst_snapshot(self):
+        from .burst import snapshot
+        with self.burst_lock:
+            return snapshot(list(self.burst_rows.values()), self.cfg['mixed_burst'])
+
+    async def mixed_burst(self):
+        from .burst import plan
+        cfg = self.cfg['mixed_burst']
+        requests = plan(cfg)
+        concurrency = len(requests)
+        rows = []
+        async with self.target() as (adapter, mock):
+            label = f'mixed-c{concurrency}'
+            occupancy = Occupancy(label, concurrency)
+            adapter.occupancy = self.live_occupancy = occupancy
+            self.current_phase = 'mixed_burst'
+            def track(result):
+                with self.burst_lock:
+                    self.burst_rows[result.request_id] = result.public()
+            adapter.on_progress = track
+            monitor = Monitor(adapter, mock is not None)
+            monitoring = asyncio.create_task(monitor.run())
+            launch = asyncio.Event()
+            async def worker(spec):
+                await launch.wait()
+                if self.stop.is_set():
+                    return
+                result = await adapter.request(label, concurrency, workload=spec['profile'], output_tokens=spec['output_limit'],
+                                               limit_field=self.cfg['workload']['limit_field'], burst_label=spec['label'],
+                                               account=0 if adapter.is_mock else None)
+                rows.append(result)
+                self.artifacts.append(result)
+            tasks = [asyncio.create_task(worker(spec)) for spec in requests]
+            group = asyncio.gather(*tasks)
+            cancelled = asyncio.create_task(self.stop.wait())
+            start = time.perf_counter()
+            launch.set()
+            try:
+                await asyncio.wait((group, cancelled), return_when=asyncio.FIRST_COMPLETED)
+                if self.stop.is_set():
+                    for task in tasks:
+                        task.cancel()
+                await group
+            finally:
+                cancelled.cancel()
+                for task in tasks:
+                    if not task.done():
+                        task.cancel()
+                await asyncio.gather(cancelled, *tasks, return_exceptions=True)
+                monitor.running = False
+                await monitoring
+                occupancy.finish('stopped' if self.stop.is_set() else 'batch_complete')
+                adapter.on_progress = None
+            stage = stage_summary(label, concurrency, rows, time.perf_counter() - start, self.cfg['min_samples'])
+            stage.update({'load_mode': 'mixed_burst', 'workload_profile': 'mixed', 'output_limit': None,
+                          'occupancy': occupancy.snapshot(), 'resources': monitor.summary(),
+                          'max_observed_inflight': mock.peak_active if mock else adapter.peak_active})
+            self.stages.append(stage)
+        # A fixed mixed cohort observes admission/queuing; it cannot establish a stable capacity limit.
+        return {'max_stable_concurrency': None, 'capacity_limit_determined': False, 'low_confidence': True,
+                'concurrency_scope': 'client_requests_only', 'upstream_account_occupancy_verified': False,
+                'burst': self.burst_snapshot()}
+
     async def account(self):
+        if self.cfg['mixed_burst']['enabled']:
+            return await self.mixed_burst()
         async with self.target() as (adapter, mock):
             stages, analysis = await self.sweep(adapter, mock, 'account', self.cfg['stages'], account=0 if adapter.is_mock else None,
                                               duration=self.cfg['stage_duration'], workload=self.cfg['workload']['profile'],
@@ -167,6 +236,8 @@ class Lab:
             return analysis
 
     async def gateway(self):
+        if self.cfg['mixed_burst']['enabled']:
+            return await self.mixed_burst()
         cfg = copy.deepcopy(self.cfg['mock'])
         # An unlimited virtual upstream removes account capacity from the gateway test.
         cfg['accounts'] = [{'capacity': max(self.cfg['gateway_stages']) * 2,
@@ -304,8 +375,11 @@ class Lab:
         status = 'completed'
         analysis = {}
         atomic_json(self.artifacts.output / 'run.json', {'revision': self.revision, 'mode': mode,
-                    'environment': 'live' if self.confirm_live else 'mock', 'started_at': self.started})
+                    'environment': 'live' if self.confirm_live else 'mock', 'started_at': self.started,
+                    'mixed_burst': self.cfg['mixed_burst'] if self.cfg['mixed_burst']['enabled'] else None})
         try:
+            if self.cfg['mixed_burst']['enabled'] and mode not in ('account-test', 'gateway-test'):
+                raise ValueError('Mixed burst is supported only for account and gateway modes')
             method = {'account-test': self.account, 'pool-test': self.pool, 'gateway-test': self.gateway,
                       'long-task-test': self.long_task, 'chaos-test': self.chaos}[mode]
             analysis = await method()
@@ -317,7 +391,7 @@ class Lab:
         finally:
             if self.stop.is_set():
                 status = 'interrupted'
-            summary = {'schema_version': 2, 'mode': mode, 'environment': 'live' if self.confirm_live else 'mock',
+            summary = {'schema_version': 3, 'mode': mode, 'environment': 'live' if self.confirm_live else 'mock',
                        'status': status, 'revision': self.revision, 'started_at': self.started,
                        'elapsed_seconds': time.time() - self.started, 'result_count': self.artifacts.count,
                        'stages': self.stages, 'analysis': analysis, 'recoveries': self.recoveries,

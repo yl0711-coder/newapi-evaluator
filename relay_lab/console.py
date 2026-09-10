@@ -41,7 +41,10 @@ def run_config(body):
     profile = body.get('workload_profile', 'short')
     output_tokens = body.get('output_tokens', 1024)
     limit_field = body.get('limit_field', 'max_tokens')
-    if load_mode not in ('requests', 'duration') or profile not in ('short', 'long'):
+    if load_mode == 'mixed_burst':
+        # Hidden legacy controls do not participate in fixed-cohort validation.
+        stages, samples, timeout, duration, cap, profile, output_tokens = [1], 8, 90 if live else 1, 60, 1000, 'short', 1024
+    if load_mode not in ('requests', 'duration', 'mixed_burst') or profile not in ('short', 'long'):
         raise ValueError('请选择有效的负载方式。')
     if mode not in ('account-test', 'gateway-test') and (load_mode != 'requests' or profile != 'short'):
         raise ValueError('持续并发与长输出仅用于单号和网关测试。')
@@ -59,6 +62,19 @@ def run_config(body):
         raise ValueError('单请求超时应为 0.05–600 秒。')
     if load_mode == 'duration' and cap < max(stages):
         raise ValueError('每阶请求上限不得小于最高并发。')
+    burst = copy.deepcopy(load()['mixed_burst'])
+    burst['enabled'] = load_mode == 'mixed_burst'
+    if burst['enabled']:
+        supplied = body.get('mixed_burst', {})
+        if not isinstance(supplied, dict) or set(supplied) - (set(burst) - {'enabled'}):
+            raise ValueError('请选择有效的混合批次参数。')
+        burst.update(supplied)
+        # Validate the shape before using counts to size the actual client connection pool.
+        try:
+            load(overrides={'mixed_burst': burst})
+        except (ValueError, TypeError, KeyError):
+            raise ValueError('请选择有效的混合批次长度、数量和超时参数。') from None
+        stages = [sum(burst['counts'])]
     base_url = None
     model = 'mock-model'
     if live:
@@ -80,6 +96,7 @@ def run_config(body):
         'gateway_stages': stages, 'pool_stages': stages, 'samples': samples,
         'timeout': timeout, 'connection_limit': max(stages), 'pool_sizes': pool_sizes,
         'stage_duration': duration if load_mode == 'duration' else 0, 'max_stage_requests': cap,
+        'mixed_burst': burst,
         'workload': {'profile': profile, 'output_tokens': output_tokens, 'limit_field': limit_field},
         'recovery_timeout': min(15, timeout) if live else 1, 'recovery_successes': 2,
         'mock': {'accounts': [{'capacity': 3, 'latency': .015, 'cooldown': .04},
@@ -89,6 +106,12 @@ def run_config(body):
         'long_task': {'steps': step_count, 'fail_step': min(3, step_count),
                       'fail_attempts': 0 if live else 1, 'stream_chunks': 60, 'stream_chunk_delay': .01},
     })
+    if burst['enabled'] and not live:
+        policy = body.get('mock_admission_policy', 'queue')
+        if policy not in ('queue', 'reject'):
+            raise ValueError('请选择有效的 Mock 排队行为。')
+        cfg['mock']['admission_policy'] = policy
+        cfg['mock']['accounts'] = [{'capacity': burst['expected_capacity'], 'latency': .015, 'cooldown': 0}]
     return mode, live, cfg
 
 
@@ -102,6 +125,7 @@ class Job:
         self.message = ''
         self.summary = None
         self.lab = None
+        self.burst_config = None
         self.loop = None
         self.stop = None
         self.thread = None
@@ -148,6 +172,10 @@ class Job:
                 value['stages'] = copy.deepcopy(self.summary['stages'] if self.summary else self.lab.stages if self.lab else [])
                 value['analysis'] = copy.deepcopy(self.summary.get('analysis', {}) if self.summary else {})
                 value['revision'] = self.summary.get('revision') if self.summary else None
+                from .burst import snapshot
+                value['burst'] = (self.lab.burst_snapshot() if self.lab and self.lab.cfg['mixed_burst']['enabled']
+                                  else self.summary.get('analysis', {}).get('burst') if self.summary
+                                  else snapshot([], self.burst_config) if self.burst_config else None)
             return value
 
 
@@ -193,6 +221,7 @@ class Console:
                 raise ValueError('已有测试正在运行，请等待完成或先停止当前测试。')
             identifier = uuid.uuid4().hex
             job = Job(mode, 'live' if live else 'mock', self.data_dir / 'runs' / identifier, identifier)
+            job.burst_config = cfg['mixed_burst'] if cfg['mixed_burst']['enabled'] else None
             self.jobs[job.id] = job
 
         async def run():
@@ -281,7 +310,7 @@ class Console:
                     if self.path == '/api/state':
                         with console.lock:
                             jobs = [j.public(False) for j in console.jobs.values()]
-                        return self.respond(200, {'service': 'relay-lab-console', 'ui_schema_version': 2, 'pid': os.getpid(), 'csrf': console.token,
+                        return self.respond(200, {'service': 'relay-lab-console', 'ui_schema_version': 3, 'pid': os.getpid(), 'csrf': console.token,
                                                  'revision': revision(), 'jobs': sorted(jobs, key=lambda j: j['started_at'], reverse=True)})
                     match = re.fullmatch(r'/api/jobs/([a-f0-9]{32})(?:/(report\.md|summary\.json|results\.jsonl))?', self.path)
                     if match and match[1] in console.jobs:

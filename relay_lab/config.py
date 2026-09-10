@@ -9,12 +9,16 @@ FAULTS = {'normal', 'slow_sse', 'http_401', 'http_429', 'http_500', 'connect_tim
           'read_timeout', 'network_drop', 'malformed_sse', 'disconnect', 'missing_done',
           'disable_account', 'partial_accounts', 'upstream_outage', 'jitter'}
 DEFAULT = {
+    'mixed_burst': {'enabled': False, 'counts': [2, 2, 6], 'output_limits': [64, 512, 4096],
+                    'expected_capacity': 5, 'first_output_timeout': 600, 'idle_timeout': 60,
+                    'total_timeout': 900, 'connect_timeout': 10, 'release_window': 10},
     'stage_duration': 0, 'max_stage_requests': 1000,
     'workload': {'profile': 'short', 'output_tokens': 1024, 'limit_field': 'max_tokens'},
     'base_url': None, 'timeout': 0.5, 'connection_limit': 1500, 'samples': 100,
     'min_samples': 100, 'rounds_per_stage': 2, 'stages': [1, 2, 3, 5, 8, 13], 'recovery_timeout': 3.0,
     'recovery_interval': 0.03, 'recovery_successes': 3, 'collapse_streak': 3,
     'mock': {
+        'admission_policy': 'reject', 'queue_timeout': 3,
         'seed': 23, 'chunks': 4, 'chunk_delay': 0.004, 'latency': 0.015,
         'jitter': 0.0, 'slow_at': 100000, 'slow_factor': 4.0,
         'crash_at': 100000, 'crash_duration': 0.15, 'fault_duration': 0.12,
@@ -66,7 +70,28 @@ def validate(cfg):
     if workload['profile'] not in ('short', 'long') or workload['limit_field'] not in ('max_tokens', 'max_completion_tokens'):
         raise ValueError('Invalid workload configuration')
     integer(workload['output_tokens'], 16, 32768)
+    burst = cfg['mixed_burst']
+    if type(burst['enabled']) is not bool:
+        raise ValueError('Invalid mixed burst flag')
+    for key in ('counts', 'output_limits'):
+        if not isinstance(burst[key], list) or len(burst[key]) != 3:
+            raise ValueError('Mixed burst requires short, medium and long values')
+    for value in burst['counts']:
+        integer(value, 0, 1200)
+    integer(sum(burst['counts']), 1, 1200)
+    for value in burst['output_limits']:
+        integer(value, 16, 32768)
+    if burst['output_limits'] != sorted(set(burst['output_limits'])):
+        raise ValueError('Mixed output limits must increase')
+    integer(burst['expected_capacity'], 1, 1200)
+    for key in ('first_output_timeout', 'idle_timeout', 'total_timeout', 'connect_timeout', 'release_window'):
+        number(burst[key], .01, 86400)
+    if burst['enabled'] and (cfg['stage_duration'] or cfg['connection_limit'] < sum(burst['counts'])):
+        raise ValueError('Mixed burst requires no refill and enough client connection slots')
     mock = cfg['mock']
+    if mock['admission_policy'] not in ('reject', 'queue'):
+        raise ValueError('Unknown Mock admission policy')
+    number(mock['queue_timeout'], .001, 86400)
     for key in ('latency', 'chunk_delay', 'jitter', 'crash_duration', 'fault_duration'):
         number(mock[key], 0, 86400)
     for key in ('chunks', 'slow_at', 'crash_at'):

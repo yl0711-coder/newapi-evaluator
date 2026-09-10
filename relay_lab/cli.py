@@ -31,6 +31,7 @@ def parser():
         run.add_argument('--checkpoint', default=None)
         run.add_argument('--task-id', default='default')
         if name in ('account-test', 'gateway-test'):
+            run.add_argument('--mixed-burst', action='store_true', help='一次同时发出固定混合批次，不补发、不追加恢复探测')
             run.add_argument('--duration', type=float, help='每阶持续补发秒数，0 为按请求数')
             run.add_argument('--max-requests', type=int, help='持续模式每阶请求上限')
             run.add_argument('--long-output', action='store_true', help='使用长输出负载')
@@ -77,6 +78,9 @@ async def execute(args):
     if args.confirm_live and not cfg['base_url']:
         raise ValueError('--confirm-live requires an explicit target')
     if args.command in ('account-test', 'gateway-test'):
+        if args.mixed_burst:
+            cfg['mixed_burst']['enabled'] = True
+            cfg['stage_duration'] = 0
         if args.duration is not None:
             cfg['stage_duration'] = args.duration
         if args.max_requests is not None:

@@ -12,6 +12,13 @@ const errorNames = {http_error:'HTTP 错误',connect_timeout:'连接超时',requ
 let mode = 'account-test', token = '', selected = null, active = null, submitting = false, refreshing = false;
 let currentJob = null;
 let sustainedSupported = false;
+let burstSupported = false;
+Object.assign(errorNames,{total_timeout:'请求总时限到达',first_output_timeout:'首段等待超时',stream_idle_timeout:'流空闲超时',upstream_error:'流内上游错误'});
+const burstStates={...errorNames,complete:'完整结束',waiting_first_output:'等待首段',receiving:'接收中'};
+const profiles={short:'短',medium:'中',long:'长'};
+const burstFields=['burst-short-count','burst-medium-count','burst-long-count','burst-short-limit','burst-medium-limit','burst-long-limit','burst-capacity','burst-first-timeout','burst-idle-timeout','burst-total-timeout'];
+const isBurst=()=>['account-test','gateway-test'].includes(mode)&&$('load-mode').value==='mixed_burst';
+const burstTotal=()=>['short','medium','long'].reduce((sum,p)=>sum+Number($('burst-'+p+'-count').value),0);
 const esc = (s) => String(s ?? '').replace(/[&<>"']/g, (c) => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
 const pct = (n) => n == null ? '—' : (n * 100).toFixed(1) + '%';
 const number = (n) => n == null ? '—' : Math.round(n).toLocaleString('zh-CN');
@@ -36,7 +43,8 @@ function setMode(next) {
   const loadCapable = ['account-test','gateway-test'].includes(mode);
   $('load-controls').hidden=!loadCapable;
   $('preset').querySelector('[value="sustained"]').disabled=!loadCapable;
-  if(!loadCapable){$('load-mode').value='requests';$('workload-profile').value='short';if($('preset').value==='sustained')$('preset').value='custom';}
+  $('preset').querySelector('[value="mixed_burst"]').disabled=!loadCapable;
+  if(!loadCapable){$('load-mode').value='requests';$('workload-profile').value='short';if(['sustained','mixed_burst'].includes($('preset').value))$('preset').value='custom';}
   document.querySelector('[name="environment"][value="live"]').disabled=mockOnly;
   if(mockOnly)document.querySelector('[name="environment"][value="mock"]').checked=true;
   $('pool-field').hidden=mode!=='pool-test';$('steps-field').hidden=mode!=='long-task-test';
@@ -52,14 +60,19 @@ function syncEnvironment() {
   syncLoad();
 }
 function syncLoad() {
-  const capable=['account-test','gateway-test'].includes(mode), timed=capable&&$('load-mode').value==='duration', long=capable&&$('workload-profile').value==='long';
-  $('duration-fields').hidden=!timed;$('samples-field').hidden=timed;$('output-fields').hidden=!long;
-  $('samples').disabled=timed;['stage-duration','max-stage-requests'].forEach(id=>$(id).disabled=!timed);
-  $('output-tokens').disabled=!long;$('limit-field').disabled=!long;
-  estimate();
+  const capable=['account-test','gateway-test'].includes(mode), burst=isBurst(), timed=capable&&$('load-mode').value==='duration', long=capable&&$('workload-profile').value==='long'&&!burst;
+  $('duration-fields').hidden=!timed;$('samples-field').hidden=timed||burst;$('output-fields').hidden=!(long||burst);
+  $('samples').disabled=timed||burst;['stage-duration','max-stage-requests'].forEach(id=>$(id).disabled=!timed);
+  $('output-tokens').disabled=!long;$('output-tokens').closest('label').hidden=burst;$('limit-field').disabled=!(long||burst);
+  $('workload-profile').closest('label').hidden=burst;
+  $('burst-fields').hidden=!burst;burstFields.forEach(id=>$(id).disabled=!burst);
+  $('mock-policy-field').hidden=!burst||environment()==='live';$('mock-policy').disabled=!burst||environment()==='live';
+  $('timeout-field').hidden=burst;$('timeout').disabled=burst;$('stages-field').hidden=burst;$('stages').disabled=burst;
+  estimate();busy();
 }
 function estimate() {
   const stages=integers($('stages').value), samples=Number($('samples').value);
+  if(isBurst()){$('request-estimate').textContent=`同时发出 ${burstTotal()} 条原始请求，不补发、不追加恢复探测。观察短／中请求结束后，其他原始请求开始输出还是报错。`;return;}
   if(['account-test','gateway-test'].includes(mode)&&$('load-mode').value==='duration'){
     $('request-estimate').textContent=`每阶持续补发 ${$('stage-duration').value} 秒，最多 ${$('max-stage-requests').value} 条。到时停止补发，等待在途请求结束，再串行探测恢复。`;return;
   }
@@ -67,7 +80,7 @@ function estimate() {
   $('request-estimate').textContent=['pool-test','chaos-test','long-task-test'].includes(mode)?'每个场景分别计数，结束后自动进行恢复探测。':`预计 ${Number.isFinite(requests)?requests:'—'} 次负载请求，另含恢复探测。`;
 }
 function busy() {
-  const needsUpdate=!sustainedSupported&&['account-test','gateway-test'].includes(mode)&&($('load-mode').value==='duration'||$('workload-profile').value==='long');
+  const needsUpdate=isBurst()?!burstSupported:!sustainedSupported&&['account-test','gateway-test'].includes(mode)&&($('load-mode').value==='duration'||$('workload-profile').value==='long');
   $('start-button').disabled=Boolean(active)||submitting||needsUpdate;
   $('start-button').innerHTML=submitting?'正在启动…':active?'测试进行中…':needsUpdate?'等待新版本地服务…':'开始测试 <span aria-hidden="true">↗</span>';
 }
@@ -104,15 +117,32 @@ function occupancyChart(job) {
   }
   for(let i=0;i<=4;i++)svg+=`<text x="${x(end*i/4)}" y="${h-8}" text-anchor="middle">${(end*i/4).toFixed(1)}s</text>`;
   $('occupancy-chart').innerHTML=svg+'</svg>';
-  const reasons={duration:'时长到达',request_count:'请求数完成',request_cap:'请求上限提前到达',stopped:'用户停止'};
+  const reasons={duration:'时长到达',request_count:'请求数完成',request_cap:'请求上限提前到达',stopped:'用户停止',batch_complete:'固定批次结束'};
   $('occupancy-note').textContent=`${o.stage} · 目标 ${o.target} / 峰值在途 ${o.peak_inflight} / 峰值接收中 ${o.peak_receiving}。蓝色为在途，绿色为接收中，虚线为目标。负载 ${o.load_seconds.toFixed(1)} 秒，收尾 ${o.drain_seconds.toFixed(1)} 秒${o.stop_reason?'；'+(reasons[o.stop_reason]||o.stop_reason):''}。真实账号生成占用尚未接入服务端证据。`;
+}
+function renderBurst(b) {
+  $('burst-panel').hidden=!b;if(!b)return;
+  const rows=b.timeline||[], seconds=v=>v==null?'—':v.toFixed(2);
+  $('burst-count').textContent=`已发 ${b.issued_requests} / ${b.planned_requests} · 已结束 ${b.finished_requests}`;
+  $('burst-overview').textContent=`参考限制 ${b.reference_capacity}；峰值在途 ${b.peak_inflight}，峰值接收中 ${b.peak_receiving}；累计 ${number(b.total_output_chars)} 字符。发起时间跨度 ${seconds(b.launch_spread_ms)} ms。`;
+  $('burst-rows').innerHTML=rows.map(r=>`<tr><td>${esc(r.label)} · ${profiles[r.profile]||esc(r.profile)}</td><td>${esc(burstStates[r.state]||r.state)}${r.upstream_error_kind?' · '+esc(r.upstream_error_kind):''}</td><td>${r.http_status||'—'}</td><td>${seconds(r.first_output_seconds)}</td><td>${seconds(r.end_seconds)}</td><td>${number(r.output_chars)}</td><td>${r.after_release?esc(r.after_release)+' 后 '+seconds(r.release_delay_seconds)+'s':'—'}</td></tr>`).join('');
+  const width=640,left=62,right=24,top=24,rowHeight=27,height=Math.max(90,rows.length*rowHeight+62),end=Math.max(b.elapsed_seconds,.1),x=s=>left+(width-left-right)*s/end;
+  let svg=`<svg viewBox="0 0 ${width} ${height}" role="img" aria-label="原始批次每条请求等待首段与接收时间线">`;
+  for(let i=0;i<=4;i++){const t=end*i/4;svg+=`<line x1="${x(t)}" x2="${x(t)}" y1="${top-8}" y2="${height-28}" stroke="#e7edf6"/><text x="${x(t)}" y="${height-8}" text-anchor="middle">${t.toFixed(1)}s</text>`;}
+  rows.forEach((r,i)=>{const y=top+i*rowHeight,stop=r.end_seconds??end,first=r.first_output_seconds;
+    svg+=`<text x="${left-8}" y="${y+12}" text-anchor="end">${esc(r.label)} ${profiles[r.profile]||''}</text><rect x="${x(r.start_seconds)}" y="${y}" width="${Math.max(1,x(first??stop)-x(r.start_seconds))}" height="16" rx="3" fill="#dce2ec"><title>等待首段 ${seconds(r.wait_seconds)} 秒</title></rect>`;
+    if(first!=null)svg+=`<rect x="${x(first)}" y="${y}" width="${Math.max(1,x(stop)-x(first))}" height="16" rx="3" fill="#0c987e"><title>已收 ${r.output_chars} 字符；最长块间隔 ${seconds(r.max_gap_seconds)} 秒；末段至当前或结束 ${seconds(r.silent_seconds)} 秒</title></rect>`;
+    if(r.end_seconds!=null)svg+=`<circle cx="${x(stop)}" cy="${y+8}" r="3" fill="${r.state==='complete'?'#087f69':'#cf5362'}"><title>${esc(burstStates[r.state]||r.state)}</title></circle>`;
+  });$('burst-chart').innerHTML=svg+'</svg>';
+  const observations=b.release_observations||[];
+  $('burst-releases').innerHTML='<strong>短／中请求结束后的原始请求</strong>'+ (observations.length?observations.map(e=>`<p>${esc(e.released_label)} 在 ${seconds(e.at_seconds)}s 完整结束；当时等待：${esc(e.waiting_labels.join('、')||'无')}。${e.later_output.map(p=>esc(p.label)+' 在其后 '+seconds(p.delay_seconds)+'s 开始输出').join('；')||'尚未观察到后续输出'}。${e.ended_without_output.length?'无正文结束：'+esc(e.ended_without_output.join('、'))+'。':''}</p>`).join(''):'<p>等待短／中请求完整结束。</p>')+'<p>时间对应提供排队线索；未接入服务端队列证据。表中“释放后开始”使用 '+seconds(b.release_window_seconds)+' 秒观察窗口。</p>';
 }
 function renderJob(job) {
   if(selected!==job.id)$('occupancy-stage').value='';currentJob=job;
   selected=job.id;const running=['running','stopping'].includes(job.status), m=job.metrics, a=job.analysis||{};
   $('result-title').textContent=job.name+' · '+(job.environment==='mock'?'Mock':'真实环境');
   $('result-status').textContent=statuses[job.status]||job.status;$('result-status').className='badge '+(running?'running':job.status==='completed'?'success':job.status==='failed'?'failed':'neutral');
-  const phase=job.phase==='recovery'?'串行恢复探测':job.occupancy?.phase==='draining'?'已停止补发，等待在途请求结束':job.phase==='load'?'负载请求进行中':'准备连接目标';
+  const phase=job.phase==='mixed_burst'?'原始混合批次进行中 · 不补发':job.phase==='recovery'?'串行恢复探测':job.occupancy?.phase==='draining'?'已停止补发，等待在途请求结束':job.phase==='load'?'负载请求进行中':'准备连接目标';
   $('run-context').textContent=running?phase+' · '+(job.occupancy?.stage||job.current_stage||''):job.message||('记录 '+job.id.slice(0,8)+' · '+new Date(job.started_at*1000).toLocaleString('zh-CN'));
   $('elapsed').textContent=duration(job.elapsed_seconds);$('stop-button').hidden=!running;
   $('progress-bar').classList.toggle('working',running);$('progress-bar').style.width=running?'40%':'100%';
@@ -120,10 +150,13 @@ function renderJob(job) {
   $('metric-complete').textContent=pct(m.completeness_rate);$('metric-ttft').textContent=m.p50_ttft_ms==null?'—':number(m.p50_ttft_ms)+' ms';
   $('metric-p95').textContent=m.p95_latency_ms==null?'—':number(m.p95_latency_ms)+' ms';$('metric-count').textContent=number(m.requests);
   $('metric-stable').textContent=number(a.max_stable_concurrency);$('stable-caption').textContent=a.range_censored?'测试范围内通过，未测到上限':'客户端请求口径';
+  $('metric-stable-label').textContent=job.burst?'峰值接收中':'最高通过的并发阶梯';
+  if(job.burst){$('metric-stable').textContent=number(job.burst.peak_receiving);$('stable-caption').textContent='本批次观察值，非稳定上限';}
   const stages=job.stages||[];$('stage-count').textContent=stages.length?stages.length+' 个已完成阶段':'等待阶段完成';
   $('stage-rows').innerHTML=stages.length?stages.map(s=>`<tr><td>${esc(s.stage)}</td><td>${s.concurrency}</td><td>${s.samples}</td><td>${pct(s.success_rate)}</td><td>${number(s.p95_latency_ms)}</td></tr>`).join(''):'<tr><td colspan="5" class="table-empty">当前阶段完成后会自动更新。</td></tr>';
   chart(stages);
   occupancyChart(job);
+  renderBurst(job.burst);
   const errors=Object.entries(m.errors);$('error-summary').hidden=!errors.length;$('error-summary').textContent=errors.map(([k,n])=>(errorNames[k]||k)+' × '+n).join(' · ');
   const notes=[];if(job.environment==='mock')notes.push('Mock 结果不代表真实账号或号池能力。');
   if(a.low_confidence)notes.push('样本量不足，当前结论标记为低置信度。');
@@ -142,20 +175,23 @@ function renderHistory(jobs) {
 async function selectJob(id) {try{renderJob(await api('/api/jobs/'+id));await refresh();}catch(e){showError(e.message);}}
 async function refresh() {
   if(refreshing)return;refreshing=true;
-  try{const state=await api('/api/state');token=state.csrf;sustainedSupported=state.ui_schema_version>=2;active=state.jobs.find(j=>['running','stopping'].includes(j.status))?.id||null;
+  try{const state=await api('/api/state');token=state.csrf;sustainedSupported=state.ui_schema_version>=2;burstSupported=state.ui_schema_version>=3;active=state.jobs.find(j=>['running','stopping'].includes(j.status))?.id||null;
     $('connection').textContent='本地服务已连接';$('local-address').textContent=location.host;
     if(!selected&&active)selected=active;if(selected)renderJob(await api('/api/jobs/'+selected));renderHistory(state.jobs);busy();
   }catch(e){$('connection').textContent='本地服务连接中断';}finally{refreshing=false;}
 }
 $('test-form').addEventListener('submit',async(event)=>{event.preventDefault();showError('');if(active||submitting)return;
+  if(isBurst()&&!burstSupported){showError('请重启本地控制台服务后使用固定混合批次。');return;}
   if(!sustainedSupported&&($('load-mode').value==='duration'||$('workload-profile').value==='long')){showError('请重启本地控制台服务后使用持续并发。');return;}
-  const live=environment()==='live', stages=integers($('stages').value);
+  const live=environment()==='live', stages=isBurst()?[burstTotal()]:integers($('stages').value);
   if(!stages.length||stages.some((c,i)=>!Number.isInteger(c)||c<1||c>1200||(i>0&&c<=stages[i-1]))){showError('并发阶梯需按从小到大填写，例如 1, 2, 3, 5。');return;}
   if(live&&!$('confirm-live').checked){showError('请先确认向该接口发送真实请求。');return;}
   const body={mode,environment:environment(),base_url:$('base-url').value.trim(),model:$('model').value.trim(),api_key:live?$('api-key').value.trim():'',confirm_live:live&&$('confirm-live').checked,
     load_mode:$('load-mode').value,stage_duration:Number($('stage-duration').value),max_stage_requests:Number($('max-stage-requests').value),
     workload_profile:$('workload-profile').value,output_tokens:Number($('output-tokens').value),limit_field:$('limit-field').value,
-    samples:Number($('samples').value),timeout:Number($('timeout').value),stages,pool_sizes:integers($('pool-sizes').value),steps:Number($('steps').value)};
+    samples:Number($('samples').value),timeout:Number($('timeout').value),stages,pool_sizes:integers($('pool-sizes').value),steps:Number($('steps').value),
+    mock_admission_policy:$('mock-policy').value,
+    mixed_burst:{counts:['short','medium','long'].map(p=>Number($('burst-'+p+'-count').value)),output_limits:['short','medium','long'].map(p=>Number($('burst-'+p+'-limit').value)),expected_capacity:Number($('burst-capacity').value),first_output_timeout:Number($('burst-first-timeout').value),idle_timeout:Number($('burst-idle-timeout').value),total_timeout:Number($('burst-total-timeout').value)}};
   submitting=true;busy();
   try{const job=await api('/api/jobs',body);$('api-key').value='';active=job.id;renderJob(job);await refresh();}catch(e){showError(e.message);}finally{body.api_key='';submitting=false;busy();}
 });
@@ -163,7 +199,8 @@ $('stop-button').addEventListener('click',async()=>{if(!selected)return;try{rend
 $('mode-nav').addEventListener('click',e=>{const button=e.target.closest('[data-mode]');if(button)setMode(button.dataset.mode);});
 $('history').addEventListener('click',e=>{const button=e.target.closest('[data-id]');if(button)selectJob(button.dataset.id);});
 document.querySelectorAll('[name="environment"]').forEach(el=>el.addEventListener('change',syncEnvironment));
-$('preset').addEventListener('change',()=>{const preset=$('preset').value;if(preset==='sustained'){$('stages').value='5';$('load-mode').value='duration';$('stage-duration').value=60;$('max-stage-requests').value=1000;$('workload-profile').value='long';$('output-tokens').value=1024;}else if(preset==='quick'||preset==='ladder'){$('load-mode').value='requests';$('workload-profile').value='short';$('stages').value=preset==='quick'?'1':'1, 2, 3, 5';$('samples').value=preset==='quick'?8:30;}syncLoad();});
+$('preset').addEventListener('change',()=>{const preset=$('preset').value;if(preset==='mixed_burst'){$('load-mode').value='mixed_burst';['short','medium','long'].forEach((p,i)=>{$('burst-'+p+'-count').value=[2,2,6][i];$('burst-'+p+'-limit').value=[64,512,4096][i];});}else if(preset==='sustained'){$('stages').value='5';$('load-mode').value='duration';$('stage-duration').value=60;$('max-stage-requests').value=1000;$('workload-profile').value='long';$('output-tokens').value=1024;}else if(preset==='quick'||preset==='ladder'){$('load-mode').value='requests';$('workload-profile').value='short';$('stages').value=preset==='quick'?'1':'1, 2, 3, 5';$('samples').value=preset==='quick'?8:30;}syncLoad();});
+burstFields.forEach(id=>$(id).addEventListener('input',()=>{$('preset').value='custom';estimate();}));
 ['load-mode','workload-profile'].forEach(id=>$(id).addEventListener('change',()=>{$('preset').value='custom';syncLoad();}));
 ['stage-duration','max-stage-requests','output-tokens'].forEach(id=>$(id).addEventListener('input',()=>{$('preset').value='custom';estimate();}));
 $('occupancy-stage').addEventListener('change',()=>{if(currentJob)occupancyChart(currentJob);});

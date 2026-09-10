@@ -74,15 +74,37 @@ def write_markdown(path, summary):
                   '平均值与满并发时间占比按负载窗口计算，排除到时后的收尾及串行恢复探测。曲线在 JSON 的 occupancy.series 中，曲线采样不参与平均值计算。', '',
                   '| 阶段 | 方式 | 目标 | 峰值在途 | 平均在途 | 满并发时间 | 平均接收中 | 负载秒 | 收尾秒 | 停止原因 |',
                   '| --- | --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: | --- |']
-        reasons = {'duration': '时长到达', 'request_count': '请求数完成', 'request_cap': '请求上限提前到达', 'stopped': '用户停止'}
+        reasons = {'duration': '时长到达', 'request_count': '请求数完成', 'request_cap': '请求上限提前到达', 'stopped': '用户停止', 'batch_complete': '固定批次结束'}
         for s in measured:
             o = s['occupancy']
-            lines.append(f"| {s['stage']} | {'持续' if s.get('load_mode') == 'duration' else '按请求数'} | {o['target']} | {o['peak_inflight']} | {o['mean_inflight']:.2f} | {o['target_occupancy_ratio']:.1%} | {o['mean_receiving']:.2f} | {o['load_seconds']:.2f} | {o['drain_seconds']:.2f} | {reasons.get(o['stop_reason'], '未知')} |")
+            kind = {'duration': '持续', 'mixed_burst': '固定混合批次'}.get(s.get('load_mode'), '按请求数')
+            lines.append(f"| {s['stage']} | {kind} | {o['target']} | {o['peak_inflight']} | {o['mean_inflight']:.2f} | {o['target_occupancy_ratio']:.1%} | {o['mean_receiving']:.2f} | {o['load_seconds']:.2f} | {o['drain_seconds']:.2f} | {reasons.get(o['stop_reason'], '未知')} |")
         lines += ['', '上游账号占用：未接入真实服务端证据；客户端并发不得直接当作单账号生成并发。', '', '### 输出负载与失败状态', '']
         for s in measured:
-            lines.append(f"- {s['stage']}：负载 {s.get('workload_profile', 'short')}；输出上限 {s.get('output_limit') or '未设置'}；实际平均输出 {s.get('mean_output_chars', 0):.1f} 字符；首段内容后平均持续 {s.get('mean_receiving_seconds', 0):.2f} 秒；HTTP 状态分布 {json.dumps(s['statuses'])}。")
+            scope = '所有请求，含失败' if s.get('output_statistics_scope') == 'all_requests' else '历史口径，仅成功请求'
+            receiving_scope = '有正文请求' if s.get('output_statistics_scope') == 'all_requests' else '成功请求'
+            lines.append(f"- {s['stage']}：负载 {s.get('workload_profile', 'short')}；输出上限 {s.get('output_limit') or '分档或未设置'}；平均输出（{scope}）{s.get('mean_output_chars', 0):.1f} 字符；{receiving_scope}从首段至结束平均 {s.get('mean_receiving_seconds', 0):.2f} 秒；HTTP 状态分布 {json.dumps(s['statuses'])}。")
         lines += ['', '输出上限不是最低输出保证。长输出负载到达上限（finish_reason=length）且完整收到结束帧时计为传输完整，截断原因仍记录在请求指标中。']
-    lines += ['', '## 极限与模式指标', '', '```json', json.dumps(summary['analysis'], ensure_ascii=False, indent=2), '```', '',
+    burst = summary.get('analysis', {}).get('burst')
+    if burst:
+        lines += ['', '## 固定混合批次：等待与释放观察', '',
+                  f"计划 {burst['planned_requests']} 条；已发 {burst['issued_requests']} 条；不补发，不追加恢复探测。参考上游限制 {burst['reference_capacity']}，仅用于对照。",
+                  f"峰值在途 {burst['peak_inflight']}；峰值接收中 {burst['peak_receiving']}；收到正文 {burst['received_output_requests']} 条；累计 {burst['total_output_chars']} 字符（含失败请求）。",
+                  f"首段等待上限 {burst['first_output_timeout_seconds']} 秒；流空闲上限 {burst['idle_timeout_seconds']} 秒；请求总时限 {burst['total_timeout_seconds']} 秒。",
+                  '时间为相对批次首次发起的秒数。首段之前包含网络、调度和排队；先后关系只能提供排队线索，不能证明服务端队列或账号生成占用。', '',
+                  '| 请求 | 长度 | 输出上限 | 发起秒 | HTTP 头秒 | 首段秒 | 结束秒 | 状态 | HTTP | 已收字符 | 释放后开始 |',
+                  '| --- | --- | ---: | ---: | ---: | ---: | ---: | --- | ---: | ---: | --- |']
+        def seconds(value):
+            return '-' if value is None else f'{value:.3f}'
+        for row in burst['timeline']:
+            link = f"{row['after_release']} 后 {row['release_delay_seconds']:.3f}s" if row['after_release'] else '-'
+            lines.append(f"| {row['label']} | {row['profile']} | {row['output_limit']} | {seconds(row['start_seconds'])} | {seconds(row['headers_seconds'])} | {seconds(row['first_output_seconds'])} | {seconds(row['end_seconds'])} | {row['state']} | {row['http_status'] or '-'} | {row['output_chars']} | {link} |")
+        lines += ['', '短／中请求正常结束时，对最初批次尚未收到正文的请求逐条追踪：']
+        for event in burst['release_observations']:
+            later = '；'.join(f"{p['label']} 在其后 {p['delay_seconds']:.3f}s 收到正文" for p in event['later_output']) or '未观察到后续正文'
+            lines.append(f"- {event['released_label']} 于 {event['at_seconds']:.3f}s 结束；当时等待：{', '.join(event['waiting_labels']) or '无'}；{later}；后来无正文结束：{', '.join(event['ended_without_output']) or '无'}。")
+    analysis = {k: v for k, v in summary['analysis'].items() if k != 'burst'}
+    lines += ['', '## 极限与模式指标', '', '```json', json.dumps(analysis, ensure_ascii=False, indent=2), '```', '',
               '## 资源与验证边界', '',
               '资源采样范围见各阶段 resources.scope。嵌入 Mock 时客户端与 Mock 同进程；远端服务进程的 CPU/内存/FD 不由客户端推断。',
               '崩溃点依据连续不可用响应或连接故障判定；Mock 使用短暂 503 模拟崩溃，不终止宿主机进程。',
@@ -100,8 +122,10 @@ def rebuild(output, *, mode='recovered'):
             try:
                 row = json.loads(line)
                 expected = {x.name for x in fields(Result)}
-                legacy = expected - {'started_at', 'inflight_started_at', 'first_content_at', 'ended_at', 'finish_reason'}
-                if set(row) not in (expected, legacy):
+                timing = {'started_at', 'inflight_started_at', 'first_content_at', 'ended_at', 'finish_reason'}
+                added = {'burst_label', 'workload_profile', 'output_limit', 'headers_at', 'last_output_at',
+                         'max_output_gap_ms', 'piece_count', 'upstream_error_kind'}
+                if set(row) not in (expected, expected - timing, expected - added, expected - added - timing):
                     raise ValueError('Unexpected raw schema')
                 count += 1
                 if row['phase'] == 'load':
@@ -117,6 +141,11 @@ def rebuild(output, *, mode='recovered'):
         summary = {'environment': manifest.get('environment', 'unknown'), 'mode': manifest.get('mode', mode), 'status': 'partial_reconstructed',
                    'revision': manifest.get('revision', {'commit_sha': None, 'dirty': None}), 'result_count': count,
                    'stages': stages, 'analysis': limits(stages)}
+        if manifest.get('mixed_burst'):
+            from .burst import snapshot
+            rows = [row for group in groups.values() for row in group]
+            summary['analysis'] = {'max_stable_concurrency': None, 'capacity_limit_determined': False,
+                                   'burst': snapshot(rows, manifest['mixed_burst'])}
         # Wall-clock throughput cannot be reconstructed from per-request duration.
         for s in stages:
             s['throughput_rps'] = s['attempts_rps'] = 0

@@ -39,8 +39,11 @@ def stage_summary(stage, concurrency, results, elapsed, min_samples, collapse_st
         'connection_errors': sum(r['error'] in ('connection_error', 'connection_pool_exhausted', 'connect_timeout') for r in rows),
         'unavailable_streak': longest, 'collapsed': longest >= collapse_streak,
         'low_confidence': count < min_samples,
-        'mean_output_chars': sum(r['output_units'] for r in good) / len(good) if good else 0,
-        'mean_receiving_seconds': sum(max(0, r['latency_ms'] - r['ttft_ms']) / 1000 for r in good if r['ttft_ms'] is not None) / len(good) if good else 0,
+        'total_output_chars': sum(r['output_units'] for r in rows),
+        'output_statistics_scope': 'all_requests',
+        'received_output_requests': sum(r['ttft_ms'] is not None for r in rows),
+        'mean_output_chars': sum(r['output_units'] for r in rows) / count if count else 0,
+        'mean_receiving_seconds': sum(max(0, r['latency_ms'] - r['ttft_ms']) / 1000 for r in rows if r['ttft_ms'] is not None) / max(1, sum(r['ttft_ms'] is not None for r in rows)),
     }
 
 

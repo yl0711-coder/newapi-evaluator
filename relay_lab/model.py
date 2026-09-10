@@ -26,6 +26,14 @@ class Result:
     first_content_at: float | None = None
     ended_at: float | None = None
     finish_reason: str = ''
+    burst_label: str = ''
+    workload_profile: str = 'short'
+    output_limit: int | None = None
+    headers_at: float | None = None
+    last_output_at: float | None = None
+    max_output_gap_ms: float = 0
+    piece_count: int = 0
+    upstream_error_kind: str = ''
 
     def public(self):
         return asdict(self)
