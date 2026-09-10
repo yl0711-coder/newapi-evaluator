@@ -42,6 +42,6 @@ def redact(value):
         return [redact(v) for v in value]
     if isinstance(value, str):
         value = re.sub(r'https?://\S+', '[URL]', value)
-        value = re.sub(r'(?i)(bearer\s+|sk-)[A-Za-z0-9._-]+', '[REDACTED]', value)
+        value = re.sub(r'(?i)(\bbearer\s+|(?<![A-Za-z0-9_-])sk-)[A-Za-z0-9._-]+', '[REDACTED]', value)
         value = re.sub(r'(?i)(api[_-]?key|token|secret|cookie|password)\s*[:=]\s*[^\s,;]+', r'\1=[REDACTED]', value)
     return value

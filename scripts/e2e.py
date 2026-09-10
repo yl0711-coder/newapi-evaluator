@@ -76,6 +76,7 @@ def main():
         if cp.returncode:
             raise RuntimeError(mode + ' failed; inspect safe CLI log')
         value = json.loads((output / config / 'summary.json').read_text())
+        assert f'- 模式：{mode}' in (output / config / 'report.md').read_text()
         raw = [json.loads(line) for line in (output / config / 'results.jsonl').read_text().splitlines()]
         check(value, raw)
         evidence['modes'][mode] = {'passed': True, 'result_count': value['result_count'],

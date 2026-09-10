@@ -66,6 +66,8 @@ class MetricSecurityTests(unittest.TestCase):
         self.assertEqual(evidence['loopback_connections'], 0)
 
     def test_redaction_nested_values(self):
+        public = {'mode': 'long-task-test', 'status': 'completed', 'phase': 'long-steps'}
+        self.assertEqual(redact(public), public)
         secret = 'sk-' + 'synthetic_sensitive_marker_123456'
         payload = {'api_key': secret, 'nested': [{'prompt': 'private user text',
                    'error': 'Bearer ' + secret + ' https://example.com/private?token=hidden'}]}
