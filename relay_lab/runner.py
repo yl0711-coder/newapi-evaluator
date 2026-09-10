@@ -11,20 +11,24 @@ from .checkpoint import Checkpoint
 from .metrics import limits, stage_summary
 from .mock import MockServer
 from .network import mock_network_guard
+from .occupancy import Occupancy
 from .report import Artifacts, atomic_json, revision
 from .resources import Monitor
 from .security import fingerprint
 
 
 class Lab:
-    def __init__(self, config, output, *, stop=None, confirm_live=False, checkpoint=None, task_id='default'):
+    def __init__(self, config, output, *, stop=None, confirm_live=False, checkpoint=None, task_id='default', api_key=None):
         self.cfg = config
         self.artifacts = Artifacts(output)
         self.stop = stop or asyncio.Event()
         self.confirm_live = confirm_live
+        self.api_key = api_key
         self.checkpoint = checkpoint or (self.artifacts.output / 'checkpoint.sqlite3')
         self.task_id = task_id
         self.stages = []
+        self.live_occupancy = None
+        self.current_phase = 'preparing'
         self.recoveries = []
         self.started = time.time()
         self.network = {'loopback_connections': 0, 'blocked_external_attempts': 0}
@@ -41,49 +45,82 @@ class Lab:
             with mock_network_guard(self.network) if not self.confirm_live else nullcontext():
                 async with OpenAIAdapter(self.cfg['base_url'] or mock.base_url,
                                          timeout=self.cfg['timeout'], connection_limit=self.cfg['connection_limit'],
-                                         confirm_live=self.confirm_live, api_key=os.environ.get('RELAY_LAB_API_KEY') if self.confirm_live else None,
+                                         confirm_live=self.confirm_live, api_key=(self.api_key if self.api_key is not None else os.environ.get('RELAY_LAB_API_KEY')) if self.confirm_live else None,
                                          model=self.cfg.get('model', 'relay-lab-model')) as adapter:
                     yield adapter, mock
         finally:
             if mock:
                 await mock.close()
 
-    async def stage(self, adapter, mock, label, concurrency, *, samples=None, **request):
+    async def stage(self, adapter, mock, label, concurrency, *, samples=None, duration=0, **request):
         rows = []
-        count = max(concurrency * self.cfg['rounds_per_stage'], self.cfg['samples']) if samples is None else max(concurrency, samples)
-        queue = asyncio.Queue()
-        for _ in range(count):
-            queue.put_nowait(None)
+        count = self.cfg['max_stage_requests'] if duration else (
+            max(concurrency * self.cfg['rounds_per_stage'], self.cfg['samples']) if samples is None else max(concurrency, samples))
+        issued = 0
+        halting = False
         adapter.peak_active = 0
         if mock:
             mock.peak_active = 0
         start = time.perf_counter()
+        deadline = start + duration if duration else None
+        occupancy = Occupancy(label, concurrency, duration)
+        adapter.occupancy = self.live_occupancy = occupancy
+        self.current_phase = 'load'
         monitor = Monitor(adapter, mock is not None)
         monitor_task = asyncio.create_task(monitor.run())
 
         async def worker():
-            while not self.stop.is_set():
-                try:
-                    queue.get_nowait()
-                except asyncio.QueueEmpty:
+            nonlocal issued
+            while not self.stop.is_set() and not halting:
+                if deadline is not None and time.perf_counter() >= deadline:
+                    occupancy.close_load('duration')
                     return
+                if issued >= count:
+                    if duration:
+                        occupancy.close_load('request_cap')
+                    return
+                issued += 1
                 r = await adapter.request(label, concurrency, **request)
                 rows.append(r)
                 self.artifacts.append(r)
 
+        workers = [asyncio.create_task(worker()) for _ in range(min(concurrency, count))]
+        group = asyncio.gather(*workers)
+        cancelled = asyncio.create_task(self.stop.wait())
         try:
-            await asyncio.gather(*(worker() for _ in range(concurrency)))
+            await asyncio.wait((group, cancelled), return_when=asyncio.FIRST_COMPLETED)
+            if self.stop.is_set():
+                occupancy.close_load('stopped')
+                for task in workers:
+                    task.cancel()
+            await group
         finally:
+            halting = True
+            cancelled.cancel()
+            await asyncio.gather(cancelled, return_exceptions=True)
+            for task in workers:
+                if not task.done():
+                    task.cancel()
+            await asyncio.gather(*workers, return_exceptions=True)
             monitor.running = False
             await monitor_task
+            reason = 'stopped' if self.stop.is_set() else 'duration' if deadline is not None and time.perf_counter() >= deadline else 'request_cap' if duration else 'request_count'
+            occupancy.finish(reason)
+            adapter.occupancy = None
         elapsed = time.perf_counter() - start
         stage = stage_summary(label, concurrency, rows, elapsed, self.cfg['min_samples'], self.cfg['collapse_streak'])
         stage['resources'] = monitor.summary()
         stage['max_observed_inflight'] = mock.peak_active if mock else adapter.peak_active
+        stage['occupancy'] = occupancy.snapshot()
+        stage['load_mode'] = 'duration' if duration else 'requests'
+        stage['workload_profile'] = request.get('workload', 'short')
+        stage['output_limit'] = request.get('output_tokens') if request.get('workload') == 'long' else None
+        stage['output_limit_parameter'] = request.get('limit_field') if request.get('workload') == 'long' else None
         self.stages.append(stage)
         return stage, rows
 
     async def recovery(self, adapter, label, *, account=None, baseline_ms=None):
+        self.current_phase = 'recovery'
         start = time.perf_counter()
         success = 0
         probes = 0
@@ -102,13 +139,13 @@ class Lab:
         self.recoveries.append(value)
         return value
 
-    async def sweep(self, adapter, mock, label, stages, **request):
+    async def sweep(self, adapter, mock, label, stages, *, duration=0, **request):
         group = []
         times = []
         for concurrency in stages:
             if self.stop.is_set():
                 break
-            stage, _ = await self.stage(adapter, mock, f'{label}-c{concurrency}', concurrency, **request)
+            stage, _ = await self.stage(adapter, mock, f'{label}-c{concurrency}', concurrency, duration=duration, **request)
             group.append(stage)
             if mock and mock.health()['healthy_account_count'] == 0:
                 continue
@@ -120,7 +157,11 @@ class Lab:
 
     async def account(self):
         async with self.target() as (adapter, mock):
-            stages, analysis = await self.sweep(adapter, mock, 'account', self.cfg['stages'], account=0 if adapter.is_mock else None)
+            stages, analysis = await self.sweep(adapter, mock, 'account', self.cfg['stages'], account=0 if adapter.is_mock else None,
+                                              duration=self.cfg['stage_duration'], workload=self.cfg['workload']['profile'],
+                                              output_tokens=self.cfg['workload']['output_tokens'], limit_field=self.cfg['workload']['limit_field'])
+            analysis['concurrency_scope'] = 'mock_upstream' if mock else 'client_requests_only'
+            analysis['upstream_account_occupancy_verified'] = bool(mock)
             analysis['admission_gate_passed'] = bool(stages and stages[0]['success_rate'] >= .99 and stages[0]['completeness_rate'] >= .99)
             analysis['admission_gate_low_confidence'] = not stages or stages[0]['low_confidence']
             return analysis
@@ -131,7 +172,9 @@ class Lab:
         cfg['accounts'] = [{'capacity': max(self.cfg['gateway_stages']) * 2,
                             'latency': cfg['latency'], 'jitter': cfg['jitter'], 'failure_rate': 0, 'cooldown': 0}]
         async with self.target(cfg) as (adapter, mock):
-            stages, analysis = await self.sweep(adapter, mock, 'gateway', self.cfg['gateway_stages'])
+            stages, analysis = await self.sweep(adapter, mock, 'gateway', self.cfg['gateway_stages'], duration=self.cfg['stage_duration'],
+                                              workload=self.cfg['workload']['profile'], output_tokens=self.cfg['workload']['output_tokens'],
+                                              limit_field=self.cfg['workload']['limit_field'])
             stable = analysis['max_stable_concurrency']
             analysis['max_stable_inflight'] = max((s['max_observed_inflight'] for s in stages if s['concurrency'] == stable), default=0)
             analysis['crash_semantics'] = 'temporary_mock_unavailability' if mock else 'observed_target_unavailability'
@@ -274,7 +317,7 @@ class Lab:
         finally:
             if self.stop.is_set():
                 status = 'interrupted'
-            summary = {'schema_version': 1, 'mode': mode, 'environment': 'live' if self.confirm_live else 'mock',
+            summary = {'schema_version': 2, 'mode': mode, 'environment': 'live' if self.confirm_live else 'mock',
                        'status': status, 'revision': self.revision, 'started_at': self.started,
                        'elapsed_seconds': time.time() - self.started, 'result_count': self.artifacts.count,
                        'stages': self.stages, 'analysis': analysis, 'recoveries': self.recoveries,

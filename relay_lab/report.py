@@ -67,6 +67,21 @@ def write_markdown(path, summary):
     for s in summary['stages']:
         latency = '-' if s['p95_latency_ms'] is None else f"{s['p95_latency_ms']:.2f}"
         lines.append(f"| {s['stage']} | {s['concurrency']} | {s['samples']} | {s['success_rate']:.2%} | {s['completeness_rate']:.2%} | {latency} | {s['rate_429']:.2%} | {s['throughput_rps']:.2f} |")
+    measured = [s for s in summary['stages'] if 'occupancy' in s]
+    if measured:
+        lines += ['', '## 持续并发与占用', '',
+                  '在途指客户端已进入 HTTP 调用但尚未结束的请求，包含连接和上游排队。接收中指首段内容至请求结束，不证明上游账号同时生成。',
+                  '平均值与满并发时间占比按负载窗口计算，排除到时后的收尾及串行恢复探测。曲线在 JSON 的 occupancy.series 中，曲线采样不参与平均值计算。', '',
+                  '| 阶段 | 方式 | 目标 | 峰值在途 | 平均在途 | 满并发时间 | 平均接收中 | 负载秒 | 收尾秒 | 停止原因 |',
+                  '| --- | --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: | --- |']
+        reasons = {'duration': '时长到达', 'request_count': '请求数完成', 'request_cap': '请求上限提前到达', 'stopped': '用户停止'}
+        for s in measured:
+            o = s['occupancy']
+            lines.append(f"| {s['stage']} | {'持续' if s.get('load_mode') == 'duration' else '按请求数'} | {o['target']} | {o['peak_inflight']} | {o['mean_inflight']:.2f} | {o['target_occupancy_ratio']:.1%} | {o['mean_receiving']:.2f} | {o['load_seconds']:.2f} | {o['drain_seconds']:.2f} | {reasons.get(o['stop_reason'], '未知')} |")
+        lines += ['', '上游账号占用：未接入真实服务端证据；客户端并发不得直接当作单账号生成并发。', '', '### 输出负载与失败状态', '']
+        for s in measured:
+            lines.append(f"- {s['stage']}：负载 {s.get('workload_profile', 'short')}；输出上限 {s.get('output_limit') or '未设置'}；实际平均输出 {s.get('mean_output_chars', 0):.1f} 字符；首段内容后平均持续 {s.get('mean_receiving_seconds', 0):.2f} 秒；HTTP 状态分布 {json.dumps(s['statuses'])}。")
+        lines += ['', '输出上限不是最低输出保证。长输出负载到达上限（finish_reason=length）且完整收到结束帧时计为传输完整，截断原因仍记录在请求指标中。']
     lines += ['', '## 极限与模式指标', '', '```json', json.dumps(summary['analysis'], ensure_ascii=False, indent=2), '```', '',
               '## 资源与验证边界', '',
               '资源采样范围见各阶段 resources.scope。嵌入 Mock 时客户端与 Mock 同进程；远端服务进程的 CPU/内存/FD 不由客户端推断。',
@@ -84,7 +99,9 @@ def rebuild(output, *, mode='recovered'):
         for line in f:
             try:
                 row = json.loads(line)
-                if set(row) != {x.name for x in fields(Result)}:
+                expected = {x.name for x in fields(Result)}
+                legacy = expected - {'started_at', 'inflight_started_at', 'first_content_at', 'ended_at', 'finish_reason'}
+                if set(row) not in (expected, legacy):
                     raise ValueError('Unexpected raw schema')
                 count += 1
                 if row['phase'] == 'load':

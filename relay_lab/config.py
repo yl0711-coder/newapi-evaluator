@@ -9,6 +9,8 @@ FAULTS = {'normal', 'slow_sse', 'http_401', 'http_429', 'http_500', 'connect_tim
           'read_timeout', 'network_drop', 'malformed_sse', 'disconnect', 'missing_done',
           'disable_account', 'partial_accounts', 'upstream_outage', 'jitter'}
 DEFAULT = {
+    'stage_duration': 0, 'max_stage_requests': 1000,
+    'workload': {'profile': 'short', 'output_tokens': 1024, 'limit_field': 'max_tokens'},
     'base_url': None, 'timeout': 0.5, 'connection_limit': 1500, 'samples': 100,
     'min_samples': 100, 'rounds_per_stage': 2, 'stages': [1, 2, 3, 5, 8, 13], 'recovery_timeout': 3.0,
     'recovery_interval': 0.03, 'recovery_successes': 3, 'collapse_streak': 3,
@@ -58,6 +60,12 @@ def validate(cfg):
         integer(cfg[key], 1, 1000000)
     for key in ('timeout', 'recovery_timeout', 'recovery_interval'):
         number(cfg[key], 0.001, 86400)
+    number(cfg['stage_duration'], 0, 3600)
+    integer(cfg['max_stage_requests'], 1, 100000)
+    workload = cfg['workload']
+    if workload['profile'] not in ('short', 'long') or workload['limit_field'] not in ('max_tokens', 'max_completion_tokens'):
+        raise ValueError('Invalid workload configuration')
+    integer(workload['output_tokens'], 16, 32768)
     mock = cfg['mock']
     for key in ('latency', 'chunk_delay', 'jitter', 'crash_duration', 'fault_duration'):
         number(mock[key], 0, 86400)

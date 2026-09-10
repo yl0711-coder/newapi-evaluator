@@ -27,6 +27,8 @@ class Monitor:
         self.running = True
         while self.running:
             self.samples.append({**sample(), 'active_connections': self.adapter.active, 'time': time.perf_counter()})
+            if self.adapter.occupancy:
+                self.adapter.occupancy.sample()
             await asyncio.sleep(.02)
 
     def summary(self):

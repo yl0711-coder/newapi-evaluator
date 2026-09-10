@@ -1,0 +1,12 @@
+stages: [1, 3, 5]
+stage_duration: 5
+max_stage_requests: 1000
+timeout: 5
+workload:
+  profile: long
+  output_tokens: 64
+  limit_field: max_tokens
+mock:
+  accounts:
+    - capacity: 8
+      latency: 0.01

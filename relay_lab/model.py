@@ -21,6 +21,11 @@ class Result:
     collapse: bool = False
     attempt: int = 1
     step: int | None = None
+    started_at: float | None = None
+    inflight_started_at: float | None = None
+    first_content_at: float | None = None
+    ended_at: float | None = None
+    finish_reason: str = ''
 
     def public(self):
         return asdict(self)

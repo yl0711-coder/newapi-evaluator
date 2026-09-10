@@ -34,10 +34,13 @@ def main():
     env = {**os.environ, 'PYTHONDONTWRITEBYTECODE': '1', 'TMPDIR': str(tmp)}
     commands = [
         ('inspect', [sys.executable, '-m', 'relay_lab', 'inspect-config', '--config', 'config.example.yaml']),
-        ('focused', [sys.executable, '-m', 'unittest', 'tests.test_protocol', 'tests.test_modes_recovery', '-v']),
+        ('focused', [sys.executable, '-m', 'unittest', 'tests.test_sustained', 'tests.test_protocol', 'tests.test_modes_recovery', '-v']),
         ('full', [sys.executable, 'scripts/test_all.py']),
         ('security', [sys.executable, 'scripts/repo_security_scan.py', '.']),
+        ('javascript', ['node', '--check', 'relay_lab/web/app.js']),
         ('e2e', [sys.executable, 'scripts/e2e.py', '--output', str(output / 'examples')]),
+        ('sustained-cli', [sys.executable, '-m', 'relay_lab', 'account-test', '--config', 'configs/sustained.yaml',
+                           '--output', str(output / 'sustained')]),
     ]
     results = []
     for name, command in commands:
@@ -52,12 +55,19 @@ def main():
             break
     clean = not git('status', '--porcelain')
     unchanged = git('rev-parse', 'HEAD') == sha
-    passed = len(results) == len(commands) and all(r['exit_code'] == 0 for r in results) and clean and unchanged
+    sustained_ok = False
+    if (output / 'sustained/summary.json').exists():
+        sustained = json.loads((output / 'sustained/summary.json').read_text())
+        sustained_ok = all(s['occupancy']['stop_reason'] == 'duration' and s['success_rate'] == 1
+                           and s['occupancy']['mean_inflight'] >= .9 * s['concurrency']
+                           and s['occupancy']['peak_receiving'] == s['concurrency'] for s in sustained['stages'])
+        sustained_ok = sustained_ok and len(sustained['stages']) == 3 and sustained['revision']['commit_sha'] == sha
+    passed = len(results) == len(commands) and all(r['exit_code'] == 0 for r in results) and clean and unchanged and sustained_ok
     value = {'commit_sha': sha, 'checks': results, 'complete': True, 'passed': passed,
              'detached_head': not git('branch', '--show-current'), 'clean_worktree': clean,
              'head_unchanged': unchanged, 'remotes': git('remote').splitlines(),
              'environment': {'python': platform.python_version(), 'os': platform.platform(), 'interpreter': sys.executable},
-             'real_environment_validated': False}
+             'real_environment_validated': False, 'sustained_occupancy_verified': sustained_ok}
     atomic_json(output / 'acceptance.json', value)
     lines = ['# 独立测试报告', '', '- PR：不适用，本项目仅本地 Git，未创建 PR。',
              '- 分支：开发 feature/mock-capacity-lab；本副本 detached HEAD。',

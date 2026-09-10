@@ -1,0 +1,87 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+  <meta name="description" content="中转站单号、号池、网关与长任务测试控制台">
+  <title>中转站 · 测试控制台</title>
+  <link rel="stylesheet" href="/app.css"><script src="/app.js" defer></script>
+</head>
+<body>
+<div class="shell">
+  <aside class="sidebar">
+    <a class="brand" href="/" aria-label="中转站测试控制台"><span class="brand-mark">R</span><span>中转站<small>RELAY LAB</small></span></a>
+    <p class="nav-label">测试实验室</p>
+    <nav aria-label="测试模式" id="mode-nav">
+      <button class="nav-item active" data-mode="account-test" aria-current="page"><span class="nav-number">01</span>单号测试</button>
+      <button class="nav-item" data-mode="pool-test"><span class="nav-number">02</span>号池容量<span class="nav-mini">Mock</span></button>
+      <button class="nav-item" data-mode="gateway-test"><span class="nav-number">03</span>网关极限</button>
+      <button class="nav-item" data-mode="long-task-test"><span class="nav-number">04</span>长任务恢复</button>
+      <button class="nav-item" data-mode="chaos-test"><span class="nav-number">05</span>故障注入<span class="nav-mini">Mock</span></button>
+    </nav>
+    <div class="sidebar-bottom"><span class="local-indicator"></span>仅本机访问<small id="local-address">127.0.0.1 · 本地控制台</small></div>
+  </aside>
+  <main>
+    <header class="topbar"><span>实验室 / <strong id="breadcrumb">单号测试</strong></span><span class="connection" id="connection">正在连接服务</span></header>
+    <section class="page-heading"><div><p class="eyebrow">ACCOUNT BENCHMARK</p><h1 id="page-title">单号质量与极限</h1><p id="page-description">先确认账号可用，再观察每一阶并发下的表现。</p></div><span class="protocol-tag">Chat Completions · SSE</span></section>
+    <div class="workspace">
+      <section class="panel setup-panel" aria-labelledby="setup-title">
+        <div class="panel-heading"><h2 id="setup-title">新建测试</h2><span class="label-muted">01 / 配置</span></div>
+        <form id="test-form" autocomplete="off">
+          <fieldset class="environment"><legend class="sr-only">测试环境</legend><label><input type="radio" name="environment" value="live" checked><span>真实接口</span></label><label><input type="radio" name="environment" value="mock"><span>本地 Mock</span></label></fieldset>
+          <div id="live-fields">
+            <label class="field">API 基础地址<input id="base-url" name="base_url" type="url" placeholder="https://你的中转站/v1" autocomplete="off" spellcheck="false" required></label>
+            <div class="field-hint">填写接口地址，结尾通常为 /v1。</div>
+            <label class="field">API Key<input id="api-key" name="api_key" type="password" placeholder="粘贴本次调用的 Key" autocomplete="new-password" required></label>
+            <div class="field-hint">仅用于当前任务，不保存到浏览器或报告。</div>
+            <label class="field">模型名称<input id="model" name="model" placeholder="填写中转站中可用的模型名" autocomplete="off" spellcheck="false" required></label>
+          </div>
+          <div class="mock-note" id="mock-note" hidden><strong>使用本地虚拟账号</strong><p>无需 API Key。可先试跑，熟悉指标与报告。Mock 结果不代表真实账号能力。</p></div>
+          <label class="field">测试方案<select id="preset"><option value="sustained" selected>持续并发 · 5 路 / 60 秒</option><option value="quick">轻量检查 · 并发 1</option><option value="ladder">并发阶梯 · 1 / 2 / 3 / 5</option><option value="custom">自定义参数</option></select></label>
+          <div id="load-controls">
+            <label class="field">负载方式<select id="load-mode"><option value="duration" selected>按时长持续补发</option><option value="requests">按请求数完成</option></select></label>
+            <div class="field-grid" id="duration-fields"><label class="field">每阶持续 / 秒<input id="stage-duration" type="number" value="60" min="1" max="3600" required></label><label class="field">每阶请求上限<input id="max-stage-requests" type="number" value="1000" min="1" max="100000" required></label></div>
+            <label class="field">输出负载<select id="workload-profile"><option value="long" selected>长输出 · 延长接收时间</option><option value="short">短输出 · 检查可用性</option></select></label>
+            <div id="output-fields"><label class="field">输出上限 / token<input id="output-tokens" type="number" value="1024" min="16" max="32768" required></label><label class="field">接口支持的输出上限参数<select id="limit-field"><option value="max_tokens">max_tokens</option><option value="max_completion_tokens">max_completion_tokens</option></select></label><p class="field-hint">上限不保证输出长度；以实际接收时长为准。达到上限且流正常结束时记录为完整传输。</p></div>
+          </div>
+          <div class="field-grid"><label class="field" id="samples-field" hidden>每阶请求数<input id="samples" type="number" value="8" min="1" max="1000" required></label><label class="field">请求超时 / 秒<input id="timeout" type="number" value="90" min="0.05" max="600" step="0.05" required></label></div>
+          <label class="field">并发阶梯<input id="stages" value="5" placeholder="1, 2, 3, 5" required></label>
+          <div class="field-hint" id="request-estimate">负载请求外，会自动进行恢复探测。</div>
+          <label class="field" id="pool-field" hidden>账号数量阶梯<input id="pool-sizes" value="1, 2, 4"></label>
+          <label class="field" id="steps-field" hidden>长任务步骤数<input id="steps" type="number" min="1" max="100" value="6"></label>
+          <label class="live-confirm" id="live-confirm"><input type="checkbox" id="confirm-live"><span>确认向该接口发送真实测试请求</span></label>
+          <p class="form-error" id="form-error" role="alert" hidden></p>
+          <button type="submit" class="primary" id="start-button">开始测试 <span aria-hidden="true">↗</span></button>
+          <p class="setup-footnote" id="setup-footnote">单号测试请让该调用 Key 只路由到目标账号。</p>
+        </form>
+      </section>
+      <div class="results-column">
+        <section class="panel results-panel" aria-labelledby="result-title">
+          <div class="panel-heading"><div class="result-heading"><h2 id="result-title">运行结果</h2><span class="badge neutral" id="result-status">等待开始</span></div><button class="text-button danger" id="stop-button" hidden>停止测试</button></div>
+          <div class="run-context"><span id="run-context">配置接口后开始，或先运行一次本地 Mock。</span><span id="elapsed">—</span></div>
+          <div class="progress-track"><div id="progress-bar"></div></div>
+          <div class="metrics">
+            <div class="metric"><span>请求成功率</span><strong id="metric-success">—</strong><small>负载请求</small></div>
+            <div class="metric"><span>流完整率</span><strong id="metric-complete">—</strong><small>完整结束的响应</small></div>
+            <div class="metric"><span>首字延迟</span><strong id="metric-ttft">—</strong><small>TTFT · P50</small></div>
+            <div class="metric"><span>总耗时 P95</span><strong id="metric-p95">—</strong><small>成功请求</small></div>
+            <div class="metric"><span>已记录请求</span><strong id="metric-count">—</strong><small>含恢复探测</small></div>
+            <div class="metric"><span>最高通过的并发阶梯</span><strong id="metric-stable">—</strong><small id="stable-caption">客户端请求口径</small></div>
+          </div>
+          <div class="occupancy-metrics"><span>当前在途 <strong id="live-inflight">—</strong></span><span>平均在途 <strong id="mean-inflight">—</strong></span><span>满并发时间 <strong id="full-occupancy">—</strong></span></div>
+          <div class="chart-header"><h3>实际请求占用</h3><select class="chart-select" id="occupancy-stage" aria-label="占用曲线阶段"><option value="">最新阶段</option></select></div>
+          <div class="chart" id="occupancy-chart"><p class="muted">等待请求时间线</p></div>
+          <p class="result-note" id="occupancy-note">在途包含连接和上游排队；接收中不代表账号实际生成。真实账号占用需结合服务端记录。</p>
+          <div class="chart-header"><h3>并发与响应耗时</h3><span><i class="line-key"></i>P95 延迟 / ms</span></div>
+          <div class="chart" id="chart"><div class="empty-chart"><span class="empty-chart-icon">∿</span><strong>等待第一组结果</strong><p>测试开始后，已完成的并发阶梯会显示在这里。</p></div></div>
+          <p class="result-note" id="result-note">小样本用于快速检查，稳定性结论需要更多请求。</p>
+          <div class="downloads" id="downloads" hidden><a id="download-report">下载报告</a><a id="download-summary">JSON 汇总</a><a id="download-raw">请求指标</a></div>
+        </section>
+        <section class="panel detail-panel"><div class="panel-heading"><h2>阶段明细</h2><span class="label-muted" id="stage-count">尚无数据</span></div><div class="table-wrap"><table><thead><tr><th>阶段</th><th>并发</th><th>样本</th><th>成功率</th><th>P95 / ms</th></tr></thead><tbody id="stage-rows"><tr><td colspan="5" class="table-empty">完成一个阶段后，结果会自动更新。</td></tr></tbody></table></div><div id="error-summary" class="error-summary" hidden></div></section>
+      </div>
+    </div>
+    <section class="panel history-panel"><div class="panel-heading"><h2>最近测试</h2><button class="text-button" id="refresh-history">刷新记录</button></div><div id="history" class="history-grid"><p class="muted">正在读取本地记录…</p></div></section>
+    <footer>中转站极限测试实验室<span>测试数据保存在本机 · Mock 与真实结果分开标记</span></footer>
+  </main>
+</div>
+</body>
+</html>

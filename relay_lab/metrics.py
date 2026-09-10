@@ -39,6 +39,8 @@ def stage_summary(stage, concurrency, results, elapsed, min_samples, collapse_st
         'connection_errors': sum(r['error'] in ('connection_error', 'connection_pool_exhausted', 'connect_timeout') for r in rows),
         'unavailable_streak': longest, 'collapsed': longest >= collapse_streak,
         'low_confidence': count < min_samples,
+        'mean_output_chars': sum(r['output_units'] for r in good) / len(good) if good else 0,
+        'mean_receiving_seconds': sum(max(0, r['latency_ms'] - r['ttft_ms']) / 1000 for r in good if r['ttft_ms'] is not None) / len(good) if good else 0,
     }
 
 
@@ -49,6 +51,10 @@ def limits(stages, recovery_time=None):
     def first(predicate):
         return next((s['concurrency'] for s in stages if predicate(s)), None)
     def stable(s):
+        occupancy = s.get('occupancy', {})
+        if occupancy.get('requested_duration_seconds', 0) and (
+                occupancy.get('stop_reason') != 'duration' or occupancy.get('mean_inflight', 0) < .9 * s['concurrency']):
+            return False
         return (s['success_rate'] >= .99 and s['completeness_rate'] >= .99 and
                 baseline is not None and s['p95_latency_ms'] is not None and
                 s['p95_latency_ms'] <= 2 * baseline and not s['collapsed'])

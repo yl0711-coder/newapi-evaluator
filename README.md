@@ -134,3 +134,21 @@ PYTHONDONTWRITEBYTECODE=1 '/Users/lmurder/Desktop/api中转站/中转站极限�
 ```text
 $relay-station 继续开发中转站极限测试
 ```
+
+## 持续并发与输出占用
+
+本地页面选择“持续并发”，填写并发阶梯、每阶持续时长及请求上限。每个执行槽结束一条请求后立即补发，直到时长或请求上限到达，再等待在途请求收尾。恢复探测单独串行执行，不计入负载占用。点击停止会取消正在等待的请求并保留部分结果；客户端取消不保证远端立即终止生成。
+
+长输出模式使用固定合成负载，可选择接口支持的 `max_tokens` 或 `max_completion_tokens`。上限不是最低输出保证；模型可以提前结束。报告提供实际平均输出字符数和首段内容后的持续时间。长输出达到上限且收到正常结束帧视为完整传输，`finish_reason=length` 仍记录；短输出模式维持原有完整性标准。Mock 长输出按字符块模拟，不等同于真实 token。
+
+CLI 示例（默认本地 Mock；输出须使用新的数据子目录）：
+
+```sh
+python -B -m relay_lab account-test --config configs/sustained.yaml --output /Users/lmurder/Desktop/api中转站/中转站极限测试数据/my-sustained-run
+```
+
+也可使用 `--duration 60 --max-requests 1000 --long-output --output-tokens 1024 --output-limit-field max_tokens` 覆盖配置。持续补发按时长结束，最后一条请求可能额外运行至其完成或超时。请求上限提前到达时不判定该持续阶梯通过。
+
+报告 `occupancy` 中的在途包括连接建立、网关等待及上游排队；接收中仅表示从首段内容至请求结束。均值和满并发时间占比通过请求状态变化精确积分，排除收尾及恢复；`series` 是最多 1200 点的采样曲线。真实单账号的生成占用必须结合服务端账号标识、调度及生成起止记录核对，不能用客户端并发代替。当前未接入此类服务端证据。
+
+新增请求时间字段为 UTC Unix 秒；旧 JSONL 仍可重建报告，旧记录不会补造占用曲线。`peak_active_connections` 为兼容保留的客户端活动请求计数，并非已建立 socket 或上游生成数。

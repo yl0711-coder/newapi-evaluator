@@ -36,6 +36,8 @@ class OpenAIAdapter:
         self.gate = asyncio.Semaphore(connection_limit)
         self.active = 0
         self.peak_active = 0
+        self.receiving = 0
+        self.occupancy = None
         self.is_mock = False
         limits = httpx.Limits(max_connections=connection_limit, max_keepalive_connections=connection_limit)
         self.transport = FaultTransport(limits, False)
@@ -61,13 +63,19 @@ class OpenAIAdapter:
         await self.client.aclose()
 
     async def request(self, stage, concurrency, *, phase='load', account=None, fault='normal',
-                      stream=True, chunks=None, chunk_delay=None, step=None, attempt=1, key=None):
+                      stream=True, chunks=None, chunk_delay=None, step=None, attempt=1, key=None,
+                      workload='short', output_tokens=1024, limit_field='max_tokens'):
+        if workload not in ('short', 'long') or limit_field not in ('max_tokens', 'max_completion_tokens'):
+            raise ValueError('Invalid workload')
         result = Result(uuid.uuid4().hex, stage, concurrency, phase=phase, step=step, attempt=attempt)
+        result.started_at = time.time()
         start = time.perf_counter()
         first = None
         acquired = False
         digest = hashlib.sha256()
         headers = {}
+        if workload == 'long' and self.is_mock and chunks is None:
+            chunks, chunk_delay = output_tokens, .01
         if self.is_mock:
             headers = {'X-Relay-Fault': fault, 'X-Relay-Timeout': str(self.timeout)}
             if account is not None:
@@ -88,6 +96,10 @@ class OpenAIAdapter:
             if value:
                 if first is None:
                     first = time.perf_counter()
+                    result.first_content_at = time.time()
+                    self.receiving += 1
+                    if self.occupancy:
+                        self.occupancy.observe(self.active, self.receiving)
                     result.ttft_ms = (first - start) * 1000
                 result.output_units += len(value)
                 digest.update(value.encode())
@@ -96,15 +108,23 @@ class OpenAIAdapter:
             async with asyncio.timeout(self.timeout):
                 async with self.gate:
                     acquired = True
+                    result.inflight_started_at = time.time()
                     result.queue_ms = (time.perf_counter() - start) * 1000
                     self.active += 1
                     self.peak_active = max(self.peak_active, self.active)
+                    if self.occupancy:
+                        self.occupancy.observe(self.active, self.receiving)
                     try:
                         # Fixed synthetic workload; payloads and model responses never enter artifacts.
+                        instruction = ('Generate a long numbered list of distinct imaginary objects with detailed descriptions. '
+                                       'Continue producing entries until the output limit; omit introductions and conclusions.'
+                                       if workload == 'long' else 'Return a short synthetic test response.')
+                        payload = {'model': 'mock-model' if self.is_mock else self.model,
+                                   'messages': [{'role': 'user', 'content': instruction}], 'stream': stream}
+                        if workload == 'long':
+                            payload[limit_field] = output_tokens
                         async with self.client.stream('POST', self.base_url + '/chat/completions', headers=headers,
-                                                      json={'model': 'mock-model' if self.is_mock else self.model,
-                                                            'messages': [{'role': 'user', 'content': 'Return a short synthetic test response.'}],
-                                                            'stream': stream}) as response:
+                                                      json=payload) as response:
                             result.status = response.status_code
                             if self.is_mock:
                                 number = response.headers.get('x-relay-account', '')
@@ -116,7 +136,9 @@ class OpenAIAdapter:
                             if not stream:
                                 value = json.loads(await response.aread())
                                 content(value['choices'][0]['message']['content'])
-                                result.complete = value['choices'][0].get('finish_reason') == 'stop' and result.output_units > 0
+                                reason = value['choices'][0].get('finish_reason')
+                                result.finish_reason = reason if reason in ('stop', 'length', 'content_filter', 'tool_calls') else 'other'
+                                result.complete = (reason == 'stop' or workload == 'long' and reason == 'length') and result.output_units > 0
                             else:
                                 if 'text/event-stream' not in response.headers.get('content-type', ''):
                                     raise ValueError('Unexpected content type')
@@ -138,8 +160,10 @@ class OpenAIAdapter:
                                         value = json.loads(data)
                                         for choice in value.get('choices', []):
                                             content(choice.get('delta', {}).get('content') or '')
-                                            if choice.get('finish_reason') == 'stop':
-                                                finish = True
+                                            reason = choice.get('finish_reason')
+                                            if reason is not None:
+                                                result.finish_reason = reason if reason in ('stop', 'length', 'content_filter', 'tool_calls') else 'other'
+                                                finish = reason == 'stop' or workload == 'long' and reason == 'length'
                                     elif line and not line.startswith(('event:', 'id:', 'retry:')):
                                         raise ValueError('Invalid SSE field')
                                 result.complete = finish and done and result.output_units > 0
@@ -147,7 +171,11 @@ class OpenAIAdapter:
                             if not result.complete:
                                 result.error = 'incomplete_stream'
                     finally:
+                        if first is not None:
+                            self.receiving -= 1
                         self.active -= 1
+                        if self.occupancy:
+                            self.occupancy.observe(self.active, self.receiving)
         except asyncio.CancelledError:
             result.error = 'cancelled'
         except httpx.ConnectTimeout:
@@ -169,6 +197,7 @@ class OpenAIAdapter:
             result.error = 'transport_error'
         finally:
             end = time.perf_counter()
+            result.ended_at = time.time()
             result.latency_ms = (end - start) * 1000
             if not acquired:
                 result.queue_ms = result.latency_ms

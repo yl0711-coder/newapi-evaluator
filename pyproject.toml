@@ -14,3 +14,6 @@ relay-lab = "relay_lab.cli:main"
 
 [tool.setuptools.packages.find]
 include = ["relay_lab*"]
+
+[tool.setuptools.package-data]
+relay_lab = ["web/*.html", "web/*.css", "web/*.js"]
