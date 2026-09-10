@@ -1,0 +1,12 @@
+samples: 100
+timeout: 30.0
+long_task:
+  steps: 8
+  fail_step: 4
+  fault: disconnect
+  max_retries: 3
+  fail_attempts: 1
+  retry_delay: 0.08
+  auto_resume: true
+  stream_chunks: 300
+  stream_chunk_delay: 0.05

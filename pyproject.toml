@@ -1,0 +1,16 @@
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "relay-station-lab"
+version = "0.1.0"
+description = "Local Mock relay capacity and recovery laboratory"
+requires-python = ">=3.11"
+dependencies = ["httpx==0.28.1", "PyYAML==6.0.3"]
+
+[project.scripts]
+relay-lab = "relay_lab.cli:main"
+
+[tool.setuptools.packages.find]
+include = ["relay_lab*"]

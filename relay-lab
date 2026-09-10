@@ -1,0 +1,6 @@
+#!/bin/sh
+# No install, network download, or source-tree cache needed.
+export PYTHONDONTWRITEBYTECODE=1
+RELAY_LAB_PYTHON=${RELAY_LAB_PYTHON:-/Users/lmurder/Desktop/api中转站/中转站极限测试数据/dev-env313/bin/python}
+cd "$(dirname "$0")" || exit 1
+exec "$RELAY_LAB_PYTHON" -m relay_lab "$@"

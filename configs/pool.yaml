@@ -1,0 +1,10 @@
+samples: 100
+min_samples: 100
+pool_sizes: [1, 2, 4]
+pool_stages: [1, 2, 3, 5, 8, 13, 21]
+recovery_timeout: 0.8
+mock:
+  accounts:
+    - {capacity: 3, latency: 0.012, jitter: 0.002, failure_rate: 0.0, cooldown: 0.03}
+    - {capacity: 5, latency: 0.025, jitter: 0.005, failure_rate: 0.0, cooldown: 0.05}
+    - {capacity: 2, latency: 0.02, jitter: 0.005, failure_rate: 0.02, cooldown: 0.05}

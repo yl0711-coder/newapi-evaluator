@@ -1,0 +1,14 @@
+# 默认嵌入本地 Mock。无真实账号，无外部请求。
+samples: 100
+min_samples: 100
+timeout: 1.0
+connection_limit: 1500
+stages: [1, 2, 3, 5, 8, 13]
+recovery_timeout: 2.0
+mock:
+  seed: 23
+  chunks: 4
+  chunk_delay: 0.004
+  latency: 0.015
+  accounts:
+    - {capacity: 3, latency: 0.015, jitter: 0.002, failure_rate: 0.0, cooldown: 0.04}
