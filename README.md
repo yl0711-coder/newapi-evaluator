@@ -125,9 +125,9 @@ PYTHONDONTWRITEBYTECODE=1 '/Users/lmurder/Desktop/api中转站/中转站极限�
 ./relay-lab inspect-config --config config.example.yaml
 ```
 
-独立验收必须 clean detached HEAD、准确 40 位 SHA、无远程，使用独立离线环境；执行 `python scripts/acceptance.py --sha <完整SHA> --output <全新数据子目录>`。该命令独立运行聚焦、完整、安全和五模式 E2E 检查，输出 acceptance-report.md、acceptance.json 和示例原始结果/汇总/报告。发布报告前再次校验 HEAD 不变及工作树干净。
+独立验收必须 clean detached HEAD、准确 40 位 SHA，使用独立离线环境；仅允许已授权的 origin，验收不修改远程。执行 `python scripts/acceptance.py --sha <完整SHA> --output <全新数据子目录>`，独立运行聚焦、完整、安全和五模式 E2E 检查，输出 acceptance-report.md、acceptance.json 和示例原始结果/汇总/报告。发布报告前再次校验 HEAD 不变及工作树干净。
 
-项目只在 feature/mock-capacity-lab 本地开发；main 保留初始空基线，不添加远程、不 push、不创建 PR、不合并。参考工作流所在旧项目保持只读。范围审计记录既有兄弟项目源码指纹和 Git 状态指纹。
+项目在 feature/mock-capacity-lab 开发；用户已授权同名分支推送至 yl0711-coder/newapi-evaluator。本地 main 保留初始空基线，不创建 PR、不合并，参考工作流所在旧项目保持只读。
 
 中转站 Skill：`/Users/lmurder/.codex/skills/relay-station/SKILL.md`。以后调用：
 
@@ -170,3 +170,16 @@ python -B -m relay_lab account-test --config configs/sustained.yaml --output /Us
 ```
 
 默认只发往本地 Mock。`--mixed-burst` 可对单号或网关命令启用该模式，分档数量、输出与超时参数通过 `mixed_burst` 配置设置。JSONL 新字段均为脱敏指标；旧版本两种请求记录格式仍可读取。平均输出现在包含失败请求的部分正文；首段后平均时间按所有收到正文的请求计算。成功请求吞吐仍单独按完整成功统计。
+
+## 三路实时负载推子
+
+启动控制台：`python -B scripts/start_ui.py`，打开 `http://127.0.0.1:8878`。默认选择本地 Mock 与三路实时推子。点“启动推子测试”后，短／中／长目标起始均为 0；拖动推子或输入数值实时调整。
+
+- 推子值是该类请求的目标在途数，包含等待和接收中。上调后补足目标，下调让原请求自然结束；“暂停补发”可观察已有等待请求获得输出，“停止测试”取消在途并生成报告。
+- 可先推高长请求，看到其开始接收正文后，再推短／中请求，观察新请求的等待时长、HTTP 状态和输出。默认 Mock 容量为 5，三类流约持续 2／6／18 秒；配置中的排队／拒绝选项只作用于 Mock。
+- 推子量程可以调整，也可输入准确数值；三路目标之和须在本次客户端并发上限内，支持上限 1200。连接池提前按该上限配置。负载降低期间旧请求仍占位时，新请求按客户端总上限派发。
+- 输出上限、最长运行时长、累计请求上限和补发间隔在启动前设置。到时或达到累计上限后停止补发并收尾。暂停期间运行时限继续计算。持续失败也按补发间隔派发，不进行无间隔重试。
+- 真实接口仍需输入本次凭据并确认真实请求。界面的“等待响应头”“等待首段”包含网络及上游调度，无法单独证明服务端队列；“接收中”不等于账号生成占用。没有服务端证据时不显示确定的队列长度或账号并发上限。
+- 页面优先展示在途和最新请求，完整指标见 results.jsonl，推子调节历史见 fader-events.json。报告保存动态目标和实际请求时间，恢复部分报告时保留调节记录并标记为部分结果。
+
+自动检查：`python -B -m unittest tests.test_faders tests.test_fader_http -v`。控制台同样支持原固定混合批次、持续阶梯以及其他既有模式。

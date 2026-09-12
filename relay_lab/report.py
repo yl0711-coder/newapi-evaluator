@@ -77,8 +77,10 @@ def write_markdown(path, summary):
         reasons = {'duration': '时长到达', 'request_count': '请求数完成', 'request_cap': '请求上限提前到达', 'stopped': '用户停止', 'batch_complete': '固定批次结束'}
         for s in measured:
             o = s['occupancy']
-            kind = {'duration': '持续', 'mixed_burst': '固定混合批次'}.get(s.get('load_mode'), '按请求数')
-            lines.append(f"| {s['stage']} | {kind} | {o['target']} | {o['peak_inflight']} | {o['mean_inflight']:.2f} | {o['target_occupancy_ratio']:.1%} | {o['mean_receiving']:.2f} | {o['load_seconds']:.2f} | {o['drain_seconds']:.2f} | {reasons.get(o['stop_reason'], '未知')} |")
+            kind = {'duration': '持续', 'mixed_burst': '固定混合批次', 'faders': '实时推子'}.get(s.get('load_mode'), '按请求数')
+            ratio = '-' if o['target_occupancy_ratio'] is None else f"{o['target_occupancy_ratio']:.1%}"
+            target = '动态，见调节记录' if o.get('dynamic_target') else o['target']
+            lines.append(f"| {s['stage']} | {kind} | {target} | {o['peak_inflight']} | {o['mean_inflight']:.2f} | {ratio} | {o['mean_receiving']:.2f} | {o['load_seconds']:.2f} | {o['drain_seconds']:.2f} | {reasons.get(o['stop_reason'], '未知')} |")
         lines += ['', '上游账号占用：未接入真实服务端证据；客户端并发不得直接当作单账号生成并发。', '', '### 输出负载与失败状态', '']
         for s in measured:
             scope = '所有请求，含失败' if s.get('output_statistics_scope') == 'all_requests' else '历史口径，仅成功请求'
@@ -103,7 +105,24 @@ def write_markdown(path, summary):
         for event in burst['release_observations']:
             later = '；'.join(f"{p['label']} 在其后 {p['delay_seconds']:.3f}s 收到正文" for p in event['later_output']) or '未观察到后续正文'
             lines.append(f"- {event['released_label']} 于 {event['at_seconds']:.3f}s 结束；当时等待：{', '.join(event['waiting_labels']) or '无'}；{later}；后来无正文结束：{', '.join(event['ended_without_output']) or '无'}。")
-    analysis = {k: v for k, v in summary['analysis'].items() if k != 'burst'}
+    faders = summary.get('analysis', {}).get('faders')
+    if faders:
+        lines += ['', '## 三路实时推子', '',
+                  '推子控制短／中／长请求的目标在途数。升高补发，降低不取消已发请求；暂停补发保留在途，停止测试取消在途。',
+                  '等待首段包含网络、调度和排队；客户端记录不能单独证明服务端队列或账号生成占用。',
+                  f"已发 {faders['issued_requests']} 条；客户端并发上限 {faders['max_inflight']}；补发间隔 {faders['refill_interval']} 秒。",
+                  '时间线列出全部未结束请求及最近 60 条已结束请求；完整请求指标见 results.jsonl，所有调节见 fader-events.json。', '',
+                  '| 调节秒 | 动作 | 短目标 | 中目标 | 长目标 | 暂停补发 |',
+                  '| ---: | --- | ---: | ---: | ---: | --- |']
+        for e in faders['events']:
+            lines.append(f"| {e['at_seconds']:.3f} | {e['action']} | {e['targets'][0]} | {e['targets'][1]} | {e['targets'][2]} | {e['paused']} |")
+        lines += ['', '| 请求 | 状态 | HTTP | 等待首段秒 | 发起秒 | 首段秒 | 结束秒 | 字符 |',
+                  '| --- | --- | ---: | ---: | ---: | ---: | ---: | ---: |']
+        def fmt(value):
+            return '-' if value is None else f'{value:.3f}'
+        for r in faders['timeline']:
+            lines.append(f"| {r['label']} | {r['state']} | {r['http_status'] or '-'} | {fmt(r['wait_seconds'])} | {fmt(r['start_seconds'])} | {fmt(r['first_output_seconds'])} | {fmt(r['end_seconds'])} | {r['output_chars']} |")
+    analysis = {k: v for k, v in summary['analysis'].items() if k not in ('burst', 'faders')}
     lines += ['', '## 极限与模式指标', '', '```json', json.dumps(analysis, ensure_ascii=False, indent=2), '```', '',
               '## 资源与验证边界', '',
               '资源采样范围见各阶段 resources.scope。嵌入 Mock 时客户端与 Mock 同进程；远端服务进程的 CPU/内存/FD 不由客户端推断。',
@@ -146,6 +165,22 @@ def rebuild(output, *, mode='recovered'):
             rows = [row for group in groups.values() for row in group]
             summary['analysis'] = {'max_stable_concurrency': None, 'capacity_limit_determined': False,
                                    'burst': snapshot(rows, manifest['mixed_burst'])}
+        if manifest.get('faders'):
+            from .faders import Faders
+            rows = [row for group in groups.values() for row in group]
+            control = Faders(manifest['faders'], output, record=False)
+            control.started = manifest.get('started_at', min((r['started_at'] for r in rows), default=0))
+            control.finished = max((r['ended_at'] for r in rows), default=control.started)
+            control.rows = {r['request_id']: r for r in rows}
+            control.accepting, control.reason = False, 'partial_reconstructed'
+            events = output / 'fader-events.json'
+            if events.exists():
+                control.events = json.loads(events.read_text())['events']
+                if control.events:
+                    last = control.events[-1]
+                    control.targets, control.paused, control.version = last['targets'], last['paused'], last['version']
+            summary['analysis'] = {'max_stable_concurrency': None, 'capacity_limit_determined': False,
+                                   'partial_metrics_only': True, 'faders': control.snapshot()}
         # Wall-clock throughput cannot be reconstructed from per-request duration.
         for s in stages:
             s['throughput_rps'] = s['attempts_rps'] = 0

@@ -36,6 +36,8 @@ class Lab:
         self.started = time.time()
         self.network = {'loopback_connections': 0, 'blocked_external_attempts': 0}
         self.revision = revision()
+        from .faders import Faders
+        self.faders = Faders(config['faders'], self.artifacts.output) if config['faders']['enabled'] else None
         atomic_json(self.artifacts.output / 'run.json', {'revision': self.revision,
                     'environment': 'live' if confirm_live else 'mock', 'started_at': self.started})
 
@@ -50,7 +52,7 @@ class Lab:
                                          timeout=self.cfg['timeout'], connection_limit=self.cfg['connection_limit'],
                                          confirm_live=self.confirm_live, api_key=(self.api_key if self.api_key is not None else os.environ.get('RELAY_LAB_API_KEY')) if self.confirm_live else None,
                                          model=self.cfg.get('model', 'relay-lab-model'),
-                                         burst_timeouts=self.cfg['mixed_burst'] if self.cfg['mixed_burst']['enabled'] else None) as adapter:
+                                         burst_timeouts=self.cfg['mixed_burst'] if self.cfg['mixed_burst']['enabled'] or self.faders else None) as adapter:
                     yield adapter, mock
         finally:
             if mock:
@@ -223,6 +225,9 @@ class Lab:
                 'burst': self.burst_snapshot()}
 
     async def account(self):
+        if self.faders:
+            from .faders import run
+            return await run(self)
         if self.cfg['mixed_burst']['enabled']:
             return await self.mixed_burst()
         async with self.target() as (adapter, mock):
@@ -236,6 +241,9 @@ class Lab:
             return analysis
 
     async def gateway(self):
+        if self.faders:
+            from .faders import run
+            return await run(self)
         if self.cfg['mixed_burst']['enabled']:
             return await self.mixed_burst()
         cfg = copy.deepcopy(self.cfg['mock'])
@@ -376,10 +384,13 @@ class Lab:
         analysis = {}
         atomic_json(self.artifacts.output / 'run.json', {'revision': self.revision, 'mode': mode,
                     'environment': 'live' if self.confirm_live else 'mock', 'started_at': self.started,
-                    'mixed_burst': self.cfg['mixed_burst'] if self.cfg['mixed_burst']['enabled'] else None})
+                    'mixed_burst': self.cfg['mixed_burst'] if self.cfg['mixed_burst']['enabled'] else None,
+                    'faders': self.cfg['faders'] if self.faders else None})
         try:
             if self.cfg['mixed_burst']['enabled'] and mode not in ('account-test', 'gateway-test'):
                 raise ValueError('Mixed burst is supported only for account and gateway modes')
+            if self.faders and mode not in ('account-test', 'gateway-test'):
+                raise ValueError('Faders are supported only for account and gateway modes')
             method = {'account-test': self.account, 'pool-test': self.pool, 'gateway-test': self.gateway,
                       'long-task-test': self.long_task, 'chaos-test': self.chaos}[mode]
             analysis = await method()
@@ -391,6 +402,11 @@ class Lab:
         finally:
             if self.stop.is_set():
                 status = 'interrupted'
+            if self.faders:
+                self.faders.close('failed' if status == 'failed' else 'finished')
+                analysis.setdefault('faders', self.faders.snapshot())
+                analysis['max_stable_concurrency'] = None
+                analysis['capacity_limit_determined'] = False
             summary = {'schema_version': 3, 'mode': mode, 'environment': 'live' if self.confirm_live else 'mock',
                        'status': status, 'revision': self.revision, 'started_at': self.started,
                        'elapsed_seconds': time.time() - self.started, 'result_count': self.artifacts.count,

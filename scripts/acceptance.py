@@ -25,8 +25,11 @@ def main():
     p.add_argument('--output', required=True)
     args = p.parse_args()
     sha = git('rev-parse', 'HEAD')
-    if len(args.sha) != 40 or sha != args.sha or git('status', '--porcelain') or git('branch', '--show-current') or git('remote'):
-        raise SystemExit('Acceptance requires exact 40-character SHA, clean detached HEAD and no remotes')
+    approved_remote = 'https://github.com/yl0711-coder/newapi-evaluator.git'
+    remote_names = git('remote').splitlines()
+    unexpected_remote = any(name != 'origin' or git('remote', 'get-url', name) != approved_remote for name in remote_names)
+    if len(args.sha) != 40 or sha != args.sha or git('status', '--porcelain') or git('branch', '--show-current') or unexpected_remote:
+        raise SystemExit('Acceptance requires exact SHA, clean detached HEAD and only the user-authorized remote')
     output = data_path(args.output)
     output.mkdir(parents=True, exist_ok=False)
     tmp = output / 'tmp'
@@ -34,10 +37,11 @@ def main():
     env = {**os.environ, 'PYTHONDONTWRITEBYTECODE': '1', 'TMPDIR': str(tmp)}
     commands = [
         ('inspect', [sys.executable, '-m', 'relay_lab', 'inspect-config', '--config', 'config.example.yaml']),
-        ('focused', [sys.executable, '-m', 'unittest', 'tests.test_mixed_burst', 'tests.test_sustained', 'tests.test_protocol', 'tests.test_modes_recovery', '-v']),
+        ('focused', [sys.executable, '-m', 'unittest', 'tests.test_faders', 'tests.test_fader_http', 'tests.test_mixed_burst', 'tests.test_sustained', 'tests.test_protocol', 'tests.test_modes_recovery', '-v']),
         ('full', [sys.executable, 'scripts/test_all.py']),
         ('security', [sys.executable, 'scripts/repo_security_scan.py', '.']),
         ('javascript', ['node', '--check', 'relay_lab/web/app.js']),
+        ('faders-javascript', ['node', '--check', 'relay_lab/web/faders.js']),
         ('ui-contract', ['node', 'scripts/test_web.js']),
         ('e2e', [sys.executable, 'scripts/e2e.py', '--output', str(output / 'examples')]),
         ('sustained-cli', [sys.executable, '-m', 'relay_lab', 'account-test', '--config', 'configs/sustained.yaml',
@@ -79,7 +83,7 @@ def main():
              'environment': {'python': platform.python_version(), 'os': platform.platform(), 'interpreter': sys.executable},
              'real_environment_validated': False, 'sustained_occupancy_verified': sustained_ok, 'mixed_burst_verified': burst_ok}
     atomic_json(output / 'acceptance.json', value)
-    lines = ['# 独立测试报告', '', '- PR：不适用，本项目仅本地 Git，未创建 PR。',
+    lines = ['# 独立测试报告', '', '- PR：未创建；远程为用户指定仓库，验收不执行推送或合并。',
              '- 分支：开发 feature/mock-capacity-lab；本副本 detached HEAD。',
              f'- 实际验证 SHA（40 位）：`{sha}`',
              f'- Python：{platform.python_version()}；系统：{platform.system()} {platform.machine()}',
@@ -97,6 +101,7 @@ def main():
               '- 前端 JavaScript 语法检查：已列入 javascript 验收项，结果见上表与 javascript.log。',
               '- 持续模式验证并发 1、3、5 的请求补发、接收重叠与完整时长；结果见 sustained/summary.json。',
               '- 固定混合批次验证 2 短、2 中、6 长同时发出，容量 5 的 Mock 排队释放、不补发及逐条时间线；见 mixed-burst/summary.json。',
+              '- 三路推子通过独立聚焦与 HTTP 测试：运行中增减、满载等待与拒绝、暂停、取消、时限、请求上限、调节持久化及历史重建。',
               '- Mock 崩溃为本地短暂不可用模拟；未终止真实网关进程。',
               '- 真实 Sub2API 调度、真实账号和真实网关容量均未验证。', '']
     (output / 'acceptance-report.md').write_text('\n'.join(lines))

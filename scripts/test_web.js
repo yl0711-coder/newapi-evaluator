@@ -9,7 +9,7 @@ const html = fs.readFileSync(path.join(root, 'relay_lab/web/index.html'), 'utf8'
 class Element {
   constructor(value = '') {
     this.value = value; this.innerHTML = ''; this.textContent = ''; this.hidden = false;
-    this.disabled = false; this.checked = false; this.style = {}; this.dataset = {}; this.handlers = {};
+    this.disabled = false; this.checked = false; this.style = {setProperty(name,value) {this[name]=value;}}; this.dataset = {}; this.handlers = {};
     this.classList = {toggle() {}}; this.options = new Map();
   }
   addEventListener(name, action) {this.handlers[name] = action;}
@@ -53,17 +53,23 @@ const burst = {planned_requests:10,issued_requests:10,finished_requests:2,refere
 const job = {id:'a'.repeat(32),name:'单号测试',environment:'mock',status:'running',started_at:1,elapsed_seconds:3,
   metrics:{requests:2,success_rate:1,completeness_rate:1,p50_ttft_ms:200,p95_latency_ms:1000,errors:{}},
   downloads:[],stages:[],analysis:{},burst,phase:'mixed_burst'};
-let submitted;
-const context = vm.createContext({document,location:{host:'127.0.0.1:8890'},setInterval() {},
+let submitted, adjusted;
+let responseJob;
+const context = vm.createContext({document,location:{host:'127.0.0.1:8890'},setInterval() {},setTimeout,clearTimeout,
   fetch:async (url, options) => ({ok:true,json:async () => {
-    if (url === '/api/state') return {csrf:'test-session',ui_schema_version:3,jobs:[]};
+    if (url === '/api/state') return {csrf:'test-session',ui_schema_version:4,jobs:[]};
     if (url === '/api/jobs') {submitted = JSON.parse(options.body); return job;}
-    return job;
+    if(url.endsWith('/faders')){adjusted=JSON.parse(options.body);return responseJob;}
+    return responseJob||job;
   }})});
+vm.runInContext(fs.readFileSync(path.join(root,'relay_lab/web/faders.js'),'utf8'),context);
 vm.runInContext(fs.readFileSync(path.join(root,'relay_lab/web/app.js'),'utf8'),context);
 (async () => {
   await new Promise(resolve => setImmediate(resolve));
-  assert.equal(get('load-mode').value,'mixed_burst');
+  assert.equal(get('load-mode').value,'faders');
+  assert.equal(get('burst-count-fields').hidden,true);
+  assert.equal(get('fader-panel').hidden,false);
+  vm.runInContext("$('load-mode').value='mixed_burst'; syncLoad()",context);
   assert.equal(get('samples').disabled,true);
   assert.equal(get('timeout').disabled,true);
   assert.equal(get('limit-field').disabled,false);
@@ -83,5 +89,22 @@ vm.runInContext(fs.readFileSync(path.join(root,'relay_lab/web/app.js'),'utf8'),c
   assert.equal(get('metric-stable-label').textContent,'峰值接收中');
   assert.equal(get('metric-stable').textContent,'5');
   assert.equal(get('form-error').hidden,true);
-  console.log('UI contract tests passed: form modes, exact cohort payload, live rows, release observations and capacity label.');
+  const faders={targets:[0,0,3],version:1,accepting:true,paused:false,refill_interval:1,
+    issued_requests:3,inflight:3,channels:['short','medium','long'].map(profile=>({profile,waiting:profile==='long'?1:0,receiving:profile==='long'?2:0,complete:0})),
+    timeline:[{label:'L3',profile:'long',state:'waiting_headers',http_status:null,wait_seconds:2,start_seconds:0,first_output_seconds:null,end_seconds:null,output_chars:0}],events:[{action:'adjust',at_seconds:0,targets:[0,0,3],paused:false}]};
+  responseJob={...job,burst:null,faders,phase:'faders'};
+  context.faderJob=responseJob;
+  vm.runInContext("$('load-mode').value='faders';active=faderJob.id;renderJob(faderJob);syncLoad()",context);
+  assert.equal(get('fader-long-number').value,3);
+  assert.equal(get('fader-long').disabled,false);
+  assert.equal(get('fader-long-limit').disabled,true);
+  assert.match(get('fader-rows').innerHTML,/等待响应头/);
+  assert.equal(get('metric-stable-label').textContent,'峰值客户端在途');
+  get('fader-short').value='2';get('fader-short').handlers.input();
+  await new Promise(resolve=>setTimeout(resolve,260));
+  assert.deepEqual(adjusted.targets,[2,0,3]);
+  get('fader-pause').handlers.click();
+  await new Promise(resolve=>setTimeout(resolve,260));
+  assert.equal(adjusted.paused,true);
+  console.log('UI contract tests passed: live fader adjustments, pause, request states and locked output settings; form modes, exact cohort payload, live rows, release observations and capacity label.');
 })().catch(error => {console.error(error); process.exitCode=1;});

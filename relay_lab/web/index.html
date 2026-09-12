@@ -4,7 +4,7 @@
   <meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
   <meta name="description" content="中转站单号、号池、网关与长任务测试控制台">
   <title>中转站 · 测试控制台</title>
-  <link rel="stylesheet" href="/app.css"><script src="/app.js" defer></script>
+  <link rel="stylesheet" href="/app.css"><script src="/faders.js" defer></script><script src="/app.js" defer></script>
 </head>
 <body>
 <div class="shell">
@@ -27,7 +27,7 @@
       <section class="panel setup-panel" aria-labelledby="setup-title">
         <div class="panel-heading"><h2 id="setup-title">新建测试</h2><span class="label-muted">01 / 配置</span></div>
         <form id="test-form" autocomplete="off">
-          <fieldset class="environment"><legend class="sr-only">测试环境</legend><label><input type="radio" name="environment" value="live" checked><span>真实接口</span></label><label><input type="radio" name="environment" value="mock"><span>本地 Mock</span></label></fieldset>
+          <fieldset class="environment"><legend class="sr-only">测试环境</legend><label><input type="radio" name="environment" value="live"><span>真实接口</span></label><label><input type="radio" name="environment" value="mock" checked><span>本地 Mock</span></label></fieldset>
           <div id="live-fields">
             <label class="field">API 基础地址<input id="base-url" name="base_url" type="url" placeholder="https://你的中转站/v1" autocomplete="off" spellcheck="false" required></label>
             <div class="field-hint">填写接口地址，结尾通常为 /v1。</div>
@@ -36,16 +36,21 @@
             <label class="field">模型名称<input id="model" name="model" placeholder="填写中转站中可用的模型名" autocomplete="off" spellcheck="false" required></label>
           </div>
           <div class="mock-note" id="mock-note" hidden><strong>使用本地虚拟账号</strong><p>无需 API Key。可先试跑，熟悉指标与报告。Mock 结果不代表真实账号能力。</p></div>
-          <label class="field">测试方案<select id="preset"><option value="mixed_burst" selected>固定 10 条 · 2 短 / 2 中 / 6 长</option><option value="sustained">持续并发 · 5 路 / 60 秒</option><option value="quick">轻量检查 · 并发 1</option><option value="ladder">并发阶梯 · 1 / 2 / 3 / 5</option><option value="custom">自定义参数</option></select></label>
+          <label class="field">测试方案<select id="preset"><option value="faders" selected>三路实时推子 · 运行中调负载</option><option value="mixed_burst">固定 10 条 · 2 短 / 2 中 / 6 长</option><option value="sustained">持续并发 · 5 路 / 60 秒</option><option value="quick">轻量检查 · 并发 1</option><option value="ladder">并发阶梯 · 1 / 2 / 3 / 5</option><option value="custom">自定义参数</option></select></label>
           <div id="load-controls">
-            <label class="field">负载方式<select id="load-mode"><option value="mixed_burst" selected>同时发出固定批次 · 不补发</option><option value="duration">按时长持续补发</option><option value="requests">按请求数完成</option></select></label>
+            <label class="field">负载方式<select id="load-mode"><option value="faders" selected>三路推子 · 动态持续负载</option><option value="mixed_burst">同时发出固定批次 · 不补发</option><option value="duration">按时长持续补发</option><option value="requests">按请求数完成</option></select></label>
+            <div id="fader-fields">
+              <div class="field-grid"><label class="field">最长运行 / 秒<input id="fader-duration" type="number" min="1" max="3600" value="600" required></label><label class="field">累计请求上限<input id="fader-cap" type="number" min="1" max="100000" value="10000" required></label></div>
+              <div class="field-grid"><label class="field">客户端并发上限<input id="fader-ceiling" type="number" min="1" max="1200" value="120" required></label><label class="field">补发间隔 / 秒<input id="fader-interval" type="number" min="0.1" max="60" step="0.1" value="1" required></label></div>
+              <p class="field-hint">三个目标之和不超过客户端上限。该上限用于预留连接，不代表上游容量。</p>
+            </div>
             <div id="burst-fields">
-              <div class="burst-input-grid"><span>长度</span><span>请求数</span><span>输出上限 / token</span>
+              <div class="burst-input-grid" id="burst-count-fields"><span>长度</span><span>请求数</span><span>输出上限 / token</span>
                 <label for="burst-short-count">短请求</label><input id="burst-short-count" type="number" min="0" max="1200" value="2" required aria-label="短请求数量"><input id="burst-short-limit" type="number" min="16" max="32768" value="64" required aria-label="短请求输出上限">
                 <label for="burst-medium-count">中请求</label><input id="burst-medium-count" type="number" min="0" max="1200" value="2" required aria-label="中请求数量"><input id="burst-medium-limit" type="number" min="16" max="32768" value="512" required aria-label="中请求输出上限">
                 <label for="burst-long-count">长请求</label><input id="burst-long-count" type="number" min="0" max="1200" value="6" required aria-label="长请求数量"><input id="burst-long-limit" type="number" min="16" max="32768" value="4096" required aria-label="长请求输出上限">
               </div>
-              <p class="field-hint">一次同时发出全部请求，结束后不补发。长度是目标档位，实际以返回的字符数和持续时间为准。</p>
+              <p class="field-hint" id="burst-plan-hint">一次同时发出全部请求，结束后不补发。长度是目标档位，实际以返回的字符数和持续时间为准。</p>
               <label class="field">参考上游并发限制<input id="burst-capacity" type="number" min="1" max="1200" value="5" required></label>
               <p class="field-hint">用于对照结果，不限制客户端发送数量。Mock 用它设置虚拟账号容量。</p>
               <label class="field" id="mock-policy-field">Mock 满载行为<select id="mock-policy"><option value="queue">排队等待空位</option><option value="reject">立即返回 429</option></select></label>
@@ -68,6 +73,16 @@
         </form>
       </section>
       <div class="results-column">
+        <section class="panel fader-panel" id="fader-panel" aria-labelledby="fader-title">
+          <div class="panel-heading"><h2 id="fader-title">三路负载推子</h2><label class="fader-range-label">推子量程 0–<input id="fader-range" type="number" min="1" max="1200" value="20" aria-label="推子最大刻度"></label></div>
+          <div class="fader-bank"><div class="fader-strip fader-short"><label for="fader-short" class="fader-name">短请求</label><input id="fader-short-number" class="fader-number" type="number" min="0" max="1200" value="0" step="1" aria-label="短请求目标在途数"><span class="fader-unit">目标在途数</span><div class="fader-track"><input id="fader-short" type="range" min="0" max="20" value="0" step="1" aria-label="短请求目标在途数" aria-orientation="vertical"><div class="fader-scale" aria-hidden="true"><span id="fader-short-max">20</span><span>0</span></div></div><label class="fader-output">输出上限 / token<input id="fader-short-limit" type="number" min="16" max="32768" value="64" aria-label="短请求输出上限"></label><span class="fader-state" id="fader-short-state">等待 0 · 接收中 0 · 完成 0</span></div><div class="fader-strip fader-medium"><label for="fader-medium" class="fader-name">中请求</label><input id="fader-medium-number" class="fader-number" type="number" min="0" max="1200" value="0" step="1" aria-label="中请求目标在途数"><span class="fader-unit">目标在途数</span><div class="fader-track"><input id="fader-medium" type="range" min="0" max="20" value="0" step="1" aria-label="中请求目标在途数" aria-orientation="vertical"><div class="fader-scale" aria-hidden="true"><span id="fader-medium-max">20</span><span>0</span></div></div><label class="fader-output">输出上限 / token<input id="fader-medium-limit" type="number" min="16" max="32768" value="512" aria-label="中请求输出上限"></label><span class="fader-state" id="fader-medium-state">等待 0 · 接收中 0 · 完成 0</span></div><div class="fader-strip fader-long"><label for="fader-long" class="fader-name">长请求</label><input id="fader-long-number" class="fader-number" type="number" min="0" max="1200" value="0" step="1" aria-label="长请求目标在途数"><span class="fader-unit">目标在途数</span><div class="fader-track"><input id="fader-long" type="range" min="0" max="20" value="0" step="1" aria-label="长请求目标在途数" aria-orientation="vertical"><div class="fader-scale" aria-hidden="true"><span id="fader-long-max">20</span><span>0</span></div></div><label class="fader-output">输出上限 / token<input id="fader-long-limit" type="number" min="16" max="32768" value="4096" aria-label="长请求输出上限"></label><span class="fader-state" id="fader-long-state">等待 0 · 接收中 0 · 完成 0</span></div></div>
+          <div class="fader-toolbar"><span id="fader-control-state" aria-live="polite">启动后可实时调节；目标为 0 时不发请求</span><button type="button" class="text-button" id="fader-pause" hidden>暂停补发</button></div>
+          <p class="form-error fader-error" id="fader-control-error" role="alert" hidden></p>
+          <div class="fader-metrics"><span>目标 <strong id="fader-target-total">0</strong></span><span>已发 <strong id="fader-issued">0</strong></span><span>在途 <strong id="fader-inflight">0</strong></span><span>等待首段 <strong id="fader-waiting">0</strong></span><span>接收中 <strong id="fader-receiving">0</strong></span></div>
+          <p class="result-note">推高补发；推低不取消已发请求。暂停补发可观察空位释放，停止测试会取消在途。等待不直接等于服务端排队；接收中不代表账号正在生成。</p>
+          <div class="table-wrap"><table><thead><tr><th>请求</th><th>状态</th><th>HTTP</th><th>等待首段 / 秒</th><th>发起 / 秒</th><th>首段 / 秒</th><th>字符</th></tr></thead><tbody id="fader-rows"><tr><td colspan="7" class="table-empty">启动测试后，推高任一路观察新请求。</td></tr></tbody></table></div>
+          <p class="result-note" id="fader-window">全部请求会记录在请求指标中。</p><div class="fader-events" id="fader-events"></div><div class="downloads"><a id="download-fader-events" download="fader-events.json" hidden>下载推子调节记录</a></div>
+        </section>
         <section class="panel results-panel" aria-labelledby="result-title">
           <div class="panel-heading"><div class="result-heading"><h2 id="result-title">运行结果</h2><span class="badge neutral" id="result-status">等待开始</span></div><button class="text-button danger" id="stop-button" hidden>停止测试</button></div>
           <div class="run-context"><span id="run-context">配置接口后开始，或先运行一次本地 Mock。</span><span id="elapsed">—</span></div>

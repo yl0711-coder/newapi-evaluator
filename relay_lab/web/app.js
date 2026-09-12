@@ -13,6 +13,7 @@ let mode = 'account-test', token = '', selected = null, active = null, submittin
 let currentJob = null;
 let sustainedSupported = false;
 let burstSupported = false;
+let fadersSupported = false;
 Object.assign(errorNames,{total_timeout:'请求总时限到达',first_output_timeout:'首段等待超时',stream_idle_timeout:'流空闲超时',upstream_error:'流内上游错误'});
 const burstStates={...errorNames,complete:'完整结束',waiting_first_output:'等待首段',receiving:'接收中'};
 const profiles={short:'短',medium:'中',long:'长'};
@@ -44,7 +45,8 @@ function setMode(next) {
   $('load-controls').hidden=!loadCapable;
   $('preset').querySelector('[value="sustained"]').disabled=!loadCapable;
   $('preset').querySelector('[value="mixed_burst"]').disabled=!loadCapable;
-  if(!loadCapable){$('load-mode').value='requests';$('workload-profile').value='short';if(['sustained','mixed_burst'].includes($('preset').value))$('preset').value='custom';}
+  $('preset').querySelector('[value="faders"]').disabled=!loadCapable;
+  if(!loadCapable){$('load-mode').value='requests';$('workload-profile').value='short';if(['sustained','mixed_burst','faders'].includes($('preset').value))$('preset').value='custom';}
   document.querySelector('[name="environment"][value="live"]').disabled=mockOnly;
   if(mockOnly)document.querySelector('[name="environment"][value="mock"]').checked=true;
   $('pool-field').hidden=mode!=='pool-test';$('steps-field').hidden=mode!=='long-task-test';
@@ -60,17 +62,20 @@ function syncEnvironment() {
   syncLoad();
 }
 function syncLoad() {
-  const capable=['account-test','gateway-test'].includes(mode), burst=isBurst(), timed=capable&&$('load-mode').value==='duration', long=capable&&$('workload-profile').value==='long'&&!burst;
-  $('duration-fields').hidden=!timed;$('samples-field').hidden=timed||burst;$('output-fields').hidden=!(long||burst);
-  $('samples').disabled=timed||burst;['stage-duration','max-stage-requests'].forEach(id=>$(id).disabled=!timed);
-  $('output-tokens').disabled=!long;$('output-tokens').closest('label').hidden=burst;$('limit-field').disabled=!(long||burst);
-  $('workload-profile').closest('label').hidden=burst;
-  $('burst-fields').hidden=!burst;burstFields.forEach(id=>$(id).disabled=!burst);
-  $('mock-policy-field').hidden=!burst||environment()==='live';$('mock-policy').disabled=!burst||environment()==='live';
-  $('timeout-field').hidden=burst;$('timeout').disabled=burst;$('stages-field').hidden=burst;$('stages').disabled=burst;
-  estimate();busy();
+  const capable=['account-test','gateway-test'].includes(mode), fader=FaderUI.isMode(), burst=isBurst(), mixed=burst||fader, timed=capable&&$('load-mode').value==='duration', long=capable&&$('workload-profile').value==='long'&&!mixed;
+  $('duration-fields').hidden=!timed;$('samples-field').hidden=timed||mixed;$('output-fields').hidden=!(long||mixed);
+  $('samples').disabled=timed||mixed;['stage-duration','max-stage-requests'].forEach(id=>$(id).disabled=!timed);
+  $('output-tokens').disabled=!long;$('output-tokens').closest('label').hidden=mixed;$('limit-field').disabled=!(long||mixed);
+  $('workload-profile').closest('label').hidden=mixed;
+  $('burst-fields').hidden=!mixed;burstFields.forEach(id=>$(id).disabled=!mixed);
+  $('burst-count-fields').hidden=fader;$('burst-plan-hint').hidden=fader;
+  ['short','medium','long'].forEach(p=>['count','limit'].forEach(k=>$('burst-'+p+'-'+k).disabled=!burst));
+  $('mock-policy-field').hidden=!mixed||environment()==='live';$('mock-policy').disabled=!mixed||environment()==='live';
+  $('timeout-field').hidden=mixed;$('timeout').disabled=mixed;$('stages-field').hidden=mixed;$('stages').disabled=mixed;
+  estimate();busy();FaderUI.sync();
 }
 function estimate() {
+  if(FaderUI.isMode()){$('request-estimate').textContent='启动后实时调节右侧推子。到时或达到请求上限停止补发并收尾；不追加恢复探测。';return;}
   const stages=integers($('stages').value), samples=Number($('samples').value);
   if(isBurst()){$('request-estimate').textContent=`同时发出 ${burstTotal()} 条原始请求，不补发、不追加恢复探测。观察短／中请求结束后，其他原始请求开始输出还是报错。`;return;}
   if(['account-test','gateway-test'].includes(mode)&&$('load-mode').value==='duration'){
@@ -80,9 +85,10 @@ function estimate() {
   $('request-estimate').textContent=['pool-test','chaos-test','long-task-test'].includes(mode)?'每个场景分别计数，结束后自动进行恢复探测。':`预计 ${Number.isFinite(requests)?requests:'—'} 次负载请求，另含恢复探测。`;
 }
 function busy() {
-  const needsUpdate=isBurst()?!burstSupported:!sustainedSupported&&['account-test','gateway-test'].includes(mode)&&($('load-mode').value==='duration'||$('workload-profile').value==='long');
+  const needsUpdate=FaderUI.isMode()?!fadersSupported:isBurst()?!burstSupported:!sustainedSupported&&['account-test','gateway-test'].includes(mode)&&($('load-mode').value==='duration'||$('workload-profile').value==='long');
   $('start-button').disabled=Boolean(active)||submitting||needsUpdate;
-  $('start-button').innerHTML=submitting?'正在启动…':active?'测试进行中…':needsUpdate?'等待新版本地服务…':'开始测试 <span aria-hidden="true">↗</span>';
+  $('start-button').innerHTML=submitting?'正在启动…':active?'测试进行中…':needsUpdate?'等待新版本地服务…':(FaderUI.isMode()?'启动推子测试':'开始测试')+' <span aria-hidden="true">↗</span>';
+  FaderUI.sync();
 }
 function chart(stages) {
   const values=stages.filter(s=>s.p95_latency_ms!=null);
@@ -105,14 +111,14 @@ function occupancyChart(job) {
   const o=selectedStage&&stages.find(s=>s.stage===selectedStage)?.occupancy||job.occupancy||stages.at(-1)?.occupancy;
   if(!o){['live-inflight','mean-inflight','full-occupancy'].forEach(id=>$(id).textContent='—');$('occupancy-chart').innerHTML='<p class="muted">此记录没有占用时间线</p>';$('occupancy-note').textContent='新测试会记录实际在途曲线；旧报告不推算账号占用。';return;}
   $('live-inflight').textContent=number(o.current_inflight);$('mean-inflight').textContent=o.mean_inflight.toFixed(2);$('full-occupancy').textContent=pct(o.target_occupancy_ratio);
-  const points=o.series||[], w=620,h=210,l=42,r=20,t=18,b=32,end=Math.max(points.at(-1)?.seconds||0,.1),max=Math.max(o.target,o.peak_inflight,1)*1.15;
+  const points=o.series||[], w=620,h=210,l=42,r=20,t=18,b=32,end=Math.max(points.at(-1)?.seconds||0,.1),max=Math.max(o.target,o.peak_inflight,...points.map(p=>p.target||0),1)*1.15;
   const x=v=>l+(w-l-r)*v/end,y=v=>h-b-(h-t-b)*v/max;
   let svg=`<svg viewBox="0 0 ${w} ${h}" role="img" aria-label="客户端在途与接收中请求数随时间变化">`;
   for(let i=0;i<4;i++){const v=max*i/3;svg+=`<line x1="${l}" x2="${w-r}" y1="${y(v)}" y2="${y(v)}" stroke="#e7edf6"/><text x="${l-8}" y="${y(v)+4}" text-anchor="end">${v.toFixed(1)}</text>`;}
-  svg+=`<line x1="${l}" x2="${w-r}" y1="${y(o.target)}" y2="${y(o.target)}" stroke="#8c96a8" stroke-dasharray="5 4"/>`;
+  if(!o.dynamic_target)svg+=`<line x1="${l}" x2="${w-r}" y1="${y(o.target)}" y2="${y(o.target)}" stroke="#8c96a8" stroke-dasharray="5 4"/>`;
   if(o.drain_seconds>0&&o.load_seconds<end)svg+=`<rect x="${x(o.load_seconds)}" y="${t}" width="${x(end)-x(o.load_seconds)}" height="${h-t-b}" fill="#fff3df"/><text x="${x(o.load_seconds)+4}" y="${t+12}">收尾</text>`;
-  for(const [key,color] of [['inflight','#315bea'],['receiving','#087f69']]){
-    const path=points.map((p,i)=>`${i?'H':'M'} ${x(p.seconds)} ${i?'V':''} ${y(p[key])}`).join(' ');
+  for(const [key,color] of [['inflight','#315bea'],['receiving','#087f69'],...(o.dynamic_target?[['target','#8994a8']]:[])]){
+    const path=points.map((p,i)=>`${i?'H':'M'} ${x(p.seconds)} ${i?'V':''} ${y(p[key]||0)}`).join(' ');
     svg+=`<path d="${path}" stroke="${color}" stroke-width="2" fill="none"/>`;
   }
   for(let i=0;i<=4;i++)svg+=`<text x="${x(end*i/4)}" y="${h-8}" text-anchor="middle">${(end*i/4).toFixed(1)}s</text>`;
@@ -142,7 +148,7 @@ function renderJob(job) {
   selected=job.id;const running=['running','stopping'].includes(job.status), m=job.metrics, a=job.analysis||{};
   $('result-title').textContent=job.name+' · '+(job.environment==='mock'?'Mock':'真实环境');
   $('result-status').textContent=statuses[job.status]||job.status;$('result-status').className='badge '+(running?'running':job.status==='completed'?'success':job.status==='failed'?'failed':'neutral');
-  const phase=job.phase==='mixed_burst'?'原始混合批次进行中 · 不补发':job.phase==='recovery'?'串行恢复探测':job.occupancy?.phase==='draining'?'已停止补发，等待在途请求结束':job.phase==='load'?'负载请求进行中':'准备连接目标';
+  const phase=job.phase==='faders'?'三路推子运行中':job.phase==='draining'?'停止补发，等待在途结束':job.phase==='mixed_burst'?'原始混合批次进行中 · 不补发':job.phase==='recovery'?'串行恢复探测':job.occupancy?.phase==='draining'?'已停止补发，等待在途请求结束':job.phase==='load'?'负载请求进行中':'准备连接目标';
   $('run-context').textContent=running?phase+' · '+(job.occupancy?.stage||job.current_stage||''):job.message||('记录 '+job.id.slice(0,8)+' · '+new Date(job.started_at*1000).toLocaleString('zh-CN'));
   $('elapsed').textContent=duration(job.elapsed_seconds);$('stop-button').hidden=!running;
   $('progress-bar').classList.toggle('working',running);$('progress-bar').style.width=running?'40%':'100%';
@@ -151,12 +157,14 @@ function renderJob(job) {
   $('metric-p95').textContent=m.p95_latency_ms==null?'—':number(m.p95_latency_ms)+' ms';$('metric-count').textContent=number(m.requests);
   $('metric-stable').textContent=number(a.max_stable_concurrency);$('stable-caption').textContent=a.range_censored?'测试范围内通过，未测到上限':'客户端请求口径';
   $('metric-stable-label').textContent=job.burst?'峰值接收中':'最高通过的并发阶梯';
+  if(job.faders){$('metric-stable-label').textContent='峰值客户端在途';$('metric-stable').textContent=number(job.occupancy?.peak_inflight||job.stages?.at(-1)?.occupancy?.peak_inflight);$('stable-caption').textContent='动态负载，未测定稳定容量';}
   if(job.burst){$('metric-stable').textContent=number(job.burst.peak_receiving);$('stable-caption').textContent='本批次观察值，非稳定上限';}
   const stages=job.stages||[];$('stage-count').textContent=stages.length?stages.length+' 个已完成阶段':'等待阶段完成';
   $('stage-rows').innerHTML=stages.length?stages.map(s=>`<tr><td>${esc(s.stage)}</td><td>${s.concurrency}</td><td>${s.samples}</td><td>${pct(s.success_rate)}</td><td>${number(s.p95_latency_ms)}</td></tr>`).join(''):'<tr><td colspan="5" class="table-empty">当前阶段完成后会自动更新。</td></tr>';
   chart(stages);
   occupancyChart(job);
   renderBurst(job.burst);
+  FaderUI.render(job);
   const errors=Object.entries(m.errors);$('error-summary').hidden=!errors.length;$('error-summary').textContent=errors.map(([k,n])=>(errorNames[k]||k)+' × '+n).join(' · ');
   const notes=[];if(job.environment==='mock')notes.push('Mock 结果不代表真实账号或号池能力。');
   if(a.low_confidence)notes.push('样本量不足，当前结论标记为低置信度。');
@@ -175,22 +183,23 @@ function renderHistory(jobs) {
 async function selectJob(id) {try{renderJob(await api('/api/jobs/'+id));await refresh();}catch(e){showError(e.message);}}
 async function refresh() {
   if(refreshing)return;refreshing=true;
-  try{const state=await api('/api/state');token=state.csrf;sustainedSupported=state.ui_schema_version>=2;burstSupported=state.ui_schema_version>=3;active=state.jobs.find(j=>['running','stopping'].includes(j.status))?.id||null;
+  try{const state=await api('/api/state');token=state.csrf;sustainedSupported=state.ui_schema_version>=2;burstSupported=state.ui_schema_version>=3;fadersSupported=state.ui_schema_version>=4;active=state.jobs.find(j=>['running','stopping'].includes(j.status))?.id||null;
     $('connection').textContent='本地服务已连接';$('local-address').textContent=location.host;
     if(!selected&&active)selected=active;if(selected)renderJob(await api('/api/jobs/'+selected));renderHistory(state.jobs);busy();
   }catch(e){$('connection').textContent='本地服务连接中断';}finally{refreshing=false;}
 }
 $('test-form').addEventListener('submit',async(event)=>{event.preventDefault();showError('');if(active||submitting)return;
+  if(FaderUI.isMode()&&!fadersSupported){showError('请重启本地服务后使用三路推子。');return;}
   if(isBurst()&&!burstSupported){showError('请重启本地控制台服务后使用固定混合批次。');return;}
   if(!sustainedSupported&&($('load-mode').value==='duration'||$('workload-profile').value==='long')){showError('请重启本地控制台服务后使用持续并发。');return;}
-  const live=environment()==='live', stages=isBurst()?[burstTotal()]:integers($('stages').value);
+  const live=environment()==='live', stages=FaderUI.isMode()?[1]:isBurst()?[burstTotal()]:integers($('stages').value);
   if(!stages.length||stages.some((c,i)=>!Number.isInteger(c)||c<1||c>1200||(i>0&&c<=stages[i-1]))){showError('并发阶梯需按从小到大填写，例如 1, 2, 3, 5。');return;}
   if(live&&!$('confirm-live').checked){showError('请先确认向该接口发送真实请求。');return;}
   const body={mode,environment:environment(),base_url:$('base-url').value.trim(),model:$('model').value.trim(),api_key:live?$('api-key').value.trim():'',confirm_live:live&&$('confirm-live').checked,
     load_mode:$('load-mode').value,stage_duration:Number($('stage-duration').value),max_stage_requests:Number($('max-stage-requests').value),
     workload_profile:$('workload-profile').value,output_tokens:Number($('output-tokens').value),limit_field:$('limit-field').value,
     samples:Number($('samples').value),timeout:Number($('timeout').value),stages,pool_sizes:integers($('pool-sizes').value),steps:Number($('steps').value),
-    mock_admission_policy:$('mock-policy').value,
+    faders:FaderUI.config(),mock_admission_policy:$('mock-policy').value,
     mixed_burst:{counts:['short','medium','long'].map(p=>Number($('burst-'+p+'-count').value)),output_limits:['short','medium','long'].map(p=>Number($('burst-'+p+'-limit').value)),expected_capacity:Number($('burst-capacity').value),first_output_timeout:Number($('burst-first-timeout').value),idle_timeout:Number($('burst-idle-timeout').value),total_timeout:Number($('burst-total-timeout').value)}};
   submitting=true;busy();
   try{const job=await api('/api/jobs',body);$('api-key').value='';active=job.id;renderJob(job);await refresh();}catch(e){showError(e.message);}finally{body.api_key='';submitting=false;busy();}
@@ -199,11 +208,11 @@ $('stop-button').addEventListener('click',async()=>{if(!selected)return;try{rend
 $('mode-nav').addEventListener('click',e=>{const button=e.target.closest('[data-mode]');if(button)setMode(button.dataset.mode);});
 $('history').addEventListener('click',e=>{const button=e.target.closest('[data-id]');if(button)selectJob(button.dataset.id);});
 document.querySelectorAll('[name="environment"]').forEach(el=>el.addEventListener('change',syncEnvironment));
-$('preset').addEventListener('change',()=>{const preset=$('preset').value;if(preset==='mixed_burst'){$('load-mode').value='mixed_burst';['short','medium','long'].forEach((p,i)=>{$('burst-'+p+'-count').value=[2,2,6][i];$('burst-'+p+'-limit').value=[64,512,4096][i];});}else if(preset==='sustained'){$('stages').value='5';$('load-mode').value='duration';$('stage-duration').value=60;$('max-stage-requests').value=1000;$('workload-profile').value='long';$('output-tokens').value=1024;}else if(preset==='quick'||preset==='ladder'){$('load-mode').value='requests';$('workload-profile').value='short';$('stages').value=preset==='quick'?'1':'1, 2, 3, 5';$('samples').value=preset==='quick'?8:30;}syncLoad();});
+$('preset').addEventListener('change',()=>{const preset=$('preset').value;if(preset==='faders'){$('load-mode').value='faders';}else if(preset==='mixed_burst'){$('load-mode').value='mixed_burst';['short','medium','long'].forEach((p,i)=>{$('burst-'+p+'-count').value=[2,2,6][i];$('burst-'+p+'-limit').value=[64,512,4096][i];});}else if(preset==='sustained'){$('stages').value='5';$('load-mode').value='duration';$('stage-duration').value=60;$('max-stage-requests').value=1000;$('workload-profile').value='long';$('output-tokens').value=1024;}else if(preset==='quick'||preset==='ladder'){$('load-mode').value='requests';$('workload-profile').value='short';$('stages').value=preset==='quick'?'1':'1, 2, 3, 5';$('samples').value=preset==='quick'?8:30;}syncLoad();});
 burstFields.forEach(id=>$(id).addEventListener('input',()=>{$('preset').value='custom';estimate();}));
 ['load-mode','workload-profile'].forEach(id=>$(id).addEventListener('change',()=>{$('preset').value='custom';syncLoad();}));
 ['stage-duration','max-stage-requests','output-tokens'].forEach(id=>$(id).addEventListener('input',()=>{$('preset').value='custom';estimate();}));
 $('occupancy-stage').addEventListener('change',()=>{if(currentJob)occupancyChart(currentJob);});
 ['stages','samples'].forEach(id=>$(id).addEventListener('input',()=>{$('preset').value='custom';estimate();}));
 $('refresh-history').addEventListener('click',refresh);
-setMode(mode);refresh();setInterval(refresh,1500);
+FaderUI.init();setMode(mode);refresh();setInterval(refresh,750);

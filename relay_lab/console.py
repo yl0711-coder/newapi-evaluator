@@ -41,10 +41,10 @@ def run_config(body):
     profile = body.get('workload_profile', 'short')
     output_tokens = body.get('output_tokens', 1024)
     limit_field = body.get('limit_field', 'max_tokens')
-    if load_mode == 'mixed_burst':
+    if load_mode in ('mixed_burst', 'faders'):
         # Hidden legacy controls do not participate in fixed-cohort validation.
         stages, samples, timeout, duration, cap, profile, output_tokens = [1], 8, 90 if live else 1, 60, 1000, 'short', 1024
-    if load_mode not in ('requests', 'duration', 'mixed_burst') or profile not in ('short', 'long'):
+    if load_mode not in ('requests', 'duration', 'mixed_burst', 'faders') or profile not in ('short', 'long'):
         raise ValueError('请选择有效的负载方式。')
     if mode not in ('account-test', 'gateway-test') and (load_mode != 'requests' or profile != 'short'):
         raise ValueError('持续并发与长输出仅用于单号和网关测试。')
@@ -64,10 +64,12 @@ def run_config(body):
         raise ValueError('每阶请求上限不得小于最高并发。')
     burst = copy.deepcopy(load()['mixed_burst'])
     burst['enabled'] = load_mode == 'mixed_burst'
-    if burst['enabled']:
+    if load_mode in ('mixed_burst', 'faders'):
         supplied = body.get('mixed_burst', {})
         if not isinstance(supplied, dict) or set(supplied) - (set(burst) - {'enabled'}):
             raise ValueError('请选择有效的混合批次参数。')
+        if load_mode == 'faders':
+            supplied = {k: v for k, v in supplied.items() if k not in ('counts', 'output_limits')}
         burst.update(supplied)
         # Validate the shape before using counts to size the actual client connection pool.
         try:
@@ -75,6 +77,18 @@ def run_config(body):
         except (ValueError, TypeError, KeyError):
             raise ValueError('请选择有效的混合批次长度、数量和超时参数。') from None
         stages = [sum(burst['counts'])]
+    faders = copy.deepcopy(load()['faders'])
+    faders['enabled'] = load_mode == 'faders'
+    if faders['enabled']:
+        supplied = body.get('faders', {})
+        if not isinstance(supplied, dict) or set(supplied) - (set(faders) - {'enabled', 'mock_durations'}):
+            raise ValueError('请选择有效的推子设置。')
+        faders.update(supplied)
+        try:
+            load(overrides={'faders': faders, 'connection_limit': 1200})
+        except (ValueError, TypeError, KeyError):
+            raise ValueError('请检查推子目标、并发上限、时长及请求上限。') from None
+        stages = [max(1, sum(faders['targets']))]
     base_url = None
     model = 'mock-model'
     if live:
@@ -94,9 +108,10 @@ def run_config(body):
     cfg = load(overrides={
         'base_url': base_url, 'model': model.strip(), 'stages': stages,
         'gateway_stages': stages, 'pool_stages': stages, 'samples': samples,
-        'timeout': timeout, 'connection_limit': max(stages), 'pool_sizes': pool_sizes,
+        'timeout': timeout, 'connection_limit': faders['max_inflight'] if faders['enabled'] else max(stages), 'pool_sizes': pool_sizes,
         'stage_duration': duration if load_mode == 'duration' else 0, 'max_stage_requests': cap,
         'mixed_burst': burst,
+        'faders': faders,
         'workload': {'profile': profile, 'output_tokens': output_tokens, 'limit_field': limit_field},
         'recovery_timeout': min(15, timeout) if live else 1, 'recovery_successes': 2,
         'mock': {'accounts': [{'capacity': 3, 'latency': .015, 'cooldown': .04},
@@ -106,12 +121,14 @@ def run_config(body):
         'long_task': {'steps': step_count, 'fail_step': min(3, step_count),
                       'fail_attempts': 0 if live else 1, 'stream_chunks': 60, 'stream_chunk_delay': .01},
     })
-    if burst['enabled'] and not live:
+    if (burst['enabled'] or faders['enabled']) and not live:
         policy = body.get('mock_admission_policy', 'queue')
         if policy not in ('queue', 'reject'):
             raise ValueError('请选择有效的 Mock 排队行为。')
         cfg['mock']['admission_policy'] = policy
         cfg['mock']['accounts'] = [{'capacity': burst['expected_capacity'], 'latency': .015, 'cooldown': 0}]
+        if faders['enabled']:
+            cfg['mock']['queue_timeout'] = burst['first_output_timeout']
     return mode, live, cfg
 
 
@@ -164,7 +181,7 @@ class Job:
                                  'p95_latency_ms': percentile(self.latencies, 95),
                                  'p50_ttft_ms': percentile(self.ttfts, 50), 'errors': dict(self.errors),
                                  'latency_window_samples': len(self.latencies)},
-                     'downloads': [name for name in ('report.md', 'summary.json', 'results.jsonl') if (self.output / name).is_file()]}
+                     'downloads': [name for name in ('report.md', 'summary.json', 'results.jsonl', 'fader-events.json') if (self.output / name).is_file()]}
             if detail:
                 value['occupancy'] = self.lab.live_occupancy.snapshot() if self.lab and self.lab.live_occupancy else None
                 value['phase'] = self.lab.current_phase if self.lab else self.status
@@ -172,6 +189,8 @@ class Job:
                 value['stages'] = copy.deepcopy(self.summary['stages'] if self.summary else self.lab.stages if self.lab else [])
                 value['analysis'] = copy.deepcopy(self.summary.get('analysis', {}) if self.summary else {})
                 value['revision'] = self.summary.get('revision') if self.summary else None
+                value['faders'] = (self.lab.faders.snapshot() if self.lab and self.lab.faders
+                                   else self.summary.get('analysis', {}).get('faders') if self.summary else None)
                 from .burst import snapshot
                 value['burst'] = (self.lab.burst_snapshot() if self.lab and self.lab.cfg['mixed_burst']['enabled']
                                   else self.summary.get('analysis', {}).get('burst') if self.summary
@@ -267,6 +286,14 @@ class Console:
                     job.loop.call_soon_threadsafe(job.stop.set)
         return job
 
+    def adjust_faders(self, identifier, body):
+        job = self.jobs[identifier]
+        with job.lock:
+            if job.status != 'running' or not job.lab or not job.lab.faders:
+                raise ValueError('请在运行中的推子测试里调整负载。')
+            job.lab.faders.adjust(body)
+        return job
+
     def handler(self):
         console = self
         class Handler(BaseHTTPRequestHandler):
@@ -303,16 +330,16 @@ class Console:
                 if not self.allowed():
                     return
                 try:
-                    if self.path in ('/', '/app.css', '/app.js'):
+                    if self.path in ('/', '/app.css', '/app.js', '/faders.js'):
                         name = 'index.html' if self.path == '/' else self.path[1:]
-                        kind = {'index.html': 'text/html', 'app.css': 'text/css', 'app.js': 'text/javascript'}[name]
+                        kind = {'index.html': 'text/html', 'app.css': 'text/css', 'app.js': 'text/javascript', 'faders.js': 'text/javascript'}[name]
                         return self.respond(200, (STATIC / name).read_bytes(), kind + '; charset=utf-8')
                     if self.path == '/api/state':
                         with console.lock:
                             jobs = [j.public(False) for j in console.jobs.values()]
-                        return self.respond(200, {'service': 'relay-lab-console', 'ui_schema_version': 3, 'pid': os.getpid(), 'csrf': console.token,
+                        return self.respond(200, {'service': 'relay-lab-console', 'ui_schema_version': 4, 'pid': os.getpid(), 'csrf': console.token,
                                                  'revision': revision(), 'jobs': sorted(jobs, key=lambda j: j['started_at'], reverse=True)})
-                    match = re.fullmatch(r'/api/jobs/([a-f0-9]{32})(?:/(report\.md|summary\.json|results\.jsonl))?', self.path)
+                    match = re.fullmatch(r'/api/jobs/([a-f0-9]{32})(?:/(report\.md|summary\.json|results\.jsonl|fader-events\.json))?', self.path)
                     if match and match[1] in console.jobs:
                         job = console.jobs[match[1]]
                         if match[2]:
@@ -342,6 +369,9 @@ class Console:
                         return self.respond(400, {'error': '请求格式无效。'})
                     if self.path == '/api/jobs':
                         return self.respond(202, console.create(body).public())
+                    match = re.fullmatch(r'/api/jobs/([a-f0-9]{32})/faders', self.path)
+                    if match and match[1] in console.jobs:
+                        return self.respond(200, console.adjust_faders(match[1], body).public())
                     match = re.fullmatch(r'/api/jobs/([a-f0-9]{32})/stop', self.path)
                     if match and match[1] in console.jobs:
                         return self.respond(200, console.cancel(match[1]).public())

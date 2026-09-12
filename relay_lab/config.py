@@ -9,6 +9,9 @@ FAULTS = {'normal', 'slow_sse', 'http_401', 'http_429', 'http_500', 'connect_tim
           'read_timeout', 'network_drop', 'malformed_sse', 'disconnect', 'missing_done',
           'disable_account', 'partial_accounts', 'upstream_outage', 'jitter'}
 DEFAULT = {
+    'faders': {'enabled': False, 'targets': [0, 0, 0], 'output_limits': [64, 512, 4096],
+               'max_inflight': 120, 'duration': 600, 'max_requests': 10000,
+               'refill_interval': 1, 'mock_durations': [2, 6, 18]},
     'mixed_burst': {'enabled': False, 'counts': [2, 2, 6], 'output_limits': [64, 512, 4096],
                     'expected_capacity': 5, 'first_output_timeout': 600, 'idle_timeout': 60,
                     'total_timeout': 900, 'connect_timeout': 10, 'release_window': 10},
@@ -71,6 +74,24 @@ def validate(cfg):
         raise ValueError('Invalid workload configuration')
     integer(workload['output_tokens'], 16, 32768)
     burst = cfg['mixed_burst']
+    faders = cfg['faders']
+    if type(faders['enabled']) is not bool:
+        raise ValueError('Invalid faders flag')
+    from .faders import validate_targets
+    integer(faders['max_inflight'], 1, 1200)
+    validate_targets(faders['targets'], faders['max_inflight'])
+    number(faders['duration'], .1, 3600)
+    integer(faders['max_requests'], 1, 100000)
+    number(faders['refill_interval'], .1, 60)
+    for key in ('output_limits', 'mock_durations'):
+        if not isinstance(faders[key], list) or len(faders[key]) != 3:
+            raise ValueError('Faders require three channel values')
+    for n in faders['output_limits']:
+        integer(n, 16, 32768)
+    for n in faders['mock_durations']:
+        number(n, .01, 600)
+    if faders['enabled'] and (burst['enabled'] or cfg['stage_duration'] or cfg['connection_limit'] < faders['max_inflight']):
+        raise ValueError('Faders require their own scheduler and enough client connection slots')
     if type(burst['enabled']) is not bool:
         raise ValueError('Invalid mixed burst flag')
     for key in ('counts', 'output_limits'):

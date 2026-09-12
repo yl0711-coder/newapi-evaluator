@@ -15,6 +15,7 @@ class Occupancy:
         self.reason = None
         self.finished = None
         self.interval = .1
+        self.dynamic = False
         self.points = [{'seconds': 0.0, 'inflight': 0, 'receiving': 0}]
 
     def _accrue(self, now):
@@ -33,6 +34,13 @@ class Occupancy:
             self.peak = max(self.peak, active)
             self.receiving_peak = max(self.receiving_peak, receiving)
 
+    def set_target(self, target):
+        with self.lock:
+            self._accrue(self.clock())
+            self.dynamic = True
+            self.target = target
+            self.sample(force=True)
+
     def sample(self, force=False):
         with self.lock:
             now = self.clock()
@@ -40,6 +48,8 @@ class Occupancy:
             elapsed = now - self.start
             if force or elapsed - self.points[-1]['seconds'] >= self.interval:
                 self.points.append({'seconds': elapsed, 'inflight': self.active, 'receiving': self.receiving})
+                if self.dynamic:
+                    self.points[-1]['target'] = self.target
                 if len(self.points) > 1200:
                     self.points = self.points[:1] + self.points[2::2]
                     self.interval *= 2
@@ -72,7 +82,8 @@ class Occupancy:
                 'peak_inflight': self.peak, 'peak_receiving': self.receiving_peak,
                 'mean_inflight': self.area / window if window else 0,
                 'mean_receiving': self.receiving_area / window if window else 0,
-                'target_occupancy_ratio': self.full_seconds / window if window else 0,
+                'target_occupancy_ratio': None if self.dynamic else self.full_seconds / window if window else 0,
+                'dynamic_target': self.dynamic,
                 'requested_duration_seconds': self.duration, 'load_seconds': window,
                 'drain_seconds': max(0, now - self.end) if draining else 0,
                 'stop_reason': self.reason or ('duration' if draining else None),
