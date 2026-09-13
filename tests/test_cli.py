@@ -8,6 +8,8 @@ import time
 import unittest
 from pathlib import Path
 
+import yaml
+
 from relay_lab.config import DATA_ROOT
 from relay_lab.report import rebuild
 from relay_lab.model import Result
@@ -114,3 +116,24 @@ class CLITests(unittest.TestCase):
             if process.poll() is None:
                 process.terminate()
                 process.communicate(timeout=5)
+
+    def test_container_runtime_is_fixed_to_data_mount_and_embedded_revision(self):
+        sha = 'b' * 40
+        code = ('import json; from relay_lab.config import DATA_ROOT; '
+                'from relay_lab.console import ui_bind_host; from relay_lab.report import revision; '
+                'print(json.dumps({"root": str(DATA_ROOT), "bind": ui_bind_host(), "revision": revision()}))')
+        env = {**self.env, 'RELAY_LAB_CONTAINER': '1', 'RELAY_LAB_IMAGE_REVISION': sha}
+        result = subprocess.run([sys.executable, '-c', code], cwd=ROOT, env=env,
+                                capture_output=True, text=True, timeout=10)
+        self.assertEqual(result.returncode, 0, result.stderr)
+        value = json.loads(result.stdout)
+        self.assertEqual(value, {'root': '/data', 'bind': '0.0.0.0',
+                                 'revision': {'commit_sha': sha, 'dirty': False}})
+
+    def test_orbstack_compose_only_publishes_loopback_and_mounts_data(self):
+        compose = yaml.safe_load((ROOT / 'compose.orbstack.yaml').read_text())
+        service = compose['services']['console']
+        self.assertEqual(service['ports'], ['127.0.0.1:8878:8878'])
+        self.assertIn('/Users/lmurder/Desktop/api中转站/中转站极限测试数据/orbstack:/data', service['volumes'])
+        self.assertTrue(service['read_only'])
+        self.assertEqual(service['cap_drop'], ['ALL'])

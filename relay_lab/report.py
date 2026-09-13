@@ -10,6 +10,9 @@ from .security import redact
 
 
 def revision():
+    image_sha = os.environ.get('RELAY_LAB_IMAGE_REVISION', '')
+    if len(image_sha) == 40 and set(image_sha) <= set('0123456789abcdef'):
+        return {'commit_sha': image_sha, 'dirty': False}
     root = Path(__file__).resolve().parents[1]
     sha = subprocess.run(['git', '-C', str(root), 'rev-parse', 'HEAD'], capture_output=True, text=True).stdout.strip()
     dirty = subprocess.run(['git', '-C', str(root), 'status', '--porcelain'], capture_output=True, text=True).stdout.strip()

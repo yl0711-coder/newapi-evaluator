@@ -1,10 +1,14 @@
 import copy
 import math
+import os
 from pathlib import Path
 
 import yaml
 
-DATA_ROOT = Path('/Users/lmurder/Desktop/api中转站/中转站极限测试数据')
+HOST_DATA_ROOT = Path('/Users/lmurder/Desktop/api中转站/中转站极限测试数据')
+# The image has one fixed writable mount. Host runs keep the original dedicated path;
+# an arbitrary environment variable cannot redirect artifacts into another project.
+DATA_ROOT = Path('/data') if os.environ.get('RELAY_LAB_CONTAINER') == '1' else HOST_DATA_ROOT
 FAULTS = {'normal', 'slow_sse', 'http_401', 'http_429', 'http_500', 'connect_timeout',
           'read_timeout', 'network_drop', 'malformed_sse', 'disconnect', 'missing_done',
           'disable_account', 'partial_accounts', 'upstream_outage', 'jitter'}

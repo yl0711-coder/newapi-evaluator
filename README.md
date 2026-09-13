@@ -183,3 +183,15 @@ python -B -m relay_lab account-test --config configs/sustained.yaml --output /Us
 - 页面优先展示在途和最新请求，完整指标见 results.jsonl，推子调节历史见 fader-events.json。报告保存动态目标和实际请求时间，恢复部分报告时保留调节记录并标记为部分结果。
 
 自动检查：`python -B -m unittest tests.test_faders tests.test_fader_http -v`。控制台同样支持原固定混合批次、持续阶梯以及其他既有模式。
+
+## OrbStack 调试镜像
+
+确保 Docker context 为 `orbstack`，在干净的功能提交上执行：
+
+```bash
+python -B scripts/orbstack_up.py
+```
+
+脚本将当前 40 位提交写入镜像元数据，构建 `relay-station-lab:orb-dev`，并启动 `relay-station-lab` 容器。页面只发布在 `http://127.0.0.1:8878`；容器内监听 `0.0.0.0` 仅用于 Docker 端口转发，不向宿主机其他网卡发布。运行数据挂载到 `/Users/lmurder/Desktop/api中转站/中转站极限测试数据/orbstack`，源码、凭据和历史宿主机日志不会挂入容器。
+
+在 OrbStack 界面可直接查看容器状态与日志。修改代码后先提交，再重新运行同一脚本即可重建；停止并移除容器可执行 `docker compose -f compose.orbstack.yaml down`。镜像默认仍只允许本地 Mock；真实请求继续要求页面内明确确认。

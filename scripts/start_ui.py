@@ -1,6 +1,7 @@
 """One-command persistent local console launcher; all runtime files stay in DATA_ROOT."""
 import json
 import os
+import signal
 import subprocess
 import sys
 import time
@@ -13,27 +14,59 @@ DATA = Path('/Users/lmurder/Desktop/api中转站/中转站极限测试数据/con
 URL = 'http://127.0.0.1:8878'
 
 
+def current_revision():
+    sha = subprocess.run(['git', '-C', str(ROOT), 'rev-parse', 'HEAD'], capture_output=True, text=True).stdout.strip()
+    dirty = subprocess.run(['git', '-C', str(ROOT), 'status', '--porcelain'], capture_output=True, text=True).stdout.strip()
+    return {'commit_sha': sha if len(sha) == 40 else None, 'dirty': bool(dirty)}
+
+
 def probe():
     opener = urllib.request.build_opener(urllib.request.ProxyHandler({}))
     try:
         with opener.open(URL + '/api/state', timeout=2) as response:
             value = json.load(response)
-        return value.get('service') == 'relay-lab-console'
+        return value if value.get('service') == 'relay-lab-console' else None
     except (OSError, ValueError):
+        return None
+
+
+def current(value):
+    return bool(value and value.get('ui_schema_version') == 4 and value.get('revision') == current_revision())
+
+
+def stop_tracked_stale(value):
+    pid_file = DATA / 'server.pid'
+    if not value or not pid_file.is_file():
         return False
+    try:
+        tracked = int(pid_file.read_text().strip())
+        reported = int(value['pid'])
+    except (KeyError, TypeError, ValueError, OSError):
+        return False
+    if tracked != reported or tracked <= 1:
+        return False
+    os.kill(tracked, signal.SIGTERM)
+    for _ in range(50):
+        time.sleep(.1)
+        if probe() is None:
+            return True
+    return False
 
 
 if __name__ == '__main__':
-    if probe():
+    existing = probe()
+    if current(existing):
         print(URL)
         raise SystemExit(0)
+    if existing and not stop_tracked_stale(existing):
+        raise SystemExit('Port 8878 already serves an untracked or stale console; stop it explicitly before retrying.')
     DATA.mkdir(parents=True, exist_ok=True)
     with (DATA / 'server.log').open('ab') as log:
         process = subprocess.Popen([sys.executable, '-B', '-m', 'relay_lab', 'ui', '--port', '8878'], cwd=ROOT,
                                    env={**os.environ, 'PYTHONDONTWRITEBYTECODE': '1'},
                                    stdin=subprocess.DEVNULL, stdout=log, stderr=log, start_new_session=True)
     for _ in range(50):
-        if probe():
+        if current(probe()):
             (DATA / 'server.pid').write_text(str(process.pid) + '\n')
             print(URL)
             break

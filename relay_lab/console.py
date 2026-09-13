@@ -205,6 +205,8 @@ class Console:
         self.token = secrets.token_urlsafe(32)
         self.jobs = {}
         self.lock = threading.RLock()
+        # Freeze this at process start so an old server cannot claim a newer checkout.
+        self.server_revision = revision()
         if history:
             self._history()
 
@@ -338,7 +340,7 @@ class Console:
                         with console.lock:
                             jobs = [j.public(False) for j in console.jobs.values()]
                         return self.respond(200, {'service': 'relay-lab-console', 'ui_schema_version': 4, 'pid': os.getpid(), 'csrf': console.token,
-                                                 'revision': revision(), 'jobs': sorted(jobs, key=lambda j: j['started_at'], reverse=True)})
+                                                 'revision': console.server_revision, 'jobs': sorted(jobs, key=lambda j: j['started_at'], reverse=True)})
                     match = re.fullmatch(r'/api/jobs/([a-f0-9]{32})(?:/(report\.md|summary\.json|results\.jsonl|fader-events\.json))?', self.path)
                     if match and match[1] in console.jobs:
                         job = console.jobs[match[1]]
@@ -388,11 +390,17 @@ class Console:
         return Handler
 
 
+def ui_bind_host():
+    # Docker publishes this container port on host loopback only. Native runs
+    # remain loopback-bound even if unrelated environment variables are set.
+    return '0.0.0.0' if os.environ.get('RELAY_LAB_CONTAINER') == '1' else '127.0.0.1'
+
+
 async def serve(port=8878, stop=None):
     if not 0 <= port <= 65535:
         raise ValueError('Port out of range')
     console = Console()
-    server = ThreadingHTTPServer(('127.0.0.1', port), console.handler())
+    server = ThreadingHTTPServer((ui_bind_host(), port), console.handler())
     server.daemon_threads = True
     thread = threading.Thread(target=server.serve_forever, daemon=True)
     thread.start()

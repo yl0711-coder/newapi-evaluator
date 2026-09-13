@@ -1,0 +1,27 @@
+name: relay-station-lab
+
+services:
+  console:
+    image: relay-station-lab:orb-dev
+    container_name: relay-station-lab
+    build:
+      context: .
+      dockerfile: Dockerfile
+      args:
+        RELAY_LAB_IMAGE_REVISION: ${RELAY_LAB_IMAGE_REVISION:-unknown}
+    environment:
+      RELAY_LAB_CONTAINER: "1"
+      RELAY_LAB_IMAGE_REVISION: ${RELAY_LAB_IMAGE_REVISION:-unknown}
+    ports:
+      - "127.0.0.1:8878:8878"
+    volumes:
+      - "/Users/lmurder/Desktop/api中转站/中转站极限测试数据/orbstack:/data"
+    read_only: true
+    tmpfs:
+      - /tmp:size=128m,mode=1777
+    cap_drop:
+      - ALL
+    security_opt:
+      - no-new-privileges:true
+    init: true
+    restart: unless-stopped
