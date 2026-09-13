@@ -1,10 +1,11 @@
 from __future__ import annotations
 
 import asyncio
+import hashlib
 import json
 import re
 from pathlib import Path
-from time import perf_counter
+from time import perf_counter, time
 from typing import Any, AsyncIterator, Literal
 from urllib.parse import urlparse
 
@@ -96,7 +97,7 @@ class EndpointConfig(BaseModel):
 class CompareRequest(BaseModel):
     candidate: EndpointConfig
     reference: EndpointConfig
-    rounds: int = Field(default=1, ge=1, le=5)
+    rounds: int = Field(default=2, ge=1, le=5)
 
 
 class ExtractRequest(BaseModel):
@@ -118,6 +119,18 @@ def load_questions() -> list[dict[str, Any]]:
 
 
 QUESTIONS = load_questions()
+
+
+def select_question_variant(question: dict[str, Any], seed: str) -> dict[str, Any]:
+    choices: list[tuple[str, str]] = [("original", str(question["prompt"]))]
+    for index, variant in enumerate(question.get("variants") or [], 1):
+        if isinstance(variant, str) and variant.strip():
+            choices.append((f"variant-{index}", variant))
+        elif isinstance(variant, dict) and str(variant.get("prompt") or "").strip():
+            choices.append((str(variant.get("id") or f"variant-{index}"), str(variant["prompt"])))
+    digest = hashlib.sha256(f"{seed}:{question['id']}".encode()).digest()
+    variant_id, prompt = choices[int.from_bytes(digest[:4], "big") % len(choices)]
+    return {**question, "prompt": prompt, "variant_id": variant_id}
 
 
 def _normalized_http_url(base_url: str) -> str:
@@ -312,6 +325,9 @@ def _stream_event(
     recognized: bool = True,
     raw: str = "",
     output_tokens: int | None = None,
+    actual_model: str = "",
+    upstream_request_id: str = "",
+    system_fingerprint: str = "",
 ) -> dict[str, Any]:
     return {
         "content": content,
@@ -321,6 +337,21 @@ def _stream_event(
         "recognized": recognized,
         "raw": raw,
         "output_tokens": output_tokens,
+        "actual_model": actual_model,
+        "upstream_request_id": upstream_request_id,
+        "system_fingerprint": system_fingerprint,
+    }
+
+
+def _response_metadata(payload: dict[str, Any]) -> dict[str, str]:
+    response = payload.get("response") if isinstance(payload.get("response"), dict) else {}
+    message = payload.get("message") if isinstance(payload.get("message"), dict) else {}
+    return {
+        "actual_model": str(payload.get("model") or response.get("model") or message.get("model") or ""),
+        "upstream_request_id": str(payload.get("id") or response.get("id") or message.get("id") or ""),
+        "system_fingerprint": str(
+            payload.get("system_fingerprint") or response.get("system_fingerprint") or ""
+        ),
     }
 
 
@@ -340,6 +371,7 @@ def parse_stream_line(line: str) -> dict[str, Any] | None:
         return _stream_event(recognized=False, raw=value)
     if not isinstance(payload, dict):
         return _stream_event(recognized=False, raw=value)
+    metadata = _response_metadata(payload)
     output_tokens = _usage_output_tokens(payload)
     choices = payload.get("choices") or []
     if choices:
@@ -362,6 +394,7 @@ def parse_stream_line(line: str) -> dict[str, Any] | None:
             finish_reason=str(choice.get("finish_reason") or ""),
             response_format=response_format,
             output_tokens=output_tokens,
+            **metadata,
         )
 
     event_type = str(payload.get("type") or "")
@@ -370,12 +403,14 @@ def parse_stream_line(line: str) -> dict[str, Any] | None:
             content=_text_value(payload.get("delta")),
             response_format="responses",
             output_tokens=output_tokens,
+            **metadata,
         )
     if event_type in {"response.reasoning_text.delta", "response.reasoning_summary_text.delta"}:
         return _stream_event(
             reasoning=_text_value(payload.get("delta")),
             response_format="responses",
             output_tokens=output_tokens,
+            **metadata,
         )
     if event_type == "content_block_delta":
         delta = payload.get("delta") or {}
@@ -384,6 +419,7 @@ def parse_stream_line(line: str) -> dict[str, Any] | None:
             reasoning=_text_value(delta.get("thinking")),
             response_format="anthropic",
             output_tokens=output_tokens,
+            **metadata,
         )
     if event_type == "message_delta":
         delta = payload.get("delta") or {}
@@ -391,6 +427,7 @@ def parse_stream_line(line: str) -> dict[str, Any] | None:
             finish_reason=str(delta.get("stop_reason") or ""),
             response_format="anthropic",
             output_tokens=output_tokens,
+            **metadata,
         )
     if event_type in {"message_start", "message_stop", "content_block_start", "content_block_stop"}:
         content_block = payload.get("content_block") or {}
@@ -400,6 +437,7 @@ def parse_stream_line(line: str) -> dict[str, Any] | None:
             finish_reason="stop" if event_type == "message_stop" else "",
             response_format="anthropic",
             output_tokens=output_tokens,
+            **metadata,
         )
     if event_type in {"response.completed", "response.incomplete", "response.failed"}:
         response = payload.get("response") or {}
@@ -408,9 +446,10 @@ def parse_stream_line(line: str) -> dict[str, Any] | None:
             finish_reason=str(incomplete_details.get("reason") or response.get("status") or ""),
             response_format="responses",
             output_tokens=output_tokens,
+            **metadata,
         )
     if output_tokens is not None:
-        return _stream_event(response_format="usage", output_tokens=output_tokens)
+        return _stream_event(response_format="usage", output_tokens=output_tokens, **metadata)
     return _stream_event(recognized=False, raw=value)
 
 
@@ -419,14 +458,42 @@ def _redact(message: str, api_key: str) -> str:
     return cleaned[:500]
 
 
+def _exception_category(exc: Exception, had_output: bool) -> str:
+    if had_output:
+        return "stream_interrupted"
+    if isinstance(exc, httpx.ConnectTimeout):
+        return "connect_timeout"
+    if isinstance(exc, httpx.ReadTimeout):
+        return "read_timeout"
+    if isinstance(exc, httpx.PoolTimeout):
+        return "pool_timeout"
+    if isinstance(exc, httpx.TimeoutException):
+        return "timeout"
+    if isinstance(exc, httpx.ConnectError):
+        return "connection_failed"
+    match = re.search(r"HTTP\s+(\d{3})", str(exc))
+    if match:
+        status = int(match.group(1))
+        if status == 429:
+            return "http_429"
+        if status >= 500:
+            return "http_5xx"
+        return f"http_{status}"
+    return "transport_error"
+
+
 async def measure_side(
     side: str,
     config: EndpointConfig,
     question: dict[str, Any],
     queue: asyncio.Queue[dict[str, Any]],
     client: httpx.AsyncClient,
+    start_gate: asyncio.Event | None = None,
 ) -> None:
+    if start_gate is not None:
+        await start_gate.wait()
     started_at = perf_counter()
+    request_started_ms = round(time() * 1000)
     first_chunk_at: float | None = None
     first_answer_at: float | None = None
     last_output_at: float | None = None
@@ -438,6 +505,10 @@ async def measure_side(
     finish_reason = ""
     reported_output_tokens: int | None = None
     response_formats: set[str] = set()
+    actual_models: set[str] = set()
+    upstream_request_ids: set[str] = set()
+    system_fingerprints: set[str] = set()
+    maximum_output_pause_ms: int | None = None
     try:
         async with client.stream(
             "POST",
@@ -445,6 +516,9 @@ async def measure_side(
             headers=build_headers(config),
             json=build_payload(config, question),
         ) as response:
+            header_request_id = response.headers.get("x-request-id") or response.headers.get("request-id")
+            if header_request_id:
+                upstream_request_ids.add(header_request_id)
             if response.status_code >= 400:
                 body = (await response.aread()).decode("utf-8", errors="replace")
                 raise RuntimeError(f"HTTP {response.status_code}: {_redact(body, config.api_key)}")
@@ -460,6 +534,12 @@ async def measure_side(
                         fallback_parts.append(parsed["raw"])
                     continue
                 response_formats.add(parsed["format"])
+                if parsed["actual_model"]:
+                    actual_models.add(parsed["actual_model"])
+                if parsed["upstream_request_id"]:
+                    upstream_request_ids.add(parsed["upstream_request_id"])
+                if parsed["system_fingerprint"]:
+                    system_fingerprints.add(parsed["system_fingerprint"])
                 if parsed["output_tokens"] is not None:
                     reported_output_tokens = parsed["output_tokens"]
                 if parsed["finish_reason"]:
@@ -470,6 +550,9 @@ async def measure_side(
                     continue
                 if first_chunk_at is None:
                     first_chunk_at = now
+                if last_output_at is not None:
+                    pause_ms = round((now - last_output_at) * 1000)
+                    maximum_output_pause_ms = max(maximum_output_pause_ms or 0, pause_ms)
                 if content_delta and first_answer_at is None:
                     first_answer_at = now
                 last_output_at = now
@@ -523,6 +606,18 @@ async def measure_side(
             and generation_seconds > 0
         ):
             tokens_per_second = round((reported_output_tokens - 1) / generation_seconds, 1)
+        if tokens_per_second is not None:
+            speed_data_valid = True
+            speed_invalid_reason = ""
+        elif reported_output_tokens is None:
+            speed_data_valid = False
+            speed_invalid_reason = "上游未提供输出 Token 数"
+        elif output_chunk_count <= 1:
+            speed_data_valid = False
+            speed_invalid_reason = "流式粒度不足"
+        else:
+            speed_data_valid = False
+            speed_invalid_reason = "有效输出时长不足"
 
         normalized_finish_reason = finish_reason.lower()
         truncated_reasons = {"length", "max_tokens", "max_output_tokens", "incomplete"}
@@ -550,6 +645,10 @@ async def measure_side(
                 "side": side,
                 "ok": ok,
                 "status": status,
+                "transport_completed": True,
+                "answer_reviewed": False,
+                "answer_equivalent": None,
+                "request_started_ms": request_started_ms,
                 "ttft_ms": ttft_ms,
                 "first_answer_ms": first_answer_ms,
                 "total_ms": total_ms,
@@ -557,8 +656,16 @@ async def measure_side(
                 "chars_per_second": chars_per_second,
                 "output_tokens": reported_output_tokens,
                 "tokens_per_second": tokens_per_second,
+                "speed_data_valid": speed_data_valid,
+                "speed_invalid_reason": speed_invalid_reason,
+                "maximum_output_pause_ms": maximum_output_pause_ms,
                 "finish_reason": finish_reason,
                 "response_format": ",".join(sorted(response_formats)),
+                "actual_model": sorted(actual_models)[0] if len(actual_models) == 1 else "",
+                "actual_model_values": sorted(actual_models),
+                "upstream_request_id": sorted(upstream_request_ids)[0] if len(upstream_request_ids) == 1 else "",
+                "system_fingerprint": sorted(system_fingerprints)[0] if len(system_fingerprints) == 1 else "",
+                "error_category": status if not ok else "",
                 **({"error": error} if error else {}),
             }
         )
@@ -572,6 +679,11 @@ async def measure_side(
                 "side": side,
                 "ok": False,
                 "status": "error",
+                "transport_completed": False,
+                "answer_reviewed": False,
+                "answer_equivalent": None,
+                "request_started_ms": request_started_ms,
+                "error_category": _exception_category(exc, output_chunk_count > 0),
                 "error": _redact(str(exc), config.api_key),
             }
         )
@@ -583,10 +695,13 @@ async def run_question(
     client: httpx.AsyncClient,
 ) -> AsyncIterator[dict[str, Any]]:
     queue: asyncio.Queue[dict[str, Any]] = asyncio.Queue()
+    start_gate = asyncio.Event()
     tasks = [
-        asyncio.create_task(measure_side("candidate", body.candidate, question, queue, client)),
-        asyncio.create_task(measure_side("reference", body.reference, question, queue, client)),
+        asyncio.create_task(measure_side("candidate", body.candidate, question, queue, client, start_gate)),
+        asyncio.create_task(measure_side("reference", body.reference, question, queue, client, start_gate)),
     ]
+    await asyncio.sleep(0)
+    start_gate.set()
     finished = 0
     try:
         while finished < 2:

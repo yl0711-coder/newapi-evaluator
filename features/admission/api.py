@@ -2,6 +2,7 @@ import asyncio
 from contextlib import asynccontextmanager
 from pathlib import Path
 from typing import Any, AsyncIterator, Literal
+from uuid import uuid4
 
 import httpx
 from fastapi import FastAPI, HTTPException, Request
@@ -13,7 +14,7 @@ from shared.api import Selection, resolve
 from shared.network import guarded_transport
 from shared.redaction import EventRedactor
 from shared.registry import RegistryError, normalize
-from . import feishu, main as engine, storage
+from . import feishu, main as engine, reporting, storage
 
 
 _feishu_tasks: set[asyncio.Task[None]] = set()
@@ -31,7 +32,7 @@ class CompareInput(BaseModel):
     model_config = ConfigDict(extra="forbid")
     candidate: CandidateInput
     reference: Selection
-    rounds: int = Field(default=1, ge=1, le=5)
+    rounds: int = Field(default=2, ge=1, le=5)
 
 
 class ReportEndpointInput(BaseModel):
@@ -50,6 +51,7 @@ class ReportQuestionInput(BaseModel):
     title: str = Field(min_length=1, max_length=200)
     difficulty: str = Field(min_length=1, max_length=40)
     prompt: str = Field(max_length=20_000)
+    variant_id: str = Field(default="original", max_length=80)
 
 
 class ReportResponseInput(BaseModel):
@@ -59,20 +61,27 @@ class ReportResponseInput(BaseModel):
     side: Literal["candidate", "reference"]
     content: str = Field(default="", max_length=200_000)
     reasoning: str = Field(default="", max_length=200_000)
+    pair_id: str = Field(default="", max_length=160)
+    round_role: Literal["warmup", "evaluated"] = "evaluated"
+    variant_id: str = Field(default="original", max_length=80)
+    prompt: str = Field(default="", max_length=20_000)
 
 
 class AdmissionReportInput(BaseModel):
     model_config = ConfigDict(extra="forbid")
-    version: Literal[1]
+    version: Literal[1, 2]
     created_at: str = Field(min_length=1, max_length=80)
     status: Literal["completed", "canceled", "failed"]
     rounds: int = Field(ge=1, le=5)
+    run_id: str = Field(default="", max_length=80)
+    warmup_rounds: int = Field(default=0, ge=0, le=1)
     candidate: ReportEndpointInput
     reference: ReportEndpointInput
     questions: list[ReportQuestionInput] = Field(min_length=1, max_length=5)
     measurements: list[dict[str, Any]] = Field(default_factory=list, max_length=50)
     responses: list[ReportResponseInput] = Field(default_factory=list, max_length=50)
     summary: dict[str, Any] = Field(default_factory=dict)
+    pairs: list[dict[str, Any]] = Field(default_factory=list, max_length=25)
 
 
 def _contains_secret_field(value: Any) -> bool:
@@ -164,6 +173,8 @@ async def extract_channel(body: ExtractInput):
 
 @app.post("/api/compare")
 async def compare(body: CompareInput, request: Request):
+    if body.candidate.model != body.reference.model:
+        raise HTTPException(400, "成对测试要求候选端与参照端使用相同的请求模型名")
     try:
         clean = normalize({"base_url": body.candidate.base_url,
                            "api_key": body.candidate.api_key.get_secret_value()})
@@ -177,7 +188,7 @@ async def compare(body: CompareInput, request: Request):
         fields = feishu.build_fields(clean["base_url"], test_group, app.state.feishu_settings)
     except ValueError:
         fields = {
-            feishu.DEFAULT_CHANNEL_FIELD: clean["base_url"],
+            feishu.DEFAULT_CHANNEL_FIELD: feishu.channel_group_value(clean["base_url"]),
             feishu.DEFAULT_GROUP_FIELD: test_group,
         }
     entry = storage.enqueue_feishu_record(
@@ -190,11 +201,14 @@ async def compare(body: CompareInput, request: Request):
     run = engine.CompareRequest(candidate=engine.EndpointConfig(**candidate),
                                 reference=engine.EndpointConfig(**reference), rounds=body.rounds)
     redactor = EventRedactor([candidate["api_key"], reference["api_key"]])
+    run_id = uuid4().hex
+    warmup_rounds = 1 if body.rounds >= 2 else 0
 
     async def stream() -> AsyncIterator[bytes]:
         total = len(engine.QUESTIONS) * body.rounds
-        yield engine.encode_event({"type": "run_started", "question_count": len(engine.QUESTIONS),
-                                   "rounds": body.rounds, "total_question_runs": total})
+        yield engine.encode_event({"type": "run_started", "run_id": run_id,
+            "question_count": len(engine.QUESTIONS), "rounds": body.rounds,
+            "warmup_rounds": warmup_rounds, "total_question_runs": total})
         timeout = httpx.Timeout(connect=20, read=240, write=20, pool=20)
         async with httpx.AsyncClient(timeout=timeout, follow_redirects=False, trust_env=False,
                 transport=app.state.upstream_transport or guarded_transport()) as client:
@@ -202,14 +216,22 @@ async def compare(body: CompareInput, request: Request):
                 for index, question in enumerate(engine.QUESTIONS, 1):
                     if await request.is_disconnected():
                         return
-                    yield engine.encode_event({"type": "question_started", "question_id": question["id"],
-                                               "round": number, "index": index})
-                    async for event in engine.run_question(run, question, client):
+                    selected = engine.select_question_variant(question, f"{run_id}:{number}")
+                    pair_id = f"{run_id}:{number}:{selected['id']}"
+                    round_role = "warmup" if number <= warmup_rounds else "evaluated"
+                    yield engine.encode_event({"type": "question_started", "question_id": selected["id"],
+                        "pair_id": pair_id, "round_role": round_role,
+                        "variant_id": selected.get("variant_id", "original"),
+                        "prompt": selected["prompt"], "round": number, "index": index})
+                    async for event in engine.run_question(run, selected, client):
                         for safe in redactor.filter(event):
-                            yield engine.encode_event({**safe, "round": number})
+                            yield engine.encode_event({**safe, "round": number, "pair_id": pair_id,
+                                "round_role": round_role,
+                                "variant_id": selected.get("variant_id", "original")})
                     completed = (number - 1) * len(engine.QUESTIONS) + index
-                    yield engine.encode_event({"type": "question_finished", "question_id": question["id"],
-                        "round": number, "completed_question_runs": completed, "total_question_runs": total})
+                    yield engine.encode_event({"type": "question_finished", "question_id": selected["id"],
+                        "pair_id": pair_id, "round_role": round_role, "round": number,
+                        "completed_question_runs": completed, "total_question_runs": total})
                     if completed < total:
                         await engine.wait_between_questions()
         yield engine.encode_event({"type": "run_finished"})
@@ -222,8 +244,10 @@ async def save_report(body: AdmissionReportInput):
     report = body.model_dump()
     if _contains_secret_field(report):
         raise HTTPException(status_code=400, detail="报告中不能包含密钥或密码字段")
+    report = reporting.finalize_report(report)
     try:
-        return storage.save_report(report)
+        saved = storage.save_report(report)
+        return {**report, **saved}
     except ValueError as exc:
         raise HTTPException(status_code=413, detail=str(exc)) from exc
 
@@ -238,7 +262,15 @@ async def report_detail(report_id: int):
     report = storage.get_report(report_id)
     if report is None:
         raise HTTPException(status_code=404, detail="准入报告不存在")
-    return report
+    return reporting.finalize_report(report)
+
+
+@app.get("/api/reports/{report_id}/ordinary")
+async def ordinary_report(report_id: int):
+    report = storage.get_report(report_id)
+    if report is None:
+        raise HTTPException(status_code=404, detail="准入报告不存在")
+    return reporting.public_report(report)
 
 
 @app.delete("/api/reports/{report_id}")

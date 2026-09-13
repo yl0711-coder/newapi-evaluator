@@ -1,0 +1,35 @@
+.form-actions { margin-top:18px; }
+.section-index { margin:0 0 4px; color:var(--accent); font-size:11px; font-weight:750; letter-spacing:.13em; text-transform:uppercase; }
+.section-heading { margin:30px 0 12px; }
+.headline { padding:18px 20px; border-left:5px solid var(--accent); border-radius:8px; background:var(--soft); font:650 clamp(20px,3vw,30px)/1.35 "Iowan Old Style","Songti SC",serif; }
+.headline[data-status="candidate_deviation"] { border-color:var(--danger); background:#f7e9e6; }
+.headline[data-status="insufficient"] { border-color:#a87818; background:#f7f0df; }
+.summary-cards { display:grid; grid-template-columns:repeat(4,minmax(0,1fr)); gap:12px; margin:18px 0; }
+.summary-card { min-width:0; padding:14px; border:1px solid var(--line); border-radius:9px; background:#fff; }
+.summary-card small { display:block; color:var(--muted); }
+.summary-card strong { display:block; margin-top:5px; font-size:16px; overflow-wrap:anywhere; }
+.plain-notes { margin:12px 0 14px; padding-left:22px; }
+.plain-notes li { margin:5px 0; }
+.notice { padding:11px 13px; border-radius:7px; background:#f7f0df; color:#6c521e; font-size:14px; }
+.identity-summary { display:grid; grid-template-columns:1fr 1fr; gap:12px; }
+.identity-card { padding:12px 14px; border:1px solid var(--line); border-radius:8px; }
+.identity-card p { margin:3px 0; font-size:14px; }
+.compact-label { display:flex; align-items:center; gap:8px; margin:0; white-space:nowrap; }
+.compact-label select { width:auto; margin:0; }
+.pair-row[data-hidden="true"] { display:none; }
+.pair-judgement { white-space:normal; min-width:150px; }
+.round-badge { margin-left:8px; }
+.evidence-card { padding:0; overflow:hidden; }
+.evidence-card>summary { padding:18px 22px; list-style:none; }
+.evidence-card>summary::-webkit-details-marker { display:none; }
+.evidence-card[open]>summary { border-bottom:1px solid var(--line); }
+.evidence-body { padding:18px 22px 22px; }
+.endpoint-evidence { min-width:0; }
+.endpoint-evidence h3 { margin-bottom:8px; }
+.endpoint-status { min-height:22px; }
+.evidence-block { margin-top:12px; }
+.evidence-block>summary { font-weight:650; }
+.empty-reasoning { color:var(--muted); font-style:italic; }
+.history-facts { white-space:pre-line; }
+@media(max-width:900px) { .summary-cards { grid-template-columns:repeat(2,minmax(0,1fr)); } }
+@media(max-width:800px) { .summary-cards,.identity-summary { grid-template-columns:1fr; } .report-overview .dialog-heading { align-items:flex-start; flex-direction:column; } .evidence-card .two { grid-template-columns:1fr; } }
