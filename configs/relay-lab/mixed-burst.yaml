@@ -1,0 +1,19 @@
+mixed_burst:
+  enabled: true
+  counts: [2, 2, 6]
+  output_limits: [64, 512, 4096]
+  expected_capacity: 5
+  first_output_timeout: 600
+  idle_timeout: 60
+  total_timeout: 900
+  connect_timeout: 10
+  release_window: 10
+connection_limit: 10
+stage_duration: 0
+mock:
+  admission_policy: queue
+  queue_timeout: 3
+  accounts:
+    - capacity: 5
+      latency: 0.01
+      cooldown: 0

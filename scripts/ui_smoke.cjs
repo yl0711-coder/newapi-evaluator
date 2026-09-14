@@ -78,13 +78,22 @@ const upstream = http.createServer(async (req, res) => {
   assert.equal((await (await fetch(base+'/stability/api/channels')).json()).channels.length,1);
   assert.equal((await (await fetch(base+'/stability/api/schedules')).json()).schedules.length,0); assert.equal(requests.length,25);
   await page.screenshot({path:path.join(data,'stability-desktop.png'),fullPage:true});
-  for (const url of ['/','/channels/','/admission/','/reasoning/','/stability/']) {
+  await page.goto(base+'/capacity/'); await page.locator('.platform-nav').waitFor();
+  assert.equal(await page.locator('.platform-nav a[aria-current="page"]').textContent(),'\u4e2d\u8f6c\u7ad9\u6781\u9650\u6d4b\u8bd5');
+  await page.locator('#preset').selectOption('quick'); await page.locator('#preset').dispatchEvent('change');
+  await page.locator('#test-form button[type="submit"]').click();
+  await page.waitForFunction(()=>document.querySelector('#result-status').textContent==='\u5df2\u5b8c\u6210',{},{timeout:40000});
+  assert.equal(await page.locator('#downloads').getAttribute('hidden'),null);
+  assert.ok(await page.locator('#history .history-card').count()>=1);
+  await page.screenshot({path:path.join(data,'capacity-desktop.png'),fullPage:true});
+  for (const url of ['/','/channels/','/admission/','/reasoning/','/stability/','/capacity/']) {
     await page.setViewportSize({width:390,height:844}); await page.goto(base+url); await page.locator('.platform-nav').waitFor();
-    const overflow = await page.evaluate(()=>document.documentElement.scrollWidth>window.innerWidth+2);
-    assert.equal(overflow,false,`Mobile overflow: ${url}`);
+    const overflow = await page.evaluate(()=>({overflow:document.documentElement.scrollWidth>window.innerWidth+2,width:document.documentElement.scrollWidth,
+      elements:[...document.querySelectorAll('*')].filter(element=>element.getBoundingClientRect().right>window.innerWidth+2).sort((a,b)=>b.getBoundingClientRect().right-a.getBoundingClientRect().right).slice(0,12).map(element=>`${element.tagName.toLowerCase()}${element.id?'#'+element.id:''}${element.className&&typeof element.className==='string'?'.'+element.className.trim().replace(/\s+/g,'.'):''}:${Math.round(element.getBoundingClientRect().right)}`)}));
     await page.screenshot({path:path.join(data,(url.replaceAll('/','')||'home')+'-mobile.png'),fullPage:true,animations:'disabled'});
+    assert.equal(overflow.overflow,false,`Mobile overflow: ${url} (${overflow.width}px; ${overflow.elements.join(', ')})`);
   }
-  assert.deepEqual(errors,[]); console.log(JSON.stringify({status:'passed',mockRequests:requests.length,artifacts:data,checks:'frontend channel CRUD, ephemeral admission, report export, reasoning, explicit targets, desktop/mobile'}));
+  assert.deepEqual(errors,[]); console.log(JSON.stringify({status:'passed',mockRequests:requests.length,artifacts:data,checks:'frontend channel CRUD, ephemeral admission, report export, reasoning, explicit targets, integrated capacity Mock, desktop/mobile'}));
 })().catch(error=>{console.error(error);if(logs)console.error(logs);process.exitCode=1;}).finally(async()=>{
   if(browser) await browser.close();
   if(app) { app.kill('SIGTERM'); await new Promise(resolve=>app.once('exit',resolve)); }

@@ -1,0 +1,8 @@
+samples: 100
+min_samples: 100
+stages: [1, 2, 3, 5, 8, 13]
+mock:
+  slow_at: 3
+  slow_factor: 5
+  accounts:
+    - {capacity: 5, latency: 0.02, jitter: 0.002, failure_rate: 0.0, cooldown: 0.08}

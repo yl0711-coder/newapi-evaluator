@@ -1,0 +1,12 @@
+mock:
+  seed: 23
+  chunks: 4
+  chunk_delay: 0.004
+  latency: 0.015
+  slow_at: 50
+  slow_factor: 5
+  crash_at: 200
+  crash_duration: 0.2
+  accounts:
+    - {capacity: 3, latency: 0.015, jitter: 0.001, failure_rate: 0.0, cooldown: 0.03}
+    - {capacity: 5, latency: 0.025, jitter: 0.006, failure_rate: 0.02, cooldown: 0.05}

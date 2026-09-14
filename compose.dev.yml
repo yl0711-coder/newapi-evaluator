@@ -4,6 +4,8 @@ services:
     volumes:
       - ./data:/app/data
       - ./features:/app/features
+      - ./relay_lab:/app/relay_lab
+      - ./configs:/app/configs
       - ./shared:/app/shared
       - ./web:/app/web
       - ./run.py:/app/run.py
