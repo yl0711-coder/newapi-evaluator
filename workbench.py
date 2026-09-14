@@ -19,6 +19,7 @@ FEATURES = {
     "admission": ("准入测试", "features.admission.api"),
     "stability": ("定时稳定性测试", "features.stability.app.main"),
     "reasoning": ("非流式回答测试", "features.reasoning.api"),
+    "capacity": ("中转站极限测试", "features.capacity.api"),
 }
 
 

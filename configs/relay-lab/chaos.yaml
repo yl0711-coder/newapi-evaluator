@@ -1,0 +1,10 @@
+samples: 20
+min_samples: 100
+timeout: 0.15
+stages: [1, 2]
+faults: [http_401, http_429, http_500, connect_timeout, read_timeout, network_drop, malformed_sse, disconnect, missing_done, slow_sse, jitter, disable_account, partial_accounts, upstream_outage]
+mock:
+  fault_duration: 0.3
+  accounts:
+    - {capacity: 3, latency: 0.008, jitter: 0.001, failure_rate: 0.0, cooldown: 0.02}
+    - {capacity: 5, latency: 0.018, jitter: 0.003, failure_rate: 0.1, cooldown: 0.02}

@@ -51,8 +51,9 @@ class PublicNetwork(AutoBackend):
         raise last_error
 
 
-def guarded_transport():
-    transport = httpx.AsyncHTTPTransport(trust_env=False, retries=0)
+def guarded_transport(*, limits=None):
+    options = {"limits": limits} if limits is not None else {}
+    transport = httpx.AsyncHTTPTransport(trust_env=False, retries=0, **options)
     # httpx 0.28.1 / httpcore 1.0.9 are pinned; only the socket backend is replaced.
     transport._pool._network_backend = PublicNetwork()
     return transport

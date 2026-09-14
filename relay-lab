@@ -1,0 +1,10 @@
+#!/bin/sh
+# No install, network download, or source-tree cache needed.
+export PYTHONDONTWRITEBYTECODE=1
+ROOT=$(CDPATH= cd -- "$(dirname -- "$0")" && pwd)
+RELAY_LAB_PYTHON=${RELAY_LAB_PYTHON:-$ROOT/.venv/bin/python}
+if [ ! -x "$RELAY_LAB_PYTHON" ]; then
+  RELAY_LAB_PYTHON=${PYTHON_EXECUTABLE:-python3}
+fi
+cd "$ROOT" || exit 1
+exec "$RELAY_LAB_PYTHON" -B -m relay_lab "$@"

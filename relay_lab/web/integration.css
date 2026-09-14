@@ -1,0 +1,11 @@
+/* Overrides needed when the lab is mounted under the shared workbench shell. */
+.sidebar {
+  min-width: 0;
+}
+
+.environment input {
+  width: 1px;
+  height: 1px;
+  padding: 0;
+  border: 0;
+}
