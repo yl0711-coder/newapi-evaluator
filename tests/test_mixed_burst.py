@@ -22,8 +22,15 @@ class MixedBurstTests(unittest.IsolatedAsyncioTestCase):
     async def test_queue_preserves_original_cohort_and_observes_release(self):
         lab = Lab(self.cfg, self.root / 'queue')
         task = asyncio.create_task(lab.run('account-test'))
-        await asyncio.sleep(.06)
-        live = lab.burst_snapshot()
+        deadline = asyncio.get_running_loop().time() + 1
+        while True:
+            live = lab.burst_snapshot()
+            states = {row['state'] for row in live['timeline']}
+            if live['issued_requests'] == 10 and {'waiting_first_output', 'receiving'} <= states:
+                break
+            if asyncio.get_running_loop().time() >= deadline:
+                self.fail(f"Did not observe mixed queue states: {sorted(states)}")
+            await asyncio.sleep(.005)
         self.assertEqual(live['issued_requests'], 10)
         self.assertTrue(any(r['state'] == 'waiting_first_output' for r in live['timeline']))
         self.assertTrue(any(r['state'] == 'receiving' for r in live['timeline']))

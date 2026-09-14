@@ -36,6 +36,9 @@ class ModeRecoveryTests(unittest.IsolatedAsyncioTestCase):
 
     async def test_pool_scaling_and_capacity_drop(self):
         self.cfg.update(pool_sizes=[1, 2, 4], pool_stages=[1, 2, 4, 6])
+        # Keep scheduler overhead small relative to the deterministic Mock latency
+        # so the 2x slow-point rule measures pool capacity on fast and slow runners.
+        self.cfg['mock']['accounts'][0]['latency'] = .03
         value = await Lab(self.cfg, self.root / 'pool').run('pool-test')
         cases = {(s['account_count'], s['scenario']): s for s in value['analysis']['pool_scenarios']}
         self.assertEqual(cases[1, 'healthy']['observed_capacity'], 2)
