@@ -104,6 +104,52 @@ class IntegrationTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(storage.list_channels(), [])
         self.assertEqual(storage.list_schedules(), [])
 
+    async def test_admission_defaults_to_warmup_then_paired_evaluation(self):
+        requests = []
+
+        def handler(request):
+            requests.append(request)
+            model = json.loads(request.content)["model"]
+            return httpx.Response(200, text="\n".join([
+                "data: " + json.dumps({"id":"synthetic-request","model":model,"choices":[{"delta":{"content":"answer"},"finish_reason":None}]}),
+                "data: " + json.dumps({"model":model,"choices":[{"delta":{},"finish_reason":"stop"}],"usage":{"completion_tokens":4}}),
+                "data: [DONE]", "",
+            ]))
+
+        admission.app.state.upstream_transport = httpx.MockTransport(handler)
+        with patch.object(admission.engine, "wait_between_questions", new=AsyncMock()):
+            response = await self.client.post(
+                "/admission/api/compare",
+                json={"candidate":self.candidate(), "reference":self.selection()},
+            )
+        self.assertEqual(response.status_code, 200, response.text)
+        self.assertEqual(len(requests), 20)
+        candidate_prompts = sorted(json.loads(item.content)["messages"][-1]["content"] for item in requests if item.url.host == "candidate.example")
+        reference_prompts = sorted(json.loads(item.content)["messages"][-1]["content"] for item in requests if item.url.host == "reference.example")
+        self.assertEqual(candidate_prompts, reference_prompts)
+        events = [json.loads(line) for line in response.text.splitlines()]
+        started = next(event for event in events if event["type"] == "run_started")
+        self.assertEqual((started["rounds"], started["warmup_rounds"]), (2, 1))
+        questions = [event for event in events if event["type"] == "question_started"]
+        self.assertEqual([event["round_role"] for event in questions].count("warmup"), 5)
+        self.assertEqual([event["round_role"] for event in questions].count("evaluated"), 5)
+        self.assertEqual(len({event["pair_id"] for event in questions}), 10)
+        measurements = [event for event in events if event["type"] == "side_finished"]
+        self.assertTrue(all(event.get("pair_id") and event.get("round_role") for event in measurements))
+        self.assertTrue(all(event.get("actual_model") == "demo-model" for event in measurements))
+
+    async def test_admission_rejects_different_requested_model_names(self):
+        response = await self.client.post(
+            "/admission/api/compare",
+            json={
+                "candidate": self.candidate(),
+                "reference": {**self.selection(), "model": "different-model"},
+            },
+        )
+        self.assertEqual(response.status_code, 400, response.text)
+        self.assertIn("相同的请求模型名", response.text)
+        self.assertIsNone(admission_storage.latest_feishu_record())
+
     async def test_valid_admission_submission_queues_url_and_model_family(self):
         calls = []
 
@@ -118,6 +164,7 @@ class IntegrationTests(unittest.IsolatedAsyncioTestCase):
             "model": "claude-opus-5",
             "protocol": "anthropic",
         }
+        reference = {**self.selection(), "model": candidate["model"], "protocol": candidate["protocol"]}
         admission.app.state.feishu_settings = admission_feishu.FeishuSettings()
         admission.app.state.feishu_writer = Writer()
 
@@ -136,7 +183,7 @@ class IntegrationTests(unittest.IsolatedAsyncioTestCase):
         ):
             response = await self.client.post(
                 "/admission/api/compare",
-                json={"candidate": candidate, "reference": self.selection(), "rounds": 1},
+                json={"candidate": candidate, "reference": reference, "rounds": 1},
             )
         self.assertEqual(response.status_code, 200, response.text)
         if admission._feishu_tasks:
@@ -161,6 +208,7 @@ class IntegrationTests(unittest.IsolatedAsyncioTestCase):
                 raise admission_feishu.FeishuError("飞书网络请求失败：synthetic")
 
         candidate = {**self.candidate(), "model": "gpt-5.6-sol"}
+        reference = {**self.selection(), "model": candidate["model"]}
         admission.app.state.feishu_settings = admission_feishu.FeishuSettings()
         admission.app.state.feishu_writer = FailingWriter()
 
@@ -179,7 +227,7 @@ class IntegrationTests(unittest.IsolatedAsyncioTestCase):
         ):
             response = await self.client.post(
                 "/admission/api/compare",
-                json={"candidate": candidate, "reference": self.selection(), "rounds": 1},
+                json={"candidate": candidate, "reference": reference, "rounds": 1},
             )
         self.assertEqual(response.status_code, 200, response.text)
         if admission._feishu_tasks:
@@ -312,6 +360,37 @@ class IntegrationTests(unittest.IsolatedAsyncioTestCase):
         response = await self.client.post("/admission/api/reports", json=unsafe)
         self.assertEqual(response.status_code, 422)
         self.assertNotIn(self.key, response.text)
+
+    async def test_version_two_report_is_derived_and_has_safe_ordinary_export(self):
+        payload = {
+            "version": 2,
+            "run_id": "synthetic-run",
+            "created_at": "2026-09-13T12:00:00Z",
+            "status": "completed",
+            "rounds": 2,
+            "warmup_rounds": 1,
+            "candidate": {"base_url":"https://candidate.example/v1","model":"demo-model","protocol":"openai"},
+            "reference": {"base_url":"https://reference.example/v1","model":"demo-model","protocol":"openai","name":"reference"},
+            "questions": [{"id":"q1","title":"题一","difficulty":"easy","prompt":"synthetic"}],
+            "measurements": [
+                {"type":"side_finished","round":2,"round_role":"evaluated","pair_id":"pair-1","question_id":"q1","side":side,"ok":True,"status":"completed","request_started_ms":1000,"first_answer_ms":100,"total_ms":500,"actual_model":"demo-model"}
+                for side in ("candidate", "reference")
+            ],
+            "responses": [
+                {"round":2,"round_role":"evaluated","pair_id":"pair-1","question_id":"q1","side":side,"content":"raw answer","reasoning":"raw reasoning"}
+                for side in ("candidate", "reference")
+            ],
+        }
+        response = await self.client.post("/admission/api/reports", json=payload)
+        self.assertEqual(response.status_code, 201, response.text)
+        saved = response.json()
+        self.assertEqual(saved["summary"]["evidence"]["valid_pairs"], 1)
+        self.assertEqual(saved["summary"]["ability"]["status"], "manual")
+        ordinary = await self.client.get(f"/admission/api/reports/{saved['id']}/ordinary")
+        self.assertEqual(ordinary.status_code, 200, ordinary.text)
+        self.assertNotIn("raw answer", ordinary.text)
+        self.assertNotIn("raw reasoning", ordinary.text)
+        self.assertNotIn("candidate.example", ordinary.text)
 
     async def test_scheduled_report_waits_for_configured_delay(self):
         target = {

@@ -20,7 +20,7 @@ from main import (
     measure_side,
     parse_stream_line,
 )
-from feishu import BitableWriter, FeishuSettings, build_fields, group_for_model
+from feishu import BitableWriter, FeishuSettings, build_fields, channel_group_value, group_for_model
 
 
 class QuestionBankTests(unittest.TestCase):
@@ -401,6 +401,10 @@ class FeishuAdmissionTests(unittest.IsolatedAsyncioTestCase):
             build_fields("https://candidate.example/v1", "Claude", self.settings()),
             {"渠道": "https://candidate.example/v1", "测试分组": "Claude"},
         )
+        self.assertEqual(
+            channel_group_value("HTTPS://Candidate.Example/v1/chat/completions/"),
+            "https://candidate.example/v1",
+        )
 
     async def test_bitable_request_contains_no_human_result_field(self) -> None:
         tenant_token = "synthetic-" + "tenant-token"
@@ -483,7 +487,7 @@ class FrontendSafetyTests(unittest.TestCase):
         html = (Path(__file__).parent / "web" / "index.html").read_text(encoding="utf-8")
         source = (Path(__file__).parent / "web" / "app.js").read_text(encoding="utf-8")
         self.assertIn('id="rounds"', html)
-        report_builder = source[source.index("report = {version:"):source.index("rows.clear()")]
+        report_builder = source[source.index("report = {version:"):source.index("liveRows.clear()")]
         self.assertNotIn("api_key", report_builder)
         self.assertNotIn("candidate-key", report_builder)
 

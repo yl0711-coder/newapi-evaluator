@@ -97,7 +97,7 @@ def cursor() -> Iterator[sqlite3.Cursor]:
 
 
 def _summary(row: sqlite3.Row) -> dict[str, Any]:
-    return {
+    result = {
         "id": int(row["id"]),
         "created_at": float(row["created_at"]),
         "reported_at": row["reported_at"],
@@ -107,6 +107,21 @@ def _summary(row: sqlite3.Row) -> dict[str, Any]:
         "reference_name": row["reference_name"],
         "reference_model": row["reference_model"],
     }
+    if "report_json" in row.keys():
+        try:
+            report = json.loads(row["report_json"])
+            summary = report.get("summary") if isinstance(report, dict) else {}
+            counts = summary.get("counts", {}) if isinstance(summary, dict) else {}
+            evidence = summary.get("evidence", {}) if isinstance(summary, dict) else {}
+            result.update(
+                overall_label=summary.get("overall", {}).get("label", "") if isinstance(summary, dict) else "",
+                candidate_only=int(counts.get("candidate_only") or 0),
+                shared=int(counts.get("shared") or 0),
+                valid_pairs=int(evidence.get("valid_pairs") or 0),
+            )
+        except (TypeError, ValueError, json.JSONDecodeError):
+            pass
+    return result
 
 
 def save_report(report: dict[str, Any]) -> dict[str, Any]:
@@ -142,7 +157,8 @@ def list_reports(limit: int = MAX_REPORTS) -> list[dict[str, Any]]:
     with cursor() as cur:
         rows = cur.execute(
             "SELECT id,created_at,reported_at,status,candidate_url,candidate_model,"
-            "reference_name,reference_model FROM reports ORDER BY created_at DESC,id DESC LIMIT ?",
+            "reference_name,reference_model,report_json FROM reports "
+            "ORDER BY created_at DESC,id DESC LIMIT ?",
             (limit,),
         ).fetchall()
     return [_summary(row) for row in rows]

@@ -6,7 +6,7 @@ import re
 import time
 from dataclasses import dataclass
 from typing import Any
-from urllib.parse import quote
+from urllib.parse import quote, urlsplit, urlunsplit
 
 import httpx
 
@@ -86,6 +86,17 @@ def group_for_model(model: str) -> str:
     return "未识别"
 
 
+def channel_group_value(channel_url: str) -> str:
+    parsed = urlsplit(channel_url.strip())
+    path = re.sub(
+        r"/(chat/completions|responses|messages|models)/?$",
+        "",
+        parsed.path.rstrip("/"),
+        flags=re.I,
+    )
+    return urlunsplit((parsed.scheme.lower(), parsed.netloc.lower(), path, "", "")).rstrip("/")
+
+
 def build_fields(
     channel_url: str,
     test_group: str,
@@ -96,7 +107,7 @@ def build_fields(
     if settings.channel_field == settings.group_field:
         raise ValueError("飞书渠道字段和测试分组字段不能同名")
     return {
-        settings.channel_field: channel_url,
+        settings.channel_field: channel_group_value(channel_url),
         settings.group_field: test_group,
     }
 
