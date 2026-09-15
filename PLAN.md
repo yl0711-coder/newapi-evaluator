@@ -1,14 +1,14 @@
 # 请求特征诊断子项目
 
-目标：根据 Token、历史耗时、状态码和流式类型，在受控目标上运行独立合成请求及单因素对照，输出特征与链路诊断证据。
+目标：请求特征诊断直接使用已启用公共渠道，移除额外部署开关；保留逐次计划确认、渠道版本校验、鉴权与出站防护，无需迁移既有数据库。
 
-工作目录与基线：本 worktree；feature/request-feature-diagnostics；基线 f1c01de999e46d7800fd95a221b9f51b6c99b97d。仓库身份 yl0711-coder/newapi-evaluator；规则为根 AGENTS.md 引用的 docs/ai-rules v1.0。
+工作目录与基线：本 worktree；feature/request-feature-diagnostics；基线 b6db4f03953f4dd0af9822824fef62073fb85eb0。仓库身份 yl0711-coder/newapi-evaluator；规则为根 AGENTS.md 引用的 docs/ai-rules v1.0。
 
-范围：工作台独有的案例、对照计划、串行测量、历史和导出，新增 features/diagnosis；复用 shared 的鉴权、公共渠道和出站防护。现有固定题库的解析和判定契约不适用于任意体量的诊断样本；诊断协议适配只服务该功能，不重新定义实验室五模式规则。
+范围：features/diagnosis 的部署门控、配置接口和前端目标选择，以及对应测试/文档。公共渠道库和诊断库存储结构不变；首次启动仍自动创建独立 diagnosis.db，沿用原有保存和中断归档规则。主项目已有修改、其他构建分支与业务数据保留。
 
-实现：指标导入、Token 分项未知保留、三种文本协议、四组单因素对照、串行请求、明确时限/估算预算、预览及目标版本绑定、取消与进程中断归档、指标报告、独立启动与首页入口。
+实现：真实目标可直接选择；默认仍为本地 Mock，真实请求须每次预览后勾选确认。未确认不创建运行，不发送请求。
 
-验证入口：docs/请求特征诊断测试清单.md；scripts/verify_diagnosis.py。开发自测、浏览器修复复核、依赖指纹及首次失败保存在 /Users/lmurder/Desktop/api中转站/中转站极限测试数据/请求特征诊断/20260915-development。独立 SHA 验收、只读审查与最终交接单保存在同任务的 20260915-independent 目录，结论以绑定候选 SHA 的外置报告为准。
+验证入口：docs/请求特征诊断测试清单.md；scripts/verify_diagnosis.py。部署门控移除的开发回归、独立 SHA 验收、兼容性核对和独立审查保存在 /Users/lmurder/Desktop/api中转站/中转站极限测试数据/请求特征诊断/20260915-live-default，结论以绑定候选 SHA 的外置报告为准。原子项目验收与主项目合并证据保留在相邻的 20260915-independent 与 20260915-merge。
 
 交付流程：开发自查及适用检查后固定本地候选 SHA；独立上下文审查与干净检出全量验收；修复必修项后复核。所有必需检查通过才交付可用结论。
 

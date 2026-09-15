@@ -63,11 +63,10 @@ async def parse(request, model):
         raise HTTPException(422, "字段格式或范围不符合要求；仅接受页面列出的指标字段") from None
 
 
-def create_app(directory=None, registry=None, *, live_enabled=None):
+def create_app(directory=None, registry=None):
     @asynccontextmanager
     async def lifespan(app):
-        app.state.manager = Manager(Store(directory or DATA_DIR / "diagnosis"), registry or get_registry(),
-                                    live_enabled=live_enabled)
+        app.state.manager = Manager(Store(directory or DATA_DIR / "diagnosis"), registry or get_registry())
         async with app.state.manager.lifespan():
             yield
 
@@ -90,7 +89,7 @@ def create_app(directory=None, registry=None, *, live_enabled=None):
     @app.get("/api/config")
     async def config(request: Request):
         manager = request.app.state.manager
-        return {"live_enabled": manager.live_enabled, "channels": [
+        return {"channels": [
             {"id": c["id"], "alias": f"渠道 #{c['id']}", "version": c["version"], "enabled": c["enabled"]}
             for c in manager.registry.list()]}
 

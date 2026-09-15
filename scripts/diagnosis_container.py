@@ -39,22 +39,31 @@ def main():
     try:
         docker('build','--label',f'diagnosis.source={sha}','-t',image,str(ROOT),timeout=600)
         docker('run','-d','--name',identifier,'--label',f'diagnosis.owner={identifier}','--tmpfs','/app/data:uid=10001,gid=10001,mode=0700',
-               '-e','PLATFORM_USERNAME=fixture','-e','PLATFORM_PASSWORD=synthetic-container-password',
-               '-e','DIAGNOSIS_ENABLE_LIVE=0',image,timeout=30)
+               '-e','PLATFORM_USERNAME=fixture','-e','PLATFORM_PASSWORD=synthetic-container-password',image,timeout=30)
         for _ in range(90):
             state=json.loads(docker('inspect',identifier,capture_output=True).stdout)[0]['State']
             if state.get('Health',{}).get('Status')=='healthy':break
             if not state['Running']:raise RuntimeError('owned container stopped')
             time.sleep(1)
         else:raise RuntimeError('container health timeout')
-        code="""import base64,json,urllib.request
+        code="""import base64,json,urllib.request,urllib.error
 def request(path,body=None):
  r=urllib.request.Request('http://127.0.0.1:8090'+path,data=json.dumps(body).encode() if body is not None else None,headers={'Authorization':'Basic '+base64.b64encode(b'fixture:synthetic-container-password').decode(),'Content-Type':'application/json'})
  return urllib.request.urlopen(r,timeout=10).read()
 assert b'REQUEST DIAGNOSTICS' in request('/diagnosis/')
 assert b'chooseCase' in request('/diagnosis/static/app.js')
-assert json.loads(request('/diagnosis/api/config'))['live_enabled'] is False
+assert json.loads(request('/diagnosis/api/config'))['channels']==[]
 case=json.loads(request('/diagnosis/api/cases',{'cases':[{'total_tokens':100,'stream':True}]}))[0]
+channel=json.loads(request('/api/registry/channels',{'name':'fixture','base_url':'https://fixture.invalid','api_key':'synthetic-diagnosis-credential','multiplier':1,'status':'online'}))
+live=json.loads(request('/diagnosis/api/preview',{'case_id':case['id'],'target':{'mode':'live','channel_id':channel['id'],'model':'fixture'}}))
+assert live['plan']['target']['channel_id']==channel['id']
+try:
+ request('/diagnosis/api/runs',{'preview_id':live['preview_id']})
+except urllib.error.HTTPError as error:
+ assert error.code==400
+else:
+ raise AssertionError('live request started without operator confirmation')
+assert json.loads(request('/diagnosis/api/runs'))==[]
 p=json.loads(request('/diagnosis/api/preview',{'case_id':case['id'],'repetitions':1,'variants':[]}))
 r=json.loads(request('/diagnosis/api/runs',{'preview_id':p['preview_id']}))
 import time
@@ -67,7 +76,7 @@ assert json.loads(request('/api/health'))['status']=='ok'
 """
         docker('exec',identifier,'python','-c',code,timeout=30)
         image_id=docker('image','inspect',image,'--format','{{.Id}}',capture_output=True).stdout.strip()
-        result={'status':'passed','checks':6,'skipped':0,'source_sha':sha,'image_id':image_id,'published':False}
+        result={'status':'passed','checks':9,'skipped':0,'source_sha':sha,'image_id':image_id,'published':False}
         (output/'container.json').write_text(json.dumps(result,indent=2))
         print(json.dumps(result))
     finally:

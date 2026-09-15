@@ -114,7 +114,7 @@ class DiagnosisTests(unittest.IsolatedAsyncioTestCase):
             self.assertIsNone(manager.task)
 
     async def test_preview_expiry_concurrency_budget_and_configuration_binding(self):
-        manager=Manager(self.store,self.registry,live_enabled=True)
+        manager=Manager(self.store,self.registry)
         channel=self.registry.save({'name':'fixture','base_url':'https://fixture.invalid','api_key':'fixture-credential'})
         target=Target(mode='live',channel_id=channel['id'],model='fixture')
         p=manager.preview(self.plan(target=target))
@@ -141,7 +141,7 @@ class DiagnosisTests(unittest.IsolatedAsyncioTestCase):
             case=(await client.post('/api/cases',json={'cases':[{'total_tokens':1500,'stream':True}]})).json()[0]
             self.assertIsNone(case['input_tokens'])
             denied=await client.post('/api/preview',json={'case_id':case['id'],'target':{'mode':'live','channel_id':1}})
-            self.assertEqual(denied.status_code,400)
+            self.assertEqual(denied.status_code,404)
             p=(await client.post('/api/preview',json={'case_id':case['id'],'repetitions':1})).json()
             r=(await client.post('/api/runs',json={'preview_id':p['preview_id']})).json()
             self.assertEqual((await client.delete('/api/runs/'+r['id'])).status_code,409)
@@ -161,8 +161,62 @@ class DiagnosisTests(unittest.IsolatedAsyncioTestCase):
         text=json.dumps(value);self.assertNotIn('private-target',text);self.assertNotIn('credential',text);self.assertNotIn('sensitive alias',text)
         self.assertEqual(self.registry.path.read_bytes(),before)
 
+    async def test_existing_channels_available_without_migration_or_automatic_requests(self):
+        channel=self.registry.save({'name':'online fixture','base_url':'https://fixture.invalid',
+                                    'api_key':'fixture-credential','status':'online'})
+        disabled=self.registry.save({'name':'disabled fixture','base_url':'https://disabled.invalid',
+                                     'api_key':'fixture-credential','enabled':False})
+        before=self.registry.path.read_bytes()
+        keys=(self.registry.directory/'channels.key').read_bytes()
+        app=create_app(self.registry.directory/'diagnosis',Registry(self.registry.directory))
+        async with app.router.lifespan_context(app),httpx.AsyncClient(transport=httpx.ASGITransport(app=app),base_url='http://test') as client:
+            config=(await client.get('/api/config')).json()
+            self.assertEqual({c['id']:c['enabled'] for c in config['channels']},{channel['id']:True,disabled['id']:False})
+            self.assertNotIn('fixture-credential',json.dumps(config))
+            case=(await client.post('/api/cases',json={'cases':[{'total_tokens':100,'stream':True}]})).json()[0]
+            body={'case_id':case['id'],'target':{'mode':'live','channel_id':channel['id'],'model':'fixture'}}
+            response=await client.post('/api/preview',json=body)
+            self.assertEqual(response.status_code,200)
+            preview=response.json()
+            self.assertEqual(preview['plan']['target']['channel_id'],channel['id'])
+            denied=await client.post('/api/runs',json={'preview_id':preview['preview_id']})
+            self.assertEqual(denied.status_code,400)
+            self.assertIn('勾选预览确认',denied.json()['detail'])
+            self.assertIsNone(app.state.manager.task)
+            self.assertEqual((await client.get('/api/runs')).json(),[])
+            body['target']['channel_id']=disabled['id']
+            self.assertEqual((await client.post('/api/preview',json=body)).status_code,400)
+        self.assertEqual(self.registry.path.read_bytes(),before)
+        self.assertEqual((self.registry.directory/'channels.key').read_bytes(),keys)
+        self.assertTrue((self.registry.directory/'diagnosis'/'diagnosis.db').is_file())
+
+    async def test_existing_diagnosis_history_remains_readable(self):
+        manager=Manager(self.store,self.registry)
+        async with manager.lifespan():
+            preview=manager.preview(self.plan(variants=[],repetitions=1))
+            run=await manager.start(StartInput(preview_id=preview['preview_id']))
+            await manager.task
+        before=self.store.run(run['id'])
+        app=create_app(self.store.directory,self.registry)
+        async with app.router.lifespan_context(app),httpx.AsyncClient(transport=httpx.ASGITransport(app=app),base_url='http://test') as client:
+            self.assertEqual((await client.get('/api/cases')).json(),[self.case])
+            self.assertEqual((await client.get('/api/runs/'+run['id'])).json()['run'],before)
+            self.assertEqual((await client.get('/api/runs/'+run['id']+'/export/md')).status_code,200)
+            self.assertIsNone(app.state.manager.task)
+
+    async def test_deployment_environment_does_not_gate_channel_preview(self):
+        channel=self.registry.save({'name':'fixture','base_url':'https://fixture.invalid','api_key':'fixture-credential'})
+        for environment in ({},{'DIAGNOSIS_ENABLE_LIVE':'0'}):
+            with self.subTest(environment=environment),patch.dict('os.environ',environment,clear=True):
+                manager=Manager(self.store,self.registry)
+                preview=manager.preview(self.plan(target=Target(mode='live',channel_id=channel['id'])))
+                self.assertEqual(preview['plan']['target']['mode'],'live')
+                with self.assertRaisesRegex(ValueError,'勾选预览确认'):
+                    await manager.start(StartInput(preview_id=preview['preview_id']))
+                self.assertIsNone(manager.task)
+
     async def test_live_uses_guarded_transport_and_denies_loopback(self):
-        manager=Manager(self.store,self.registry,live_enabled=True)
+        manager=Manager(self.store,self.registry)
         channel=self.registry.save({'name':'loopback fixture','base_url':'http://127.0.0.1:9','api_key':'fixture-credential'})
         with patch.dict('os.environ',{'PLATFORM_EGRESS_ALLOWLIST':''}):
             async with manager.lifespan():

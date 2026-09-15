@@ -49,5 +49,5 @@
   $('stop').addEventListener('click',guard(async()=>{await post(`/runs/${current}/stop`,{});await refreshRun();status('已停止；未发送项不会继续，已到上游的请求可能仍被计费。');}));
   $('run-select').addEventListener('change',guard(async()=>{current=$('run-select').value;await refreshRun();}));
   $('delete-run').addEventListener('click',guard(async()=>{await api(`/runs/${current}`,{method:'DELETE'});current='';clearTimeout(poll);await loadRuns();$('results').replaceChildren();$('group-summary').replaceChildren();$('evidence-detail').hidden=true;$('exports').hidden=true;$('run-state').textContent='运行记录已删除。';}));
-  guard(async()=>{await Workbench.ready;const config=await api('/config');if(config.live_enabled){$('mode').options[1].disabled=false;$('mode').options[1].textContent='真实公共渠道';}for(const c of config.channels.filter(c=>c.enabled))$('channel').append(new Option(`${c.alias} · v${c.version}`,c.id));await loadCases();await loadRuns();status('准备就绪。先录入历史指标，或添加演示案例体验流程。');})();
+  guard(async()=>{await Workbench.ready;const config=await api('/config');for(const c of config.channels.filter(c=>c.enabled))$('channel').append(new Option(`${c.alias} · v${c.version}`,c.id));await loadCases();await loadRuns();status('准备就绪。先录入历史指标，或添加演示案例体验流程。');})();
 })();

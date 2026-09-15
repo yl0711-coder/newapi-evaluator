@@ -123,7 +123,7 @@ class WireTests(unittest.IsolatedAsyncioTestCase):
                 def change():registry.save({**channel,'name':'updated fixture','enabled':not disabled},channel['id'],channel['version'])
                 async with wire(chunks=[text_event(protocol)+terminals[protocol]],on_request=change) as (url,received):
                     channel=registry.save({'name':'fixture','base_url':url,'api_key':'synthetic-diagnosis-credential'})
-                    manager=Manager(store,registry,live_enabled=True)
+                    manager=Manager(store,registry)
                     with patch.dict('os.environ',{'PLATFORM_EGRESS_ALLOWLIST':'127.0.0.1'}):
                         async with manager.lifespan():
                             p=manager.preview(PlanInput(case_id=case['id'],target=Target(mode='live',channel_id=channel['id'],protocol=protocol),repetitions=1))

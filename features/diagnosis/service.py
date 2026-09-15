@@ -1,6 +1,5 @@
 import asyncio
 from contextlib import asynccontextmanager
-import os
 import time
 import uuid
 from urllib.parse import urlsplit
@@ -29,9 +28,8 @@ def target_snapshot(target, registry):
 
 
 class Manager:
-    def __init__(self, store, registry, *, live_enabled=None):
+    def __init__(self, store, registry):
         self.store, self.registry = store, registry
-        self.live_enabled = os.getenv("DIAGNOSIS_ENABLE_LIVE") == "1" if live_enabled is None else live_enabled
         self.previews = {}
         self.task = None
         self.current_id = None
@@ -50,8 +48,6 @@ class Manager:
 
     def preview(self, body):
         case = self.store.case(body.case_id)
-        if body.target.mode == "live" and not self.live_enabled:
-            raise ValueError("真实请求未启用；启动时设置 DIAGNOSIS_ENABLE_LIVE=1 后才可创建真实计划")
         snapshot = make_plan(body, case, target_snapshot(body.target, self.registry))
         now = time.monotonic()
         self.previews = {k: v for k, v in self.previews.items() if v[0] > now}
@@ -71,7 +67,7 @@ class Manager:
             if entry is None or entry[0] <= time.monotonic():
                 raise ValueError("预览已过期，请重新预览")
             _, plan, target = entry
-            if target.mode == "live" and (not self.live_enabled or not body.confirm_live):
+            if target.mode == "live" and not body.confirm_live:
                 raise ValueError("本次真实请求需要勾选预览确认")
             if target_snapshot(target, self.registry) != plan["target"]:
                 raise ValueError("渠道配置已变化，请重新预览")

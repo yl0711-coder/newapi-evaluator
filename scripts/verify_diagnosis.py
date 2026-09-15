@@ -102,7 +102,7 @@ def main():
     # Use only process infrastructure plus explicitly selected test tooling; never inherit business configuration.
     allowed=('PATH','HOME','LANG','LC_ALL','SYSTEMROOT','SSL_CERT_FILE','SSL_CERT_DIR','PLAYWRIGHT_MODULE','PLAYWRIGHT_CHANNEL','PLAYWRIGHT_BROWSERS_PATH','DOCKER_HOST','DOCKER_CONTEXT')
     env={k:v for k,v in os.environ.items() if k in allowed}
-    env.update(PYTHONDONTWRITEBYTECODE='1',PYTHONPATH=str(ROOT),TMPDIR=str(output/'tmp'),PLATFORM_DATA_DIR=str(output/'platform'),RELAY_LAB_DATA_DIR=str(output),PYTHON_EXECUTABLE=sys.executable,DIAGNOSIS_ENABLE_LIVE='0')
+    env.update(PYTHONDONTWRITEBYTECODE='1',PYTHONPATH=str(ROOT),TMPDIR=str(output/'tmp'),PLATFORM_DATA_DIR=str(output/'platform'),RELAY_LAB_DATA_DIR=str(output),PYTHON_EXECUTABLE=sys.executable)
     py=sys.executable
     collect=[py,'-c',"import unittest; s=unittest.TestLoader().discover('tests'); print(s.countTestCases())"]
     cp=subprocess.run(collect,cwd=ROOT,env=env,capture_output=True,text=True,timeout=60)
