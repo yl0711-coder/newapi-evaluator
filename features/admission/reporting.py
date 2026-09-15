@@ -39,7 +39,7 @@ def _error_category(measurement: dict[str, Any] | None) -> str:
 
 def _error_family(measurement: dict[str, Any] | None) -> str:
     category = _error_category(measurement)
-    if category in {"connect_timeout", "read_timeout", "pool_timeout", "timeout"}:
+    if category in {"connect_timeout", "read_timeout", "pool_timeout", "timeout", "total_timeout"}:
         return "timeout"
     if category.startswith("http_5"):
         return "http_5xx"

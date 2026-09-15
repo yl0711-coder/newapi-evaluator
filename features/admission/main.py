@@ -13,7 +13,7 @@ import httpx
 from fastapi import FastAPI, HTTPException, Request
 from fastapi.responses import FileResponse, JSONResponse, StreamingResponse
 from fastapi.staticfiles import StaticFiles
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, model_validator
 
 
 ROOT = Path(__file__).resolve().parent
@@ -23,8 +23,23 @@ WEB_PATH = ROOT / "web"
 SYSTEM_PROMPT = "请直接完成任务。答案要清楚、紧凑；推理题给出必要推导，不要重复题目。"
 ANTHROPIC_VERSION = "2023-06-01"
 INTER_QUESTION_DELAY_SECONDS = 3
+GPT6_MODEL = "gpt-6-astra"
+GPT6_OUTPUT_LIMIT = 4096
+GPT6_REASONING_EFFORT = "low"
+RESPONSES_TOTAL_TIMEOUT_SECONDS = 240
+AdmissionProtocol = Literal["openai", "responses", "anthropic"]
+
+
+def required_protocol(model: str) -> str | None:
+    return "responses" if model.strip() == GPT6_MODEL else None
 
 MODEL_FAMILIES = [
+    {
+        "provider": "Codex",
+        "protocol": "responses",
+        "official_base_url": "",
+        "models": [(GPT6_MODEL, "GPT-6 Astra")],
+    },
     {
         "provider": "Codex",
         "protocol": "openai",
@@ -81,6 +96,9 @@ PRESETS = [
         "protocol": family["protocol"],
         "official_base_url": family["official_base_url"],
         "model": model,
+        "required_protocol": required_protocol(model),
+        **({"max_output_tokens": GPT6_OUTPUT_LIMIT, "reasoning_effort": GPT6_REASONING_EFFORT}
+           if model == GPT6_MODEL else {}),
     }
     for family in MODEL_FAMILIES
     for model, label in family["models"]
@@ -91,7 +109,13 @@ class EndpointConfig(BaseModel):
     base_url: str = Field(min_length=1)
     api_key: str = Field(min_length=1)
     model: str = Field(min_length=1)
-    protocol: Literal["openai", "anthropic"]
+    protocol: AdmissionProtocol
+
+    @model_validator(mode="after")
+    def enforce_model_protocol(self):
+        self.model = self.model.strip()
+        self.protocol = required_protocol(self.model) or self.protocol
+        return self
 
 
 class CompareRequest(BaseModel):
@@ -170,6 +194,9 @@ def anthropic_messages_url(base_url: str) -> str:
 
 
 def endpoint_url(config: EndpointConfig) -> str:
+    if config.protocol == "responses":
+        base = re.sub(r"/(chat/completions|responses|messages)/?$", "", config.base_url.strip().rstrip("/"))
+        return f"{openai_api_base_url(base)}/responses"
     if config.protocol == "anthropic":
         return anthropic_messages_url(config.base_url)
     return chat_completions_url(config.base_url)
@@ -268,6 +295,19 @@ def extract_channel_credentials(text: str) -> dict[str, Any]:
 
 
 def build_payload(config: EndpointConfig, question: dict[str, Any]) -> dict[str, Any]:
+    if config.protocol == "responses":
+        payload = {
+            "model": config.model,
+            "instructions": SYSTEM_PROMPT,
+            "input": question["prompt"],
+            "stream": True,
+            "store": False,
+            "max_output_tokens": question["max_tokens"],
+        }
+        if config.model == GPT6_MODEL:
+            payload["max_output_tokens"] = max(GPT6_OUTPUT_LIMIT, question["max_tokens"])
+            payload["reasoning"] = {"effort": GPT6_REASONING_EFFORT}
+        return payload
     if config.protocol == "anthropic":
         return {
             "model": config.model.strip(),
@@ -328,6 +368,14 @@ def _stream_event(
     actual_model: str = "",
     upstream_request_id: str = "",
     system_fingerprint: str = "",
+    response_status: str = "",
+    protocol_error: str = "",
+    refused: bool = False,
+    final_content: str | None = None,
+    block_content: str | None = None,
+    block_key: tuple[int, int] | None = None,
+    reasoning_tokens: int | None = None,
+    input_tokens: int | None = None,
 ) -> dict[str, Any]:
     return {
         "content": content,
@@ -340,6 +388,14 @@ def _stream_event(
         "actual_model": actual_model,
         "upstream_request_id": upstream_request_id,
         "system_fingerprint": system_fingerprint,
+        "response_status": response_status,
+        "protocol_error": protocol_error,
+        "refused": refused,
+        "final_content": final_content,
+        "block_content": block_content,
+        "block_key": block_key,
+        "reasoning_tokens": reasoning_tokens,
+        "input_tokens": input_tokens,
     }
 
 
@@ -398,13 +454,31 @@ def parse_stream_line(line: str) -> dict[str, Any] | None:
         )
 
     event_type = str(payload.get("type") or "")
+    if event_type in {"response.output_text.delta", "response.refusal.delta", "response.reasoning_text.delta",
+                      "response.reasoning_summary_text.delta"} and not isinstance(payload.get("delta"), str):
+        return _stream_event(response_format="responses", protocol_error="protocol_error")
+    block_key = None
+    if event_type in {"response.output_text.delta", "response.refusal.delta", "response.output_text.done", "response.refusal.done"}:
+        block_key = (payload.get("output_index", 0), payload.get("content_index", 0))
+        if any(type(index) is not int or index < 0 for index in block_key):
+            return _stream_event(response_format="responses", protocol_error="protocol_error")
+    if event_type == "error":
+        return _stream_event(response_format="responses", protocol_error="upstream_error", **metadata)
     if event_type in {"response.output_text.delta", "response.refusal.delta"}:
         return _stream_event(
             content=_text_value(payload.get("delta")),
+            refused=event_type == "response.refusal.delta",
+            block_key=block_key,
             response_format="responses",
             output_tokens=output_tokens,
             **metadata,
         )
+    if event_type in {"response.output_text.done", "response.refusal.done"}:
+        content = payload.get("text" if event_type == "response.output_text.done" else "refusal")
+        if not isinstance(content, str):
+            return _stream_event(response_format="responses", protocol_error="protocol_error")
+        return _stream_event(response_format="responses", block_content=content, block_key=block_key,
+                             refused=event_type == "response.refusal.done", **metadata)
     if event_type in {"response.reasoning_text.delta", "response.reasoning_summary_text.delta"}:
         return _stream_event(
             reasoning=_text_value(payload.get("delta")),
@@ -440,17 +514,88 @@ def parse_stream_line(line: str) -> dict[str, Any] | None:
             **metadata,
         )
     if event_type in {"response.completed", "response.incomplete", "response.failed"}:
-        response = payload.get("response") or {}
+        response = payload.get("response")
+        if not isinstance(response, dict):
+            return _stream_event(response_format="responses", protocol_error="protocol_error")
+        if any(value is not None and not isinstance(value, dict)
+               for value in (response.get("usage"), response.get("incomplete_details"))):
+            return _stream_event(response_format="responses", protocol_error="protocol_error")
         incomplete_details = response.get("incomplete_details") or {}
+        status = str(response.get("status") or "")
+        usage = response.get("usage") or {}
+        details = usage.get("output_tokens_details") or {}
+        token_count = lambda value: value if type(value) is int and value >= 0 else None
+        content = []
+        refused = False
+        if response.get("output") is not None and not isinstance(response["output"], list):
+            return _stream_event(response_format="responses", protocol_error="protocol_error")
+        for item in response.get("output") or []:
+            if item.get("type") == "message":
+                if not isinstance(item.get("content"), list):
+                    return _stream_event(response_format="responses", protocol_error="protocol_error")
+                for part in item.get("content") or []:
+                    field = {"output_text": "text", "refusal": "refusal"}.get(part.get("type"))
+                    if field and not isinstance(part.get(field), str):
+                        return _stream_event(response_format="responses", protocol_error="protocol_error")
+                    if part.get("type") == "output_text":
+                        content.append(_text_value(part.get("text")))
+                    if part.get("type") == "refusal":
+                        content.append(_text_value(part.get("refusal")))
+                    refused = refused or part.get("type") == "refusal"
         return _stream_event(
-            finish_reason=str(incomplete_details.get("reason") or response.get("status") or ""),
+            finish_reason=str(incomplete_details.get("reason") or status),
             response_format="responses",
             output_tokens=output_tokens,
+            response_status=status,
+            protocol_error=("protocol_error" if status != event_type.removeprefix("response.") else
+                            "upstream_error" if response.get("error") or status == "failed" else ""),
+            final_content="".join(content) if isinstance(response.get("output"), list) else None,
+            refused=refused,
+            input_tokens=token_count(usage.get("input_tokens")),
+            reasoning_tokens=token_count(details.get("reasoning_tokens")),
             **metadata,
         )
+    if event_type.startswith("response."):
+        return _stream_event(response_format="responses", **metadata)
     if output_tokens is not None:
         return _stream_event(response_format="usage", output_tokens=output_tokens, **metadata)
     return _stream_event(recognized=False, raw=value)
+
+
+async def stream_events(response: httpx.Response, protocol: str) -> AsyncIterator[dict[str, Any]]:
+    if protocol != "responses":
+        async for line in response.aiter_lines():
+            parsed = parse_stream_line(line)
+            if parsed is not None:
+                yield parsed
+        return
+    data: list[str] = []
+    size = 0
+    async for line in response.aiter_lines():
+        line = line.lstrip("\ufeff")
+        if not line:
+            if data:
+                if "\n".join(data) == "[DONE]":
+                    data, size = [], 0
+                    continue
+                try:
+                    parsed = parse_stream_line("\n".join(data))
+                except (AttributeError, TypeError, KeyError, IndexError):
+                    parsed = None
+                if parsed is None or parsed["format"] != "responses":
+                    yield _stream_event(response_format="responses", protocol_error="protocol_error")
+                else:
+                    yield parsed
+            data, size = [], 0
+        elif line.startswith("data:"):
+            data.append(line[5:].removeprefix(" "))
+            size += len(line)
+            if size > 1_048_576:
+                raise ValueError("Responses 流事件超过本地读取上限")
+        elif not line.startswith((":", "event:", "id:", "retry:")):
+            yield _stream_event(response_format="responses", protocol_error="protocol_error")
+    if data:
+        yield _stream_event(response_format="responses", protocol_error="protocol_error")
 
 
 def _redact(message: str, api_key: str) -> str:
@@ -492,6 +637,30 @@ async def measure_side(
 ) -> None:
     if start_gate is not None:
         await start_gate.wait()
+    if config.protocol != "responses":
+        await _measure_side(side, config, question, queue, client)
+        return
+    started_ms = round(time() * 1000)
+    try:
+        await asyncio.wait_for(_measure_side(side, config, question, queue, client),
+                               timeout=RESPONSES_TOTAL_TIMEOUT_SECONDS)
+    except asyncio.TimeoutError:
+        payload = build_payload(config, question)
+        await queue.put({"type": "side_finished", "question_id": question["id"], "side": side,
+                         "ok": False, "status": "error", "transport_completed": False,
+                         "request_started_ms": started_ms, "request_protocol": config.protocol,
+                         "max_output_tokens": payload["max_output_tokens"],
+                         "reasoning_effort": payload.get("reasoning", {}).get("effort"),
+                         "error_category": "total_timeout", "error": "Responses 请求超过总时限。"})
+
+
+async def _measure_side(
+    side: str,
+    config: EndpointConfig,
+    question: dict[str, Any],
+    queue: asyncio.Queue[dict[str, Any]],
+    client: httpx.AsyncClient,
+) -> None:
     started_at = perf_counter()
     request_started_ms = round(time() * 1000)
     first_chunk_at: float | None = None
@@ -509,12 +678,22 @@ async def measure_side(
     upstream_request_ids: set[str] = set()
     system_fingerprints: set[str] = set()
     maximum_output_pause_ms: int | None = None
+    response_status = protocol_error = ""
+    refused = False
+    reasoning_tokens = input_tokens = None
+    text_blocks: dict[tuple[int, int], str] = {}
+    text_recovered = False
+    payload = build_payload(config, question)
+    request_metrics = ({"request_protocol": config.protocol,
+                        "max_output_tokens": payload["max_output_tokens"],
+                        "reasoning_effort": payload.get("reasoning", {}).get("effort")}
+                       if config.protocol == "responses" else {})
     try:
         async with client.stream(
             "POST",
             endpoint_url(config),
             headers=build_headers(config),
-            json=build_payload(config, question),
+            json=payload,
         ) as response:
             header_request_id = response.headers.get("x-request-id") or response.headers.get("request-id")
             if header_request_id:
@@ -522,10 +701,7 @@ async def measure_side(
             if response.status_code >= 400:
                 body = (await response.aread()).decode("utf-8", errors="replace")
                 raise RuntimeError(f"HTTP {response.status_code}: {_redact(body, config.api_key)}")
-            async for line in response.aiter_lines():
-                parsed = parse_stream_line(line)
-                if parsed is None:
-                    continue
+            async for parsed in stream_events(response, config.protocol):
                 now = perf_counter()
                 if first_wire_event_at is None:
                     first_wire_event_at = now
@@ -544,8 +720,40 @@ async def measure_side(
                     reported_output_tokens = parsed["output_tokens"]
                 if parsed["finish_reason"]:
                     finish_reason = parsed["finish_reason"]
+                if config.protocol == "responses" and response_status and (parsed["content"] or parsed["reasoning"] or parsed["block_content"] is not None):
+                    protocol_error = "protocol_error"
+                if parsed["response_status"]:
+                    if response_status:
+                        protocol_error = "protocol_error"
+                    response_status = parsed["response_status"]
+                protocol_error = protocol_error or parsed["protocol_error"]
+                refused = refused or parsed["refused"]
+                if parsed["reasoning_tokens"] is not None:
+                    reasoning_tokens = parsed["reasoning_tokens"]
+                if parsed["input_tokens"] is not None:
+                    input_tokens = parsed["input_tokens"]
                 content_delta = parsed["content"]
                 reasoning_delta = parsed["reasoning"]
+                if config.protocol == "responses":
+                    block_key = parsed["block_key"]
+                    if block_key is not None:
+                        previous = text_blocks.get(block_key, "")
+                        if parsed["block_content"] is not None:
+                            complete = parsed["block_content"]
+                            if complete.startswith(previous):
+                                content_delta = complete[len(previous):]
+                                text_recovered = text_recovered or bool(content_delta)
+                            else:
+                                protocol_error = "protocol_error"
+                        text_blocks[block_key] = previous + content_delta
+                    if parsed["final_content"] is not None:
+                        previous = "".join(answer_parts)
+                        complete = parsed["final_content"]
+                        if complete.startswith(previous):
+                            content_delta = complete[len(previous):]
+                            text_recovered = text_recovered or bool(content_delta)
+                        else:
+                            protocol_error = "protocol_error"
                 if not content_delta and not reasoning_delta:
                     continue
                 if first_chunk_at is None:
@@ -606,7 +814,15 @@ async def measure_side(
             and generation_seconds > 0
         ):
             tokens_per_second = round((reported_output_tokens - 1) / generation_seconds, 1)
-        if tokens_per_second is not None:
+        if config.protocol == "responses" and text_recovered:
+            tokens_per_second = None
+            speed_data_valid = False
+            speed_invalid_reason = "正文由结束事件补全，无法计算流式 Token/s"
+        elif config.protocol == "responses" and reasoning_tokens != 0:
+            tokens_per_second = None
+            speed_data_valid = False
+            speed_invalid_reason = "输出 Token 含推理或缺少推理明细，无法计算正文 Token/s"
+        elif tokens_per_second is not None:
             speed_data_valid = True
             speed_invalid_reason = ""
         elif reported_output_tokens is None:
@@ -621,10 +837,20 @@ async def measure_side(
 
         normalized_finish_reason = finish_reason.lower()
         truncated_reasons = {"length", "max_tokens", "max_output_tokens", "incomplete"}
-        if normalized_finish_reason in truncated_reasons:
+        if config.protocol == "responses" and protocol_error:
+            ok, status, error = False, protocol_error, "上游失败或 Responses 流事件不符合协议。"
+        elif config.protocol == "responses" and response_status not in {"completed", "incomplete"}:
+            ok, status, error = False, "incomplete_stream", "未收到完整的 Responses 结束事件。"
+        elif config.protocol == "responses" and (refused or normalized_finish_reason == "content_filter"):
+            ok, status, error = False, "refused", "上游拒绝回答或内容过滤中止。"
+        elif normalized_finish_reason in truncated_reasons:
             ok = False
             status = "truncated"
             error = "达到上游输出上限，回答可能不完整。"
+        elif config.protocol == "responses" and response_status == "incomplete":
+            ok, status, error = False, "incomplete_response", "上游标记回答未完成。"
+        elif config.protocol == "responses" and not answer.strip():
+            ok, status, error = False, "empty", "上游未返回答案正文。"
         elif fallback_content:
             ok = False
             status = "unrecognized"
@@ -655,6 +881,12 @@ async def measure_side(
                 "chars": displayed_chars,
                 "chars_per_second": chars_per_second,
                 "output_tokens": reported_output_tokens,
+                **request_metrics,
+                **({"input_tokens": input_tokens, "reasoning_tokens": reasoning_tokens,
+                    "response_status": response_status,
+                    "text_recovered_from_completion": text_recovered,
+                    "protocol_completed": response_status == "completed" and not protocol_error}
+                   if config.protocol == "responses" else {}),
                 "tokens_per_second": tokens_per_second,
                 "speed_data_valid": speed_data_valid,
                 "speed_invalid_reason": speed_invalid_reason,
@@ -683,6 +915,7 @@ async def measure_side(
                 "answer_reviewed": False,
                 "answer_equivalent": None,
                 "request_started_ms": request_started_ms,
+                **request_metrics,
                 "error_category": _exception_category(exc, output_chunk_count > 0),
                 "error": _redact(str(exc), config.api_key),
             }

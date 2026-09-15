@@ -1,17 +1,17 @@
-# 完整工作台集成验证
+# GPT-6 Astra 准入
 
 ## 当前目标
 
-在同一候选版本中验证已验收的生图测试与请求特征诊断，诊断可直接选择已启用公共渠道，无需额外部署开关或迁移既有数据库；保留逐次请求确认及现有模块。
+加入 gpt-6-astra 预设，固定 Responses，使用正确输出额度字段，补完整流式结束语义和技术报告。
 
 ## 进度
 
-本分支 feature/request-feature-diagnostics 合并两个已验收来源：主项目 f1e2818d0b680c226c5aaad683d17cb5006f484d（生图整合及浏览器端口隔离修复），诊断调整 d0d25a7def4e1186cd6ca463dcfd2c5e45ca7916。产品代码自动合并，任务记录统一为本文件；主项目已有五份代码修改和三份未跟踪文档保留在原工作区。
+feature/admission-gpt6-responses 基于 f2441bdde2a440f45e3858bfed1ce3952daef1bb。实现位于准入模块，保留其他模型、历史报告及主工作区已有修改。契约与清单见 docs/admission-gpt6.md。
 
 ## 下一步
 
-对固定组合候选执行一次完整工作台测试并集：诊断统一验收十组（含既有 legacy-acceptance），加生图只读核对与生图容器两组；依 docs/image-quality-testing.md 和 docs/请求特征诊断测试清单.md 登记。独立复核合并结果和版本对应后同步至主项目当前分支 codex/unify-workbench-style。证据统一位于 /Users/lmurder/Desktop/api中转站/中转站极限测试数据/请求特征诊断/20260915-live-default/combined。
+协议、正文恢复、拒答/空白、技术报告及执行器取消回归已实现，聚焦 51 项通过；注册十组开发检查全部通过（Python 301 项、两组浏览器、本地五模式等），证据 dev/verification-3。初审 R1–R6 已修复。下一步绑定本提交完成独立审查复核和十一组独立验收，最终结论记录外置交接与验收报告。证据位于 /Users/lmurder/Desktop/api中转站/中转站极限测试数据/GPT6准入/20260915-responses。
 
 ## 未决事项
 
-不打 Tag、不推送或部署，不发真实上游请求。诊断首次自动创建独立 diagnosis.db，正常运行及中断归档仍会写诊断记录；既有渠道和诊断表结构不变。组合验证结论以绑定最终 SHA 的外置报告为准。
+主工作区 codex/unify-workbench-style 尚未合入本功能；未授权合并、推送、发布或真实渠道请求。合并审阅绑定候选完整 SHA 与对应证据。

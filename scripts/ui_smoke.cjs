@@ -15,7 +15,18 @@ let openEndedImages = 0;
 let app, appExit, appError, browser, logs = '';
 const upstream = http.createServer(async (req, res) => {
   const parts = []; for await (const chunk of req) parts.push(chunk);
-  const body = JSON.parse(Buffer.concat(parts)); requests.push({key:req.headers.authorization, body});
+  const body = JSON.parse(Buffer.concat(parts)); requests.push({key:req.headers.authorization, body, path:req.url});
+  if (req.url.endsWith('/responses')) {
+    assert.equal(body.model,'gpt-6-astra'); assert.equal(body.max_output_tokens,4096);
+    assert.equal(body.reasoning.effort,'low'); assert.equal(body.store,false);
+    assert.ok(!('max_tokens' in body) && !('max_completion_tokens' in body) && !('messages' in body));
+    res.writeHead(200,{'Content-Type':'text/event-stream'});
+    const values=[{type:'response.created',response:{model:body.model,status:'in_progress'}},
+      {type:'response.output_text.delta',delta:'Synthetic Astra '},{type:'response.output_text.delta',delta:'answer'},
+      {type:'response.completed',response:{status:'completed',model:body.model,
+        usage:{input_tokens:12,output_tokens:42,output_tokens_details:{reasoning_tokens:40}}}}];
+    res.end(values.map(value=>'data: '+JSON.stringify(value)+'\n\n').join('')); return;
+  }
   if (req.url.endsWith('/images/generations')) {
     if (req.headers.authorization === 'Bearer synthetic-image-rejected') {
       res.writeHead(401, {'Content-Type':'application/json'});
@@ -127,6 +138,46 @@ const upstream = http.createServer(async (req, res) => {
   assert.equal((await (await fetch(base+'/stability/api/channels')).json()).channels.length,1);
   assert.equal((await (await fetch(base+'/stability/api/schedules')).json()).schedules.length,0); assert.equal(requests.length,25);
   await page.screenshot({path:path.join(data,'stability-desktop.png'),fullPage:true});
+  await page.goto(base+'/admission/');
+  await page.locator('#preset option[value="gpt-6-astra"]').waitFor({state:'attached'});
+  await page.locator('#preset').selectOption('gpt-6-astra');
+  for (const side of ['candidate','reference']) {
+    assert.equal(await page.locator(`#${side}-protocol`).inputValue(),'responses');
+    assert.equal(await page.locator(`#${side}-protocol`).isDisabled(),true);
+  }
+  await page.locator('#candidate-model').fill('demo-model');
+  assert.equal(await page.locator('#candidate-protocol').isEnabled(),true);
+  await page.locator('#candidate-model').fill('gpt-6-astra');
+  assert.equal(await page.locator('#candidate-protocol').isDisabled(),true);
+  await page.locator('#candidate-url').fill(upstreamUrl+'/responses');
+  await page.locator('#candidate-key').fill('ui-ephemeral-astra-key');
+  await page.locator('#reference-id').selectOption(String(channelId));
+  await page.locator('#rounds').selectOption('1');
+  await page.locator('#start').click();
+  await page.waitForFunction(()=>document.querySelector('#run-status').textContent.includes('本轮测试完成'),{},{timeout:30000});
+  const astraCalls=requests.filter(item=>item.body.model==='gpt-6-astra');
+  assert.equal(astraCalls.length,10); assert.ok(astraCalls.every(item=>item.path==='/v1/responses'));
+  assert.equal(await page.locator('#pair-summary tr').count(),5);
+  const astraJsonEvent=page.waitForEvent('download'); await page.locator('#export-json').click();
+  const astraJson=JSON.parse(fs.readFileSync(await (await astraJsonEvent).path(),'utf8'));
+  assert.equal(astraJson.candidate.protocol,'responses'); assert.equal(astraJson.reference.protocol,'responses');
+  assert.ok(astraJson.measurements.every(item=>item.ok && item.reasoning_tokens===40 && item.max_output_tokens===4096 && !item.speed_data_valid));
+  assert.ok(!JSON.stringify(astraJson).includes('ui-ephemeral-astra-key'));
+  const astraHtmlEvent=page.waitForEvent('download'); await page.locator('#export-technical-html').click();
+  const astraHtml=fs.readFileSync(await (await astraHtmlEvent).path(),'utf8');
+  assert.ok(astraHtml.includes('推理 Token') && astraHtml.includes('4096') && astraHtml.includes('Synthetic Astra answer'));
+  assert.ok(astraHtml.includes('实际输出 Token：42') && astraHtml.includes('最大输出 Token（含推理）：4096'));
+  const astraOrdinaryEvent=page.waitForEvent('download'); await page.locator('#export-html').click();
+  const astraOrdinary=fs.readFileSync(await (await astraOrdinaryEvent).path(),'utf8');
+  assert.ok(!astraOrdinary.includes('Synthetic Astra answer'));
+  await page.setViewportSize({width:390,height:844});
+  assert.equal(await page.evaluate(()=>document.documentElement.scrollWidth>innerWidth+2),false);
+  await page.screenshot({path:path.join(data,'admission-astra-mobile.png'),fullPage:true});
+  await page.setViewportSize({width:1440,height:1000});
+  await page.screenshot({path:path.join(data,'admission-astra-desktop.png'),fullPage:true});
+  await page.locator('#start').click(); await page.locator('#stop').waitFor({state:'visible'}); await page.locator('#stop').click();
+  await page.waitForFunction(()=>document.querySelector('#run-status').textContent.includes('部分报告已保存'));
+  assert.equal(await page.locator('#candidate-protocol').isDisabled(),true);
   await page.goto(base+'/capacity/'); await page.locator('.platform-nav').waitFor();
   assert.equal(await page.locator('.platform-nav a[aria-current="page"]').textContent(),'\u4e2d\u8f6c\u7ad9\u6781\u9650\u6d4b\u8bd5');
   await page.locator('#preset').selectOption('quick'); await page.locator('#preset').dispatchEvent('change');

@@ -1,6 +1,6 @@
 const $ = id => document.getElementById(id);
 const names = {candidate:'候选端', reference:'参照端'};
-const statusNames = {completed:'正常返回',truncated:'输出截断',unrecognized:'流格式不兼容',empty:'空响应',error:'请求异常',missing:'缺少数据'};
+const statusNames = {completed:'正常返回',truncated:'输出截断',unrecognized:'流格式不兼容',empty:'空响应',error:'请求异常',missing:'缺少数据',upstream_error:'上游生成失败',protocol_error:'流协议异常',incomplete_stream:'流未完整结束',incomplete_response:'回答未完成',refused:'上游拒答'};
 const reportStatus = {completed:'已完成',canceled:'已停止',failed:'未完成'};
 let metadata, references = [], controller = null, report = null;
 const liveRows = new Map();
@@ -25,6 +25,26 @@ function applyPreset() {
     $(`${side}-model`).value = preset.model;
     $(`${side}-protocol`).value = preset.protocol;
   }
+  syncModelPolicy();
+}
+
+function syncModelPolicy() {
+  let fixed = false;
+  for (const side of Object.keys(names)) {
+    const model = $(`${side}-model`).value.trim();
+    const required = metadata.presets.find(item => item.model === model)?.required_protocol;
+    const selector = $(`${side}-protocol`);
+    selector.disabled = Boolean(required);
+    if (required) { selector.value = required; fixed = true; }
+  }
+  $('model-policy').hidden = !fixed;
+  const policy = metadata.presets.find(item => item.required_protocol);
+  $('model-policy').textContent = policy ? `${policy.label} 固定使用 Responses，推理强度 ${policy.reasoning_effort}，每题最多 ${policy.max_output_tokens} 个输出 Token（含推理）。双端使用相同设置。` : '';
+}
+
+function responsesMetrics(value) {
+  if (value.request_protocol !== 'responses') return [];
+  return [['请求协议','Responses'],['最大输出 Token（含推理）',value.max_output_tokens ?? '未提供'],['推理强度',value.reasoning_effort || '上游默认'],['输入 Token',value.input_tokens ?? '未提供'],['推理 Token',value.reasoning_tokens ?? '未提供'],['响应状态',value.response_status || '未收到']];
 }
 
 function metric(label, value) {
@@ -68,6 +88,7 @@ function handleEvent(event) {
   if (event.type === 'run_started') {
     report.run_id = event.run_id;
     report.warmup_rounds = event.warmup_rounds;
+    for (const side of Object.keys(names)) if (event.protocols?.[side]) report[side].protocol = event.protocols[side];
   }
   if (event.type === 'question_started') {
     createLiveQuestion(event);
@@ -91,7 +112,7 @@ function handleEvent(event) {
     row.metrics.replaceChildren(
       metric('首次可见输出',duration(event.ttft_ms)),metric('首次答案正文',duration(event.first_answer_ms)),
       metric('完整响应',duration(event.total_ms)),metric('Token/s',event.speed_data_valid ? event.tokens_per_second : '不可用'),
-      metric('输出 Token',Number.isFinite(event.output_tokens) ? event.output_tokens : '未提供'),metric('最大输出停顿',duration(event.maximum_output_pause_ms)),metric('结束标记',event.finish_reason || '未提供')
+      metric('输出 Token',Number.isFinite(event.output_tokens) ? event.output_tokens : '未提供'),metric('最大输出停顿',duration(event.maximum_output_pause_ms)),metric('结束标记',event.finish_reason || '未提供'), ...responsesMetrics(event).map(([label,value]) => metric(label,String(value)))
     );
   }
   if (event.type === 'run_finished') { report.status = 'completed'; $('run-status').textContent = '测试完成，正在生成成对报告。'; }
@@ -189,7 +210,7 @@ function renderTechnicalEvidence() {
       const block = Workbench.node('section','','endpoint-evidence');
       const metrics = Workbench.node('details','','evidence-block');
       const grid = Workbench.node('div','','metric-grid');
-      grid.append(metric('首次可见输出',duration(measurement.ttft_ms)),metric('首次答案正文',duration(measurement.first_answer_ms)),metric('完整响应',duration(measurement.total_ms)),metric('Token/s',measurement.speed_data_valid ? measurement.tokens_per_second : '不可用'),metric('速度数据',measurement.speed_data_valid ? '有效' : measurement.speed_invalid_reason || '不可用'),metric('输出 Token',Number.isFinite(measurement.output_tokens) ? measurement.output_tokens : '未提供'),metric('最大输出停顿',duration(measurement.maximum_output_pause_ms)),metric('启动偏差',duration(pair.start_skew_ms)),metric('异常分类',measurement.error_category || '无'),metric('响应模型',measurement.actual_model || '未提供'),metric('上游请求 ID',measurement.upstream_request_id || '未提供'),metric('系统指纹',measurement.system_fingerprint || '未提供'),metric('响应格式',measurement.response_format || '未识别'));
+      grid.append(metric('首次可见输出',duration(measurement.ttft_ms)),metric('首次答案正文',duration(measurement.first_answer_ms)),metric('完整响应',duration(measurement.total_ms)),metric('Token/s',measurement.speed_data_valid ? measurement.tokens_per_second : '不可用'),metric('速度数据',measurement.speed_data_valid ? '有效' : measurement.speed_invalid_reason || '不可用'),metric('输出 Token',Number.isFinite(measurement.output_tokens) ? measurement.output_tokens : '未提供'),metric('最大输出停顿',duration(measurement.maximum_output_pause_ms)),metric('启动偏差',duration(pair.start_skew_ms)),metric('异常分类',measurement.error_category || '无'),metric('响应模型',measurement.actual_model || '未提供'),metric('上游请求 ID',measurement.upstream_request_id || '未提供'),metric('系统指纹',measurement.system_fingerprint || '未提供'),metric('响应格式',measurement.response_format || '未识别'), ...responsesMetrics(measurement).map(([label,value]) => metric(label,String(value))));
       metrics.append(Workbench.node('summary','技术指标'),grid);
       const answerBox = Workbench.node('details','','evidence-block'); answerBox.append(Workbench.node('summary','最终回答原文'),Workbench.node('pre',response.content || '上游未提供答案正文'));
       const reasoningBox = Workbench.node('details','','evidence-block'); const reasoning = Workbench.node('pre',response.reasoning || '上游未提供独立推理字段',response.reasoning ? '' : 'empty-reasoning'); reasoningBox.append(Workbench.node('summary','上游返回的推理内容'),reasoning);
@@ -245,7 +266,7 @@ function reportHtml(source, technical) {
     details = (source.pairs || []).map(pair=>`<details><summary>${escapeHtml(`第 ${pair.round} 轮 · ${pair.title} · ${pair.round_role === 'warmup' ? '预热' : '有效评测'}`)}</summary><div class="two">${Object.keys(names).map(side=>{
       const key = `${pair.round}:${pair.question_id}:${side}`, response = responses.get(key) || {}, measurement = measurements.get(key) || {};
       const speed = measurement.speed_data_valid ? measurement.tokens_per_second : `不可用${measurement.speed_invalid_reason ? `（${measurement.speed_invalid_reason}）` : ''}`;
-      return `<section><h3>${names[side]}</h3><p>状态：${escapeHtml(measurement.ok ? '正常返回' : statusNames[measurement.status] || measurement.status || '缺少数据')}</p><p>首次可见输出：${escapeHtml(duration(measurement.ttft_ms))}；首次答案正文：${escapeHtml(duration(measurement.first_answer_ms))}；完整响应：${escapeHtml(duration(measurement.total_ms))}；Token/s：${escapeHtml(speed)}</p><h4>最终回答原文</h4><pre>${escapeHtml(response.content || '上游未提供答案正文')}</pre><h4>上游返回的推理内容</h4><pre>${escapeHtml(response.reasoning || '上游未提供独立推理字段')}</pre></section>`;
+      return `<section><h3>${names[side]}</h3><p>状态：${escapeHtml(measurement.ok ? '正常返回' : statusNames[measurement.status] || measurement.status || '缺少数据')}</p><p>首次可见输出：${escapeHtml(duration(measurement.ttft_ms))}；首次答案正文：${escapeHtml(duration(measurement.first_answer_ms))}；完整响应：${escapeHtml(duration(measurement.total_ms))}；Token/s：${escapeHtml(speed)}</p>${(measurement.request_protocol === 'responses' ? [['实际输出 Token',measurement.output_tokens ?? '未提供'], ...responsesMetrics(measurement)] : []).map(([label,value]) => `<p>${escapeHtml(label)}：${escapeHtml(value)}</p>`).join('')}<h4>最终回答原文</h4><pre>${escapeHtml(response.content || '上游未提供答案正文')}</pre><h4>上游返回的推理内容</h4><pre>${escapeHtml(response.reasoning || '上游未提供独立推理字段')}</pre></section>`;
     }).join('')}</div></details>`).join('');
   }
   return `<!doctype html><html lang="zh-CN"><meta charset="utf-8"><meta name="viewport" content="width=device-width"><title>准入测试报告</title><style>body{max-width:1100px;margin:32px auto;padding:20px;font:16px/1.6 sans-serif;color:#172c29}.headline{padding:18px;background:#e5eee7;border-left:5px solid #0a675d}.cards,.two{display:grid;grid-template-columns:repeat(2,1fr);gap:12px}.cards{grid-template-columns:repeat(3,1fr);margin:18px 0}.card,details{border:1px solid #d7ded5;border-radius:8px;padding:14px;margin:12px 0}.card small,.card strong{display:block}table{width:100%;border-collapse:collapse}td,th{padding:10px;border-bottom:1px solid #d7ded5;text-align:left}pre{white-space:pre-wrap;overflow-wrap:anywhere;background:#f3f5ef;padding:12px}@media(max-width:700px){.cards,.two{grid-template-columns:1fr}}</style><h1>准入测试报告</h1><p>${escapeHtml(source.created_at)} · ${escapeHtml(reportStatus[source.status] || source.status)}</p><div class="headline"><h2>${escapeHtml(summary.overall?.label || '证据不足')}</h2><p>能力由人员阅读逐题回答后判断，系统不自动给出准入决定。</p></div><div class="cards">${cards}</div><ul>${(summary.explanations || []).map(item=>`<li>${escapeHtml(item)}</li>`).join('')}</ul><h2>逐题摘要</h2><table><thead><tr><th>题目</th><th>异常归因</th><th>速度</th><th>能力</th></tr></thead><tbody>${pairRows}</tbody></table>${details}</html>`;
@@ -253,6 +274,7 @@ function reportHtml(source, technical) {
 
 $('compare-form').addEventListener('submit',async event=>{
   event.preventDefault(); if (controller) return;
+  syncModelPolicy();
   const payload = {candidate:{base_url:$('candidate-url').value.trim(),api_key:$('candidate-key').value.trim(),model:$('candidate-model').value.trim(),protocol:$('candidate-protocol').value},reference:{channel_id:Number($('reference-id').value),model:$('reference-model').value.trim(),protocol:$('reference-protocol').value},rounds:Number($('rounds').value)};
   if (payload.candidate.model !== payload.reference.model) { $('error').textContent='成对测试要求候选端与参照端使用相同的请求模型名。'; return; }
   const reference = references.find(channel=>channel.id===payload.reference.channel_id);
@@ -265,6 +287,7 @@ $('compare-form').addEventListener('submit',async event=>{
 });
 
 $('extract').addEventListener('click',async()=>{ const text=$('candidate-import').value.trim(); if(!text)return; $('extract').disabled=true; try{const data=await Workbench.api('./api/extract-channel',{method:'POST',body:JSON.stringify({text})}); if(data.base_url)$('candidate-url').value=data.base_url;if(data.api_key)$('candidate-key').value=data.api_key;$('candidate-import').value='';$('extract-status').textContent=data.has_url&&data.has_key?'已提取，未保存到渠道库。':'信息不完整，请补充地址或密钥。';}catch(error){$('extract-status').textContent=error.message;}finally{$('extract').disabled=false;}});
+for (const side of Object.keys(names)) $(`${side}-model`).addEventListener('input',syncModelPolicy);
 $('stop').addEventListener('click',()=>controller?.abort()); $('preset').addEventListener('change',applyPreset); $('reference-id').addEventListener('change',showReference); $('pair-filter').addEventListener('change',applyPairFilter);
 $('refresh-reference').addEventListener('click',()=>loadReferences().catch(error=>$('error').textContent=error.message)); $('refresh-reports').addEventListener('click',()=>loadReportHistory().catch(error=>$('error').textContent=error.message));
 $('export-json').addEventListener('click',()=>report&&Workbench.download(report,`admission-technical-${Date.now()}.json`));

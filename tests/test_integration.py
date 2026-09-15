@@ -150,6 +150,65 @@ class IntegrationTests(unittest.IsolatedAsyncioTestCase):
         self.assertIn("相同的请求模型名", response.text)
         self.assertIsNone(admission_storage.latest_feishu_record())
 
+    async def test_gpt6_paired_responses_roundtrip_report_and_protocol_enforcement(self):
+        requests = []
+        def handler(request):
+            payload = json.loads(request.content)
+            requests.append(payload)
+            self.assertEqual(request.url.path, "/v1/responses")
+            self.assertEqual(payload["max_output_tokens"], 4096)
+            self.assertNotIn("max_tokens", payload)
+            self.assertNotIn("max_completion_tokens", payload)
+            values = [
+                {"type": "response.created", "response": {"model": "gpt-6-astra"}},
+                {"type": "response.output_text.delta", "delta": "synthetic answer"},
+                {"type": "response.completed", "response": {"status": "completed", "model": "gpt-6-astra",
+                 "usage": {"input_tokens": 12, "output_tokens": 22, "output_tokens_details": {"reasoning_tokens": 20}}}},
+            ]
+            return httpx.Response(200, text="".join("data: " + json.dumps(v) + "\n\n" for v in values))
+        admission.app.state.upstream_transport = httpx.MockTransport(handler)
+        candidate = {**self.candidate(), "model": "gpt-6-astra", "protocol": "openai"}
+        reference = {**self.selection(), "model": "gpt-6-astra", "protocol": "anthropic"}
+        before = self.registry.list()
+        with patch.object(admission.engine, "wait_between_questions", new=AsyncMock()):
+            response = await self.client.post("/admission/api/compare", json={"candidate": candidate, "reference": reference})
+        self.assertEqual(response.status_code, 200)
+        events = [json.loads(line) for line in response.text.splitlines()]
+        self.assertEqual(events[0]["protocols"], {"candidate": "responses", "reference": "responses"})
+        self.assertEqual(len(requests), 20)
+        for index in range(0, len(requests), 2):
+            self.assertEqual(requests[index], requests[index+1])
+        measurements = [value for value in events if value["type"] == "side_finished"]
+        self.assertTrue(all(value["ok"] and value["reasoning_tokens"] == 20 for value in measurements))
+        self.assertEqual(self.registry.list(), before)
+        report = {"version": 2, "created_at": "2026-09-15T00:00:00Z", "status": "completed", "rounds": 2,
+                  "warmup_rounds": 1, "run_id": events[0]["run_id"],
+                  "candidate": {key: value for key, value in candidate.items() if key != "api_key"},
+                  "reference": {**reference, "base_url": self.record["base_url"], "name": "synthetic reference"},
+                  "questions": [{key: q[key] for key in ("id", "title", "difficulty", "prompt")}
+                                for q in admission.engine.QUESTIONS], "measurements": measurements,
+                  "responses": [{"round": v["round"], "question_id": v["question_id"], "side": v["side"],
+                                 "content": v["content"]} for v in events if v["type"] == "chunk"]}
+        for side in ("candidate", "reference"):
+            report[side]["protocol"] = "responses"
+        saved = await self.client.post("/admission/api/reports", json=report)
+        self.assertEqual(saved.status_code, 201)
+        report_id = saved.json()["id"]
+        detail = (await self.client.get(f"/admission/api/reports/{report_id}")).json()
+        self.assertEqual(detail["summary"]["evidence"]["valid_pairs"], 5)
+        self.assertEqual(detail["candidate"]["protocol"], "responses")
+        self.assertEqual(detail["measurements"][0]["max_output_tokens"], 4096)
+        ordinary = (await self.client.get(f"/admission/api/reports/{report_id}/ordinary")).json()
+        self.assertNotIn("responses", ordinary)
+        self.assertNotIn("synthetic answer", json.dumps(ordinary))
+        for path in self.directory.rglob("*.db*"):
+            self.assertNotIn(candidate["api_key"].encode(), path.read_bytes())
+
+    async def test_responses_admission_selection_does_not_expand_reasoning_protocols(self):
+        from features.reasoning.api import EndpointSelection
+        with self.assertRaises(ValueError):
+            EndpointSelection(channel_id=1, model="gpt-6-astra", protocol="responses")
+
     async def test_valid_admission_submission_queues_url_and_model_family(self):
         calls = []
 

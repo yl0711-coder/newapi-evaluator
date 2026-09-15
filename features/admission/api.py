@@ -8,7 +8,7 @@ import httpx
 from fastapi import FastAPI, HTTPException, Request
 from fastapi.responses import StreamingResponse
 from fastapi.staticfiles import StaticFiles
-from pydantic import BaseModel, ConfigDict, Field, SecretStr
+from pydantic import BaseModel, ConfigDict, Field, SecretStr, model_validator
 
 from shared.api import Selection, resolve
 from shared.network import guarded_transport
@@ -25,13 +25,27 @@ class CandidateInput(BaseModel):
     base_url: str = Field(min_length=1, max_length=1000)
     api_key: SecretStr
     model: str = Field(min_length=1, max_length=160)
-    protocol: Literal["openai", "anthropic"]
+    protocol: engine.AdmissionProtocol
+
+    @model_validator(mode="after")
+    def enforce_model_protocol(self):
+        self.protocol = engine.required_protocol(self.model) or self.protocol
+        return self
+
+
+class AdmissionSelection(Selection):
+    protocol: engine.AdmissionProtocol
+
+    @model_validator(mode="after")
+    def enforce_model_protocol(self):
+        self.protocol = engine.required_protocol(self.model) or self.protocol
+        return self
 
 
 class CompareInput(BaseModel):
     model_config = ConfigDict(extra="forbid")
     candidate: CandidateInput
-    reference: Selection
+    reference: AdmissionSelection
     rounds: int = Field(default=2, ge=1, le=5)
 
 
@@ -39,7 +53,7 @@ class ReportEndpointInput(BaseModel):
     model_config = ConfigDict(extra="forbid", str_strip_whitespace=True)
     base_url: str = Field(min_length=1, max_length=1000)
     model: str = Field(min_length=1, max_length=160)
-    protocol: Literal["openai", "anthropic"]
+    protocol: engine.AdmissionProtocol
     name: str | None = Field(default=None, max_length=160)
     channel_id: int | None = Field(default=None, ge=1)
     multiplier: float | None = None
@@ -208,6 +222,7 @@ async def compare(body: CompareInput, request: Request):
         total = len(engine.QUESTIONS) * body.rounds
         yield engine.encode_event({"type": "run_started", "run_id": run_id,
             "question_count": len(engine.QUESTIONS), "rounds": body.rounds,
+            "protocols": {"candidate": candidate["protocol"], "reference": reference["protocol"]},
             "warmup_rounds": warmup_rounds, "total_question_runs": total})
         timeout = httpx.Timeout(connect=20, read=240, write=20, pool=20)
         async with httpx.AsyncClient(timeout=timeout, follow_redirects=False, trust_env=False,
