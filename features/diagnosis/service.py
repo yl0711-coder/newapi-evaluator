@@ -116,10 +116,15 @@ class Manager:
                         break
                     key, url = "", mock_url
                     if target.mode == "live":
-                        if target_snapshot(target, self.registry) != run["plan"]["target"]:
+                        try:
+                            current_target = target_snapshot(target, self.registry)
+                            channel = self.registry.resolve(target.channel_id)
+                        except (ValueError, KeyError):
                             self.stop_reason = "target_changed"
                             break
-                        channel = self.registry.resolve(target.channel_id)
+                        if current_target != run["plan"]["target"]:
+                            self.stop_reason = "target_changed"
+                            break
                         if channel["version"] != run["plan"]["target"]["version"]:
                             self.stop_reason = "target_changed"
                             break

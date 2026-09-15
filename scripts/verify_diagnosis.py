@@ -15,21 +15,27 @@ ROOT=Path(__file__).resolve().parents[1]
 
 
 def classify(returncode,output,kind,expected=None):
-    result={'status':'failed' if returncode else 'incomplete','executed':0,'failed':None if returncode else 0,'skipped':0}
-    if returncode:return result
+    result={'status':'incomplete','executed':None,'failed':None,'skipped':0}
     if kind=='python':
         counts=[int(x) for x in re.findall(r'^Ran (\d+) tests? in ',output,re.M)]
         skips=sum(map(int,re.findall(r'skipped=(\d+)',output)))
         stability=len(re.findall(r'^  OK\s',output,re.M))
-        result.update(executed=sum(counts)+stability,skipped=skips)
-        if counts==[34,41,expected] and stability==22 and skips==0 and 'All engine and integration checks passed.' in output and not re.search(r'^FAILED|^ERROR:|^FAIL:',output,re.M):result['status']='passed'
+        stability_failed=len(re.findall(r'^  FAIL\s',output,re.M))
+        failure_lines=re.findall(r'^FAILED[^\n]*',output,re.M)
+        failed=stability_failed+sum(int(n) for line in failure_lines for n in re.findall(r'(?:failures|errors|unexpected successes)=(\d+)',line))
+        known_failure=bool(failure_lines or re.search(r'^ERROR:|^FAIL:|^  FAIL\s',output,re.M))
+        result.update(executed=sum(counts)+stability+stability_failed if counts or stability or stability_failed else None,skipped=skips,
+                      failed=failed if failed else None if known_failure or returncode!=0 else 0)
+        if known_failure:result['status']='failed'
+        elif counts==[34,41,expected] and expected and stability==22 and skips==0 and 'All engine and integration checks passed.' in output:result['status']='passed'
     elif kind=='web':
-        if 'UI contract tests passed:' in output:result.update(status='passed',executed=1)
+        if 'UI contract tests passed:' in output:result.update(status='passed',executed=1,failed=0)
     elif kind=='e2e':
-        if output.count(' passed: ')==5 and 'All five Mock CLI modes passed' in output:result.update(status='passed',executed=5)
+        result['executed']=output.count('Running ')
+        if output.count(' passed: ')==5 and 'All five Mock CLI modes passed' in output:result.update(status='passed',executed=5,failed=0)
     elif kind=='legacy':
-        # The caller verifies the structured acceptance artifact as well.
-        result.update(status='passed',executed=10)
+        result['executed']=len(re.findall(r'^Acceptance: ',output,re.M))
+        if result['executed']==10:result.update(status='passed',failed=0)
     else:
         values=[]
         try:
@@ -41,15 +47,41 @@ def classify(returncode,output,kind,expected=None):
             except ValueError:continue
             if isinstance(value,dict):values.append(value)
         for value in values:
-            if kind=='security' and value.get('passed') is True and value.get('files_checked',0)>0 and not value.get('findings'):
-                result.update(status='passed',executed=value['files_checked'])
+            if kind=='security' and value.get('files_checked',0)>0:
+                result.update(executed=value['files_checked'],failed=len(value.get('findings',[])))
+                result['status']='passed' if value.get('passed') is True and not value.get('findings') else 'failed'
             elif kind=='inspect' and value.get('requests_sent')==0 and value.get('fingerprint'):
-                result.update(status='passed',executed=1)
+                result.update(status='passed',executed=1,failed=0)
             elif kind=='browser' and value.get('status')=='passed' and value.get('mockRequests',0)>0:
-                result.update(status='passed',executed=1)
-            elif kind=='json' and value.get('status')=='passed' and isinstance(value.get('checks'),int) and value['checks']>0 and value.get('skipped')==0:
-                result.update(status='passed',executed=value['checks'])
+                result.update(status='passed',executed=1,failed=0)
+            elif kind=='json' and isinstance(value.get('checks'),int):
+                result.update(executed=value['checks'],skipped=value.get('skipped',0))
+                if value.get('status')=='passed' and value['checks']>0 and value.get('skipped')==0:result.update(status='passed',failed=0)
+    if returncode is None and result['status']!='failed':result['status']='incomplete'
+    elif returncode not in (None,0):
+        result['status']='failed'
+        if result['failed']==0:result['failed']=None
     return result
+
+
+def execute(command,logpath,env,timeout):
+    with logpath.open('w') as log:
+        process=subprocess.Popen(command,cwd=ROOT,env=env,stdout=log,stderr=subprocess.STDOUT,start_new_session=True)
+        try:return process.wait(timeout=timeout)
+        except subprocess.TimeoutExpired:
+            os.killpg(process.pid,signal.SIGTERM)
+            try:process.wait(timeout=5)
+            except subprocess.TimeoutExpired:os.killpg(process.pid,signal.SIGKILL);process.wait()
+            return None
+
+
+def cleanup_container(py,env,output):
+    try:
+        cleanup=subprocess.run([py,'scripts/diagnosis_container.py','--output',str(output/'container'),'--cleanup'],
+                               cwd=ROOT,env=env,capture_output=True,text=True,timeout=60)
+        (output/'container-cleanup.log').write_text(cleanup.stdout+cleanup.stderr)
+        return cleanup.returncode
+    except (OSError,subprocess.TimeoutExpired):return None
 
 
 def snapshot():
@@ -87,24 +119,21 @@ def main():
               ('build-container',[py,'scripts/diagnosis_container.py','--output',str(output/'container')],900,'json')]
     if args.sha:commands.append(('legacy-acceptance',[py,'scripts/acceptance.py','--sha',sha,'--output',str(output/'legacy')],1200,'legacy'))
     results=[{'suite_id':name,'status':'not_run','command':cmd,'timeout_seconds':limit} for name,cmd,limit,kind in commands]
-    result={'source_sha':sha,'source_files':before,'independent':bool(args.sha),'python':sys.version,'interpreter':py,'platform':platform.platform(),'expected_unittest_cases':expected,'rules_version':'1.0','results':results,'status':'incomplete','real_upstream_tested':False}
+    result={'source_sha':sha,'source_files':before,'independent':bool(args.sha),'python':sys.version,'interpreter':py,'platform':platform.platform(),'expected_unittest_cases':expected,'rules_version':'1.0','results':results,'status':'incomplete','real_upstream_tested':False,'execution_budget_seconds':3600,'cleanup_grace_seconds':65}
     def save():
         temporary=output/'verification.tmp';temporary.write_text(json.dumps(result,ensure_ascii=False,indent=2));temporary.replace(output/'verification.json')
     save();began=time.monotonic()
     for row,(_,command,limit,kind) in zip(results,commands):
         if expected==0 or time.monotonic()-began>=3600:break
         print('Verify: '+row['suite_id'],flush=True);start=time.monotonic();logpath=output/(row['suite_id']+'.log')
-        with logpath.open('w') as log:
-            process=subprocess.Popen(command,cwd=ROOT,env=env,stdout=log,stderr=subprocess.STDOUT,start_new_session=True)
-            try:code=process.wait(timeout=min(limit,3600-(time.monotonic()-began)))
-            except subprocess.TimeoutExpired:
-                os.killpg(process.pid,signal.SIGTERM)
-                try:process.wait(timeout=5)
-                except subprocess.TimeoutExpired:os.killpg(process.pid,signal.SIGKILL);process.wait()
-                code=None
+        code=execute(command,logpath,env,min(limit,3600-(time.monotonic()-began)))
         text=logpath.read_text(errors='replace')
-        row.update(classify(code,text,kind,expected) if code is not None else {'status':'incomplete','executed':0,'failed':None,'skipped':0})
+        row.update(classify(code,text,kind,expected))
         row.update(exit_code=code,elapsed_seconds=time.monotonic()-start,log=str(logpath))
+        if row['suite_id']=='build-container':
+            row['cleanup_exit_code']=cleanup_container(py,env,output)
+            if row['cleanup_exit_code'] is None and row['status']!='failed':row['status']='incomplete'
+            elif row['cleanup_exit_code']!=0:row['status']='failed'
         if kind=='legacy' and row['status']=='passed':
             artifact=output/'legacy'/'acceptance.json'
             if not artifact.exists() or json.loads(artifact.read_text()).get('passed') is not True:row['status']='incomplete'

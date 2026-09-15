@@ -25,18 +25,24 @@ class BodyLimit:
         if scope["type"] != "http" or scope["method"] not in ("POST", "PUT", "PATCH"):
             return await self.app(scope, receive, send)
         data = bytearray()
+
+        async def read_body():
+            while True:
+                message = await receive()
+                if message["type"] == "http.disconnect":
+                    return False
+                data.extend(message.get("body", b""))
+                if len(data) > 262_144:
+                    raise OverflowError
+                if not message.get("more_body"):
+                    return True
+
         try:
-            async with asyncio.timeout(10):
-                while True:
-                    message = await receive()
-                    if message["type"] == "http.disconnect":
-                        return
-                    data.extend(message.get("body", b""))
-                    if len(data) > 262_144:
-                        return await JSONResponse({"detail": "导入内容超过 256 KiB"}, status_code=413)(scope, receive, send)
-                    if not message.get("more_body"):
-                        break
-        except TimeoutError:
+            if not await asyncio.wait_for(read_body(), 10):
+                return
+        except OverflowError:
+            return await JSONResponse({"detail": "导入内容超过 256 KiB"}, status_code=413)(scope, receive, send)
+        except asyncio.TimeoutError:
             return await JSONResponse({"detail": "请求体接收超时"}, status_code=408)(scope, receive, send)
         delivered = False
 

@@ -1,6 +1,6 @@
 # 模型测试工作台
 
-一份公共渠道库，四个可分别运行的测试工具：准入快测、定时稳定性测试、非流式回答测试和中转站极限测试。
+一份公共渠道库，五个可分别运行的测试工具：准入快测、定时稳定性测试、非流式回答测试、中转站极限测试和请求特征诊断。
 
 ## 启动
 
@@ -18,14 +18,17 @@ python3 -m venv .venv
 
 | 命令 | 地址 | 功能 |
 | --- | --- | --- |
-| `python run.py` | 8090 | 工作台与三个工具 |
+| `python run.py` | 8090 | 工作台与五个工具 |
 | `python run.py --app admission` | 8091 | 公共渠道与准入测试 |
 | `python run.py --app stability` | 8092 | 公共渠道与定时测试 |
 | `python run.py --app reasoning` | 8093 | 公共渠道与非流式测试 |
 | `python run.py --app channels` | 8094 | 仅管理公共渠道 |
 | `python run.py --app capacity` | 8095 | 中转站极限测试 |
+| `python run.py --app diagnosis` | 8096 | 请求特征诊断；需设置仓库外 PLATFORM_DATA_DIR |
 
 单独启动准入或非流式工具时，不启动定时调度器。相同数据目录只允许一个调度器实例；同时启动工作台和独立定时工具会明确拒绝第二个实例。
+
+请求特征诊断的推荐独立入口为 `python -B scripts/start_diagnosis.py --data-dir /absolute/external/diagnosis-data`，由启动器校验数据位于仓库外。同一诊断数据目录也只允许一个实例。
 
 ## 使用流程
 
@@ -50,6 +53,8 @@ data/
     secret.key            飞书 Webhook 的加密主密钥（配置后生成）
   relay-lab/
     console/runs/         极限测试脱敏请求指标、汇总和报告
+  diagnosis/
+    diagnosis.db          请求特征案例、计划快照和测量指标，不含请求/响应正文
 ```
 
 `PLATFORM_DATA_DIR` 可指定其他数据目录；准入、定时和非流式工具使用相同值即可共享公共渠道。极限测试共用工作台的登录和进程，但不会自动读取公共渠道密钥。定时目标只引用公共渠道 ID，执行时读取最新地址和密钥。停用公共渠道会阻止后续使用；已发出的请求不被强制中断。模型名、协议、频率、轮次归各测试任务配置，模板模型名不会写入公共渠道资料。

@@ -1,6 +1,7 @@
 import argparse
 import json
 from pathlib import Path
+import re
 import subprocess
 import time
 import uuid
@@ -12,17 +13,34 @@ def docker(*args,**kwargs):
     return subprocess.run(['docker',*args],check=True,text=True,**kwargs)
 
 
+def cleanup(output):
+    owner=output/'owner.json'
+    if not owner.exists():return 'not_created'
+    identifier=json.loads(owner.read_text())['identifier']
+    if not re.fullmatch(r'diagnosis-test-[0-9a-f]{12}',identifier):raise ValueError('invalid ownership record')
+    cp=subprocess.run(['docker','container','ls','-a','--filter','name=^/'+identifier+'$','--format','{{.Names}}'],check=True,text=True,capture_output=True,timeout=15)
+    if identifier not in cp.stdout.splitlines():return 'absent'
+    inspected=json.loads(docker('inspect',identifier,capture_output=True,timeout=15).stdout)[0]
+    if inspected.get('Config',{}).get('Labels',{}).get('diagnosis.owner')!=identifier:
+        raise ValueError('container ownership mismatch')
+    docker('rm','-f',identifier,timeout=20)
+    return 'removed'
+
+
 def main():
-    parser=argparse.ArgumentParser();parser.add_argument('--output',type=Path,required=True);args=parser.parse_args()
-    output=args.output.resolve();output.mkdir(parents=True,exist_ok=False)
-    identifier='diagnosis-test-'+uuid.uuid4().hex[:12];image=identifier+':local';created=False
+    parser=argparse.ArgumentParser();parser.add_argument('--output',type=Path,required=True);parser.add_argument('--cleanup',action='store_true');args=parser.parse_args()
+    output=args.output.resolve()
+    if args.cleanup:
+        print(json.dumps({'cleanup':cleanup(output)}));return
+    output.mkdir(parents=True,exist_ok=False)
+    identifier='diagnosis-test-'+uuid.uuid4().hex[:12];image=identifier+':local'
+    (output/'owner.json').write_text(json.dumps({'identifier':identifier}))
     sha=subprocess.check_output(['git','rev-parse','HEAD'],cwd=ROOT,text=True).strip()
     try:
         docker('build','--label',f'diagnosis.source={sha}','-t',image,str(ROOT),timeout=600)
-        docker('run','-d','--name',identifier,'--tmpfs','/app/data:uid=10001,gid=10001,mode=0700',
+        docker('run','-d','--name',identifier,'--label',f'diagnosis.owner={identifier}','--tmpfs','/app/data:uid=10001,gid=10001,mode=0700',
                '-e','PLATFORM_USERNAME=fixture','-e','PLATFORM_PASSWORD=synthetic-container-password',
                '-e','DIAGNOSIS_ENABLE_LIVE=0',image,timeout=30)
-        created=True
         for _ in range(90):
             state=json.loads(docker('inspect',identifier,capture_output=True).stdout)[0]['State']
             if state.get('Health',{}).get('Status')=='healthy':break
@@ -53,7 +71,7 @@ assert json.loads(request('/api/health'))['status']=='ok'
         (output/'container.json').write_text(json.dumps(result,indent=2))
         print(json.dumps(result))
     finally:
-        if created:docker('rm','-f',identifier,timeout=30)
+        cleanup(output)
         # Keep the uniquely tagged local image as versioned evidence; no registry push.
 
 

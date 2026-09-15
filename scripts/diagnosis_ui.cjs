@@ -37,6 +37,8 @@ let app,browser,logs='';
   await page.reload();await page.locator('#run-select option').nth(1).waitFor({state:'attached'});await page.locator('#run-select').selectOption({index:1});await page.waitForFunction(()=>document.querySelector('#results').children.length===4);
   await page.setViewportSize({width:390,height:844});await page.screenshot({path:path.join(data,'diagnosis-mobile.png'),fullPage:true});
   assert.equal(await page.evaluate(()=>document.documentElement.scrollWidth>innerWidth+2),false);
+  await page.locator('#case-file').setInputFiles({name:'single-case.jsonl',mimeType:'application/json',buffer:Buffer.from('{\"total_tokens\":100,\"stream\":false}')});
+  await page.getByText('已导入 1 条案例。',{exact:true}).waitFor();
   await page.locator('#case-file').setInputFiles({name:'synthetic-cases.jsonl',mimeType:'application/json',buffer:Buffer.from('{"total_tokens":100,"stream":false}\n{"total_tokens":200,"stream":true}')});
   await page.getByText('已导入 2 条案例。',{exact:true}).waitFor();
   await page.locator('#case-file').setInputFiles({name:'invalid.json',mimeType:'application/json',buffer:Buffer.from('[{"total_tokens":1,"stream":true,"prompt":"discarded-content"}]')});
@@ -48,7 +50,7 @@ let app,browser,logs='';
   await page.waitForFunction(()=>document.querySelector('#run-state').textContent.startsWith('已停止'));
   assert.match(await page.locator('#results').textContent(),/未发送/);
   assert.deepEqual(errors,[]);
-  console.log(JSON.stringify({status:'passed',checks:13,skipped:0,artifacts:data}));
+  console.log(JSON.stringify({status:'passed',checks:14,skipped:0,artifacts:data}));
 })().catch(error=>{console.error(error);if(logs)console.error(logs);process.exitCode=1;}).finally(async()=>{
   if(browser)await browser.close();
   if(app&&app.exitCode===null){const done=new Promise(r=>app.once('exit',r));app.kill('SIGTERM');await done;}

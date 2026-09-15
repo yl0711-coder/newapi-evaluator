@@ -170,9 +170,11 @@ class StreamEvidence:
             return "refused"
         if self.finish in ("unsupported_output", "unknown_finish"):
             return self.finish
+        if self.finish == "output_limit":
+            return "output_limit"
         if not self.chars:
             return "empty_response"
-        return "output_limit" if self.finish == "output_limit" else "completed"
+        return "completed"
 
 
 async def measure(client, base_url, api_key, target, attempt, config, progress=None):

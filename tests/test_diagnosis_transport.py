@@ -1,21 +1,29 @@
 import asyncio
 from contextlib import asynccontextmanager
 import json
+from pathlib import Path
+import tempfile
 import unittest
+from unittest.mock import patch
 
 import httpx
 
-from features.diagnosis.models import PlanInput, Target
+from features.diagnosis.models import CaseInput, PlanInput, StartInput, Target
+from features.diagnosis.report import report
+from features.diagnosis.service import Manager
+from features.diagnosis.storage import Store
 from features.diagnosis.transport import measure
+from shared.registry import Registry
 
 
 @asynccontextmanager
-async def wire(status=200, chunks=(), delays=(), content_type='text/event-stream'):
+async def wire(status=200, chunks=(), delays=(), content_type='text/event-stream', on_request=None):
     tasks=set(); received=[]
     async def handle(reader,writer):
         task=asyncio.current_task();tasks.add(task)
         try:
             head=await reader.readuntil(b'\r\n\r\n');received.append(head)
+            if on_request:on_request()
             writer.write(f'HTTP/1.1 {status} Fixture\r\nContent-Type: {content_type}\r\nConnection: close\r\n\r\n'.encode());await writer.drain()
             for index,chunk in enumerate(chunks):
                 if index<len(delays):await asyncio.sleep(delays[index])
@@ -92,6 +100,40 @@ class WireTests(unittest.IsolatedAsyncioTestCase):
             task=asyncio.create_task(measure(client,url,'',Target().model_dump(),{'input_tokens':100,'output_tokens':100,'seed':1,'stream':True},PlanInput(case_id='a'*32).model_dump(),progress))
             await asyncio.wait_for(header_seen.wait(),2);task.cancel();r=await asyncio.wait_for(task,2)
         self.assertEqual(r['outcome'],'cancelled');self.assertEqual(r['http_status'],200);self.assertEqual(r['output_chars'],4);self.assertFalse(r['transport_complete'])
+
+    async def test_reasoning_output_limit_without_visible_text(self):
+        payload={'status':'incomplete','incomplete_details':{'reason':'max_output_tokens'},'output':[],
+                 'usage':{'input_tokens':20,'output_tokens':100,'output_tokens_details':{'reasoning_tokens':100}}}
+        for stream in (True,False):
+            content=event({'type':'response.incomplete','response':payload}) if stream else json.dumps(payload).encode()
+            row=await self.run_wire('responses',stream,chunks=[content])
+            self.assertEqual(row['outcome'],'output_limit');self.assertTrue(row['request_ok'])
+            self.assertEqual(row['output_chars'],0);self.assertIsNone(row['ttft_ms']);self.assertEqual(row['usage_reasoning_tokens'],100)
+            value=report({'id':'a'*32,'state':'completed','plan':{'case':{'latency_kind':'unknown','latency_ms':None}},'results':[{**row,'variant':'baseline'}]})
+            self.assertEqual(value['groups'][0]['outcomes'],{'output_limit':1});self.assertEqual(value['groups'][0]['completed'],0)
+
+    async def test_live_configuration_auth_headers_and_mid_run_change(self):
+        terminals={'openai':event({'choices':[{'delta':{},'finish_reason':'stop'}]})+b'data: [DONE]\n\n',
+                   'responses':event({'type':'response.completed','response':{'status':'completed'}}),
+                   'anthropic':event({'type':'message_delta','delta':{'stop_reason':'end_turn'}})+event({'type':'message_stop'})}
+        for protocol,disabled in [('openai',False),('responses',False),('anthropic',False),('openai',True)]:
+            with self.subTest(protocol=protocol,disabled=disabled),tempfile.TemporaryDirectory() as directory:
+                registry=Registry(Path(directory)/'registry');store=Store(Path(directory)/'diagnosis')
+                case=store.import_cases([CaseInput(total_tokens=100,stream=True)])[0]
+                def change():registry.save({**channel,'name':'updated fixture','enabled':not disabled},channel['id'],channel['version'])
+                async with wire(chunks=[text_event(protocol)+terminals[protocol]],on_request=change) as (url,received):
+                    channel=registry.save({'name':'fixture','base_url':url,'api_key':'synthetic-diagnosis-credential'})
+                    manager=Manager(store,registry,live_enabled=True)
+                    with patch.dict('os.environ',{'PLATFORM_EGRESS_ALLOWLIST':'127.0.0.1'}):
+                        async with manager.lifespan():
+                            p=manager.preview(PlanInput(case_id=case['id'],target=Target(mode='live',channel_id=channel['id'],protocol=protocol),repetitions=1))
+                            run=await manager.start(StartInput(preview_id=p['preview_id'],confirm_live=True));await manager.task
+                    value=store.run(run['id']);self.assertEqual(value['results'][0]['outcome'],'completed')
+                    self.assertEqual(value['stop_reason'],'target_changed');self.assertEqual(len(received),1)
+                    self.assertEqual([r['outcome'] for r in value['results'][1:]],['not_sent']*3)
+                    expected=b'x-api-key: synthetic-diagnosis-credential' if protocol=='anthropic' else b'authorization: Bearer synthetic-diagnosis-credential'
+                    self.assertIn(expected,received[0]);self.assertNotIn('synthetic-diagnosis-credential',json.dumps(value))
+                    if protocol=='anthropic':self.assertIn(b'anthropic-version: 2023-06-01',received[0])
 
 
 if __name__=='__main__':unittest.main()
