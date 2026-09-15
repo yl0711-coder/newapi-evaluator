@@ -5,6 +5,7 @@ import base64
 import hashlib
 import io
 import json
+import logging
 import re
 import struct
 import time
@@ -25,6 +26,60 @@ MODEL = "gpt-image-2"
 MAX_RESPONSE_BYTES = 48 * 1024 * 1024
 MAX_PIXELS = 8_294_400
 BOUNDARY = "图片、返回模型名和请求编号只能作为响应证据，不能独立证明上游模型身份。"
+PROGRESS = logging.getLogger("image_quality.progress")
+PROGRESS.setLevel(logging.INFO)
+PROGRESS.propagate = False
+if not PROGRESS.handlers:
+    PROGRESS.addHandler(logging.StreamHandler())
+
+
+class JSONBoundary:
+    """Locate a UTF-8 JSON envelope; json.loads remains the syntax validator."""
+    tokens = re.compile(rb'\\[\s\S]|\\$|["{}\[\]]')
+
+    def __init__(self):
+        self.started = False
+        self.other_root = False
+        self.in_string = False
+        self.skip_byte = False
+        self.depth = 0
+        self.prefix = b""
+
+    def feed(self, chunk):
+        if self.other_root or not chunk:
+            return False
+        if not self.started:
+            chunk = (self.prefix + chunk).lstrip(b" \t\r\n")
+            self.prefix = b""
+            if chunk.startswith(b"\xef") and len(chunk) < 3:
+                self.prefix = chunk
+                return False
+            if chunk.startswith(b"\xef\xbb\xbf"):
+                chunk = chunk[3:].lstrip(b" \t\r\n")
+            if not chunk:
+                return False
+            if chunk[0] not in (ord("{"), ord("[")):
+                self.other_root = True
+                return False
+            self.started = True
+        offset = 1 if self.skip_byte else 0
+        self.skip_byte = False
+        for match in self.tokens.finditer(chunk, offset):
+            token = match.group()
+            if self.in_string:
+                if token.startswith(b"\\"):
+                    self.skip_byte = len(token) == 1
+                elif token == b'"':
+                    self.in_string = False
+            elif token == b'"':
+                self.in_string = True
+            elif token in (b"{", b"["):
+                self.depth += 1
+            elif token in (b"}", b"]"):
+                self.depth -= 1
+                if self.depth == 0:
+                    return True
+        return False
 
 
 def endpoint_url(value: str) -> str:
@@ -230,10 +285,28 @@ async def generate(body: GenerationInput, transport=None) -> dict:
         "status": "failed", "http_status": None, "returned_model": None,
         "request_id": None, "usage": None, "upstream_seconds": None,
         "total_seconds": None, "error_code": None, "boundary": BOUNDARY,
+        "diagnostics": {"phase": "requesting", "received_bytes": 0,
+                        "headers_seconds": None, "first_byte_seconds": None,
+                        "content_type": None, "response_completion": None},
     }
     started = time.monotonic()
     secret = body.api_key.get_secret_value()
     secrets = (secret, body.prompt, body.base_url)
+    diagnostics = report["diagnostics"]
+
+    def progress(event, *, terminal=False):
+        # Only locally generated identifiers, fixed categories and numeric metrics.
+        PROGRESS.info(json.dumps({
+            "event": event, "sample_id": report["sample_id"],
+            "started_at_utc": report["started_at_utc"],
+            "phase": diagnostics["phase"], "received_bytes": diagnostics["received_bytes"],
+            "content_type": diagnostics["content_type"], "http_status": report["http_status"],
+            "elapsed_seconds": round(time.monotonic() - started, 3),
+            "status": report["status"] if terminal else "running",
+            "error_code": report["error_code"] if terminal else None,
+        }))
+
+    progress("started")
 
     async def send():
         timeout = httpx.Timeout(body.timeout_seconds, connect=min(20, body.timeout_seconds))
@@ -243,18 +316,44 @@ async def generate(body: GenerationInput, transport=None) -> dict:
                                      headers={"Authorization": "Bearer " + secret}) as response:
                 report["http_status"] = response.status_code
                 report["request_id"] = safe_identifier(response.headers.get("x-request-id"), secrets)
-                content = bytearray()
-                async for chunk in response.aiter_bytes():
-                    if len(content) + len(chunk) > MAX_RESPONSE_BYTES:
-                        raise InvalidImage("response_too_large")
-                    content.extend(chunk)
-                report["upstream_seconds"] = round(time.monotonic() - started, 3)
+                diagnostics["phase"] = "receiving_body"
+                diagnostics["headers_seconds"] = round(time.monotonic() - started, 3)
+                media_type = response.headers.get("content-type", "").split(";", 1)[0].strip().lower()
+                diagnostics["content_type"] = ("event_stream" if media_type == "text/event-stream" else
+                                               "json" if media_type == "application/json" or media_type.endswith("+json") else
+                                               "other" if media_type else None)
+                progress("headers_received")
                 if not 200 <= response.status_code < 300:
+                    diagnostics["response_completion"] = "http_status"
                     report["error_code"] = ("redirect_rejected" if response.is_redirect else
                                             "rate_limited" if response.status_code == 429 else
                                             "authentication_failed" if response.status_code in (401, 403) else
                                             "upstream_http_error")
                     return
+                if diagnostics["content_type"] == "event_stream":
+                    raise InvalidImage("unexpected_stream_response")
+                content = bytearray()
+                boundary = JSONBoundary()
+                logged_bytes = 0
+                async for chunk in response.aiter_bytes():
+                    if len(content) + len(chunk) > MAX_RESPONSE_BYTES:
+                        raise InvalidImage("response_too_large")
+                    content.extend(chunk)
+                    diagnostics["received_bytes"] = len(content)
+                    if chunk and diagnostics["first_byte_seconds"] is None:
+                        diagnostics["first_byte_seconds"] = round(time.monotonic() - started, 3)
+                        progress("body_started")
+                    if len(content) - logged_bytes >= 1024 * 1024:
+                        logged_bytes = len(content)
+                        progress("body_progress")
+                    if boundary.feed(chunk):
+                        diagnostics["response_completion"] = "json_complete"
+                        break
+                else:
+                    diagnostics["response_completion"] = "transport_eof"
+                report["upstream_seconds"] = round(time.monotonic() - started, 3)
+                diagnostics["phase"] = "validating_json"
+                progress("body_received")
                 try:
                     data = json.loads(content)
                 except (ValueError, UnicodeError):
@@ -270,6 +369,8 @@ async def generate(body: GenerationInput, transport=None) -> dict:
                     raise InvalidImage("missing_image")
                 if not images[0].get("b64_json") and images[0].get("url"):
                     raise InvalidImage("image_url_only")
+                diagnostics["phase"] = "processing_image"
+                progress("image_processing")
                 image, width, height, raw_hash = await asyncio.to_thread(normalize_png, images[0].get("b64_json"))
                 report["image"] = {
                     "mime_type": "image/png", "width": width, "height": height,
@@ -278,7 +379,9 @@ async def generate(body: GenerationInput, transport=None) -> dict:
                     "b64_json": base64.b64encode(image).decode(),
                 }
                 report["size_matches"] = f"{width}x{height}" == body.size
-                report["status"] = "success"
+                diagnostics["phase"] = "closing_response"
+        report["status"] = "success"
+        diagnostics["phase"] = "completed"
     try:
         await asyncio.wait_for(send(), timeout=body.timeout_seconds)
     except (asyncio.TimeoutError, httpx.TimeoutException):
@@ -287,7 +390,15 @@ async def generate(body: GenerationInput, transport=None) -> dict:
         report["error_code"] = "connection_failed"
     except InvalidImage as exc:
         report["error_code"] = str(exc)
+    except asyncio.CancelledError:
+        report["status"] = "cancelled"
+        report["error_code"] = "client_cancelled"
+        raise
+    except Exception:
+        report["error_code"] = "internal_error"
+        raise
     finally:
         report["total_seconds"] = round(time.monotonic() - started, 3)
         report["finished_at_utc"] = datetime.now(timezone.utc).isoformat()
+        progress("finished", terminal=True)
     return report

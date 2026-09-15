@@ -7,6 +7,7 @@
 - Key、Base URL、Prompt、上游正文不写数据库、文件、日志、导出指标或开发证据。产品页面展示用户本轮输入和生成图片；用户可下载去除元数据的 PNG 及白名单指标。新增模块不提供后端历史存储或报告正文导出；刷新清空样本。人工评分只在当前页面保留。
 - 复用 shared.network 的实际建连检查，禁用环境代理、重定向与自动重试；连接检查入口只输出指纹及安全别名。
 - 只报告可观察事实。返回模型与请求编号标注为上游自报；缺失值为 null；不自动认证官 Key、原厂模型、画质等级或内部路由。客户端中断/超时不等于上游未处理。
-- 合成自动化夹具位于 tests/fixtures/image_quality 及 tests/test_image_quality.py，不得复制实际生成提示词或图片入库。
+- 运行诊断只记录本地生成的样本编号、时间、固定事件/阶段、HTTP 状态、字节数、耗时和错误分类；不记录上游自由文本字段。JSON 完成与 HTTP 传输结束分开表述。
+- 合成自动化夹具位于 tests/fixtures/image_quality 及 tests/test_image_quality*.py，不得复制实际生成提示词或图片入库。
 
 测试清单与交接入口见 ../../docs/image-quality-testing.md；产品契约见 README.md。

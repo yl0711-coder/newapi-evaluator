@@ -9,6 +9,8 @@ const root = path.resolve(__dirname, '..');
 const data = fs.mkdtempSync(path.join(os.tmpdir(), 'workbench-ui-'));
 const python = process.env.PYTHON_EXECUTABLE || path.join(root,'.venv','bin','python');
 const requests = [];
+const heldImageResponses = new Set();
+let openEndedImages = 0;
 let app, browser, logs = '';
 const upstream = http.createServer(async (req, res) => {
   const parts = []; for await (const chunk of req) parts.push(chunk);
@@ -19,6 +21,14 @@ const upstream = http.createServer(async (req, res) => {
       res.end(JSON.stringify({error:{message:'synthetic rejected credential'}})); return;
     }
     const image = fs.readFileSync(path.join(root,'tests/fixtures/image_quality/response.json'));
+    if (body.prompt === 'Synthetic image fixture with geometric shapes.') {
+      res.writeHead(200, {'Content-Type':'application/json','x-request-id':'synthetic-image-request'});
+      res.write(image);
+      openEndedImages++;
+      heldImageResponses.add(res);
+      res.on('close',()=>heldImageResponses.delete(res));
+      return;
+    }
     const finish = () => {res.writeHead(200, {'Content-Type':'application/json','x-request-id':'synthetic-image-request'}); res.end(image);};
     if (body.prompt === 'Synthetic delayed image fixture.') {
       const timer = setTimeout(finish, 5000); res.on('close',()=>clearTimeout(timer));
@@ -109,6 +119,7 @@ const upstream = http.createServer(async (req, res) => {
   await page.waitForFunction(()=>document.querySelectorAll('.sample-card').length===1);
   await page.locator('.sample-image').evaluate(img=>img.decode());
   assert.equal(await page.locator('.sample-image').evaluate(img=>img.naturalWidth),64);
+  assert.equal(openEndedImages,1);
   await page.getByText('服务端总耗时', {exact:true}).waitFor();
   assert.equal(await page.locator('#api-key').inputValue(),'');
   assert.equal(await page.locator('#confirm-live').isChecked(),false);
@@ -150,5 +161,6 @@ const upstream = http.createServer(async (req, res) => {
 })().catch(error=>{console.error(error);if(logs)console.error(logs);process.exitCode=1;}).finally(async()=>{
   if(browser) await browser.close();
   if(app) { app.kill('SIGTERM'); await new Promise(resolve=>app.once('exit',resolve)); }
+  for (const response of heldImageResponses) response.destroy();
   upstream.close();
 });

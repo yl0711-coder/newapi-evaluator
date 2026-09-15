@@ -13,6 +13,7 @@
     upstream_error: '接口返回了错误对象。',
     invalid_json: '接口返回内容不是有效的 JSON。',
     invalid_response: '接口返回结构不符合生图协议。',
+    unexpected_stream_response: '接口返回了流式响应；本次生图请求需要一个完整的 JSON 图片结果。',
     missing_image: '接口未返回恰好 1 张 Base64 图片。',
     image_url_only: '仅返回了图片 URL；本次要求 Base64 图片，未自动访问该 URL。',
     invalid_image: '图片数据无效或不完整。',
@@ -61,6 +62,12 @@
     appendMetric(grid, '返回模型（自报）', report.returned_model);
     appendMetric(grid, '服务端总耗时', report.total_seconds == null ? null : report.total_seconds + ' 秒');
     appendMetric(grid, 'HTTP 状态', report.http_status);
+    if (report.status !== 'success' && report.diagnostics) {
+      const phases = {requesting:'等待上游响应', receiving_body:'接收响应数据', validating_json:'解析图片结果',
+        processing_image:'校验图片', closing_response:'关闭上游响应', completed:'已完成'};
+      appendMetric(grid, '停止阶段', phases[report.diagnostics.phase] || '未知');
+      appendMetric(grid, '已接收数据', (report.diagnostics.received_bytes / 1024).toFixed(1) + ' KiB');
+    }
     if (image) appendMetric(grid, '实际尺寸', image.width + ' × ' + image.height);
     appendMetric(grid, '质量参数', report.settings.quality);
     body.append(grid);

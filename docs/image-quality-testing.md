@@ -1,6 +1,6 @@
 # 生图质量子项目：测试清单与交接入口
 
-适用规范：根 AGENTS.md 引用的 docs/ai-rules v1.0。测试清单版本 image-quality-1。
+适用规范：根 AGENTS.md 引用的 docs/ai-rules v1.0。测试清单版本 image-quality-2。
 
 ## 范围
 
@@ -53,9 +53,9 @@ venv 由 python3 -m venv 创建在上述 IMAGE_TEST_ROOT/venv；tmp 需预先创
 
 ## 关键场景与数据边界
 
-合成内容独立编写在 tests/test_image_quality.py、tests/fixtures/image_quality 与已登记的 UI Mock 内。不得使用实际海报、真实输入或客户数据做夹具。
+合成内容独立编写在 tests/test_image_quality*.py、tests/fixtures/image_quality 与已登记的 UI Mock 内。不得使用实际海报、真实输入或客户数据做夹具。
 
-新增用例覆盖固定 gpt-image-2 与精确负载、默认参数、URL/Key/Prompt 输入边界、无确认不触网、无 Key/URL/正文持久化或指标输出、重定向/鉴权/限流/5xx、空或损坏 JSON、URL-only 响应、损坏或错误图片格式、图片元数据移除与 16 位像素/色彩参数保真、16 位彩色及不支持的色彩/动画明确拒绝、PNG 压缩流内外尾随内容与未使用调色板清理、响应大小限制、总超时及断连取消、缺失模型/用量语义、工作台鉴权与跨站保护。
+新增用例覆盖固定 gpt-image-2 与精确负载、默认参数、URL/Key/Prompt 输入边界、无确认不触网、无 Key/URL/正文持久化、诊断日志或指标输出、重定向/鉴权/限流/5xx、空或损坏 JSON、URL-only 响应、损坏或错误图片格式、图片元数据移除与 16 位像素/色彩参数保真、16 位彩色及不支持的色彩/动画明确拒绝、PNG 压缩流内外尾随内容与未使用调色板清理、响应大小限制、总超时及断连取消、缺失模型/用量语义、工作台鉴权与跨站保护。接收回归通过实际本地 HTTP 验证：完整图片 JSON 已到但缺少分块结束标志时仍返回图片、不完整 JSON 继续等待且受总超时约束、跨分片字符串转义与 Unicode/BOM、不请求的 SSE 及时报错、HTTP 错误不等正文结束、手动取消保留安全阶段日志。浏览器正常生图路径也使用不发送分块结束标志的 Mock；finally 精确关闭本轮保留的响应连接。
 
 出站保护沿用 shared.network，现有共享集成用例验证 DNS 重绑定与实际固定 IP；生图浏览器 E2E 仅对白名单中的 127.0.0.1 本地 Mock 发请求。脚本不自动配置通知或外部渠道。检查结果只含安全别名、指纹、状态、计数、耗时与合成验证摘要。
 
