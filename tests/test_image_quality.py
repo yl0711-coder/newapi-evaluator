@@ -37,6 +37,20 @@ def upstream_image(**overrides):
     return {"data": [{"b64_json": base64.b64encode(synthetic_png()).decode()}], **overrides}
 
 
+def png_chunks(raw):
+    offset = 8
+    while offset < len(raw):
+        length = struct.unpack_from(">I", raw, offset)[0]
+        yield raw[offset + 4:offset + 8], raw[offset + 8:offset + 8 + length]
+        offset += length + 12
+
+
+def make_png(chunks):
+    return b"\x89PNG\r\n\x1a\n" + b"".join(
+        struct.pack(">I", len(data)) + kind + data + struct.pack(">I", zlib.crc32(kind + data))
+        for kind, data in chunks)
+
+
 class SettingsTests(unittest.TestCase):
     def test_endpoint_normalization(self):
         cases = {
@@ -76,7 +90,7 @@ class SettingsTests(unittest.TestCase):
         self.assertEqual((width, height), (16, 24))
         self.assertNotIn(b"synthetic-ephemeral-key", clean)
         with Image.open(io.BytesIO(clean)) as image:
-            self.assertEqual(image.getpixel((0, 0)), (21, 93, 80))
+            self.assertEqual(image.getpixel((0, 0)), (21, 93, 80, 255))
         self.assertEqual(len(upstream_hash), 64)
 
     def test_png_preserves_16_bit_greyscale_without_clamping(self):
@@ -86,13 +100,27 @@ class SettingsTests(unittest.TestCase):
         original.save(output, "PNG")
         raw = output.getvalue()
         clean, *_ = engine.normalize_png(base64.b64encode(raw).decode())
-        self.assertEqual(clean, raw)
         with Image.open(io.BytesIO(clean)) as image:
             self.assertEqual([image.getpixel((x, 0)) for x in range(5)], levels)
 
+    def test_png_transparency_is_preserved_for_binary_and_16_bit_greyscale(self):
+        for mode, pixels, transparent in [("1", [0, 255], 1), ("I;16", [257, 32768], 257)]:
+            original = Image.new(mode, (2, 1))
+            original.putdata(pixels)
+            output = io.BytesIO()
+            original.save(output, "PNG", transparency=transparent)
+            clean, *_ = engine.normalize_png(base64.b64encode(output.getvalue()).decode())
+            with Image.open(io.BytesIO(clean)) as image:
+                if mode == "1":
+                    self.assertEqual([image.getpixel((x, 0)) for x in range(2)], [(0, 0, 0, 255), (255, 255, 255, 0)])
+                else:
+                    self.assertEqual(image.info["transparency"], transparent)
+                    self.assertEqual([image.getpixel((x, 0)) for x in range(2)], pixels)
+
     def test_png_preserves_palette_transparency_and_rendering_chunks(self):
         original = Image.new("P", (2, 1))
-        original.putpalette([255, 0, 0, 0, 255, 0] + [0] * 762)
+        marker = b"synthetic-unused-palette-metadata"
+        original.putpalette(bytes([255, 0, 0, 0, 255, 0]) + marker + bytes(762 - len(marker)))
         original.putdata([0, 1])
         info = PngImagePlugin.PngInfo()
         info.add(b"gAMA", struct.pack(">I", 45455))
@@ -103,6 +131,7 @@ class SettingsTests(unittest.TestCase):
         raw = output.getvalue()
         clean, *_ = engine.normalize_png(base64.b64encode(raw).decode())
         self.assertNotIn(b"synthetic-private-metadata", clean)
+        self.assertNotIn(marker, clean)
         with Image.open(io.BytesIO(clean)) as image:
             self.assertEqual(image.info["gamma"], 0.45455)
             self.assertEqual(image.info["srgb"], 0)
@@ -110,7 +139,7 @@ class SettingsTests(unittest.TestCase):
             self.assertEqual([rgba.getpixel((x, 0)) for x in range(2)], [(255, 0, 0, 0), (0, 255, 0, 128)])
 
     def test_unpreservable_colour_profiles_and_animation_are_explicitly_rejected(self):
-        for chunk in (b"iCCP", b"cICP", b"mDCV", b"cLLI", b"acTL"):
+        for chunk in (b"iCCP", b"cICP", b"mDCV", b"cLLI", b"acTL", b"sBIT", b"bKGD"):
             raw = synthetic_png()
             data = b"synthetic-private-metadata"
             # Insert an actual wire-format chunk; Pillow's writer omits some chunk names.
@@ -118,6 +147,13 @@ class SettingsTests(unittest.TestCase):
             raw = raw[:33] + inserted + raw[33:]
             with self.assertRaisesRegex(engine.InvalidImage, "unsupported_png_features"):
                 engine.normalize_png(base64.b64encode(raw).decode())
+
+    def test_16_bit_rgb_is_rejected_instead_of_reduced_to_8_bits(self):
+        raw = make_png([(b"IHDR", struct.pack(">IIBBBBB", 1, 1, 16, 2, 0, 0, 0)),
+                        (b"IDAT", zlib.compress(b"\0" + struct.pack(">3H", 0, 32768, 65535))),
+                        (b"IEND", b"")])
+        with self.assertRaisesRegex(engine.InvalidImage, "unsupported_png_features"):
+            engine.normalize_png(base64.b64encode(raw).decode())
 
     def test_invalid_image_and_format_rejected(self):
         jpeg = io.BytesIO()
@@ -134,6 +170,26 @@ class SettingsTests(unittest.TestCase):
 
 
 class GenerationTests(unittest.IsolatedAsyncioTestCase):
+    async def test_nonpixel_idat_payload_is_removed_from_download(self):
+        marker = b"synthetic-hidden-private-text"
+        for inside_stream in (False, True):
+            chunks = []
+            for kind, data in png_chunks(synthetic_png()):
+                if kind == b"IDAT":
+                    data = zlib.compress(zlib.decompress(data) + marker) if inside_stream else data + marker
+                chunks.append((kind, data))
+            raw = make_png(chunks)
+            report = await engine.generate(engine.GenerationInput(**payload()), httpx.MockTransport(
+                lambda _: httpx.Response(200, json={"data": [{"b64_json": base64.b64encode(raw).decode()}]})))
+            self.assertEqual(report["status"], "success")
+            clean = base64.b64decode(report["image"]["b64_json"])
+            self.assertNotIn(marker, clean)
+            compressed = b"".join(data for kind, data in png_chunks(clean) if kind == b"IDAT")
+            self.assertNotIn(marker, zlib.decompress(compressed))
+            with Image.open(io.BytesIO(clean)) as image:
+                self.assertEqual(image.getpixel((0, 0)), (21, 93, 80, 255))
+                self.assertEqual(image.size, (16, 24))
+
     async def test_exact_request_and_safe_response(self):
         calls = []
         body = engine.GenerationInput(**payload())

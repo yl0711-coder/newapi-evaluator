@@ -1,11 +1,14 @@
 import json
 import os
 from pathlib import Path
+import signal
+import subprocess
 import sys
 import tempfile
+import time
 import unittest
 
-from scripts.verify_image_quality import ROOT, classify, run_process
+from scripts.verify_image_quality import ROOT, aggregate_status, classify, run_process
 
 
 def framework_output(counts=(2, 3, 4), statuses=("OK", "OK", "OK")):
@@ -49,11 +52,18 @@ class VerificationTests(unittest.TestCase):
         self.assertEqual(result["failure_count"], 1)
 
     def test_container_framework_failure_cannot_hide_behind_mode_names(self):
-        output = json.dumps({"status": "failed", "checks": [{"mode": "all", "status": "passed"},
+        output = json.dumps({"status": "failed", "failure_count": 3, "checks": [{"mode": "all", "status": "passed"},
                                                                {"mode": "image-quality", "status": "failed"}]})
-        self.assertEqual(classify(0, output, "container")["status"], "failed")
+        result = classify(0, output, "container")
+        self.assertEqual(result["status"], "failed")
+        self.assertEqual(result["failure_count"], 3)
         missing = json.dumps({"status": "incomplete", "checks": [], "failure_count": 0})
         self.assertEqual(classify(1, "FAILED (failures=1)\n" + missing, "container")["status"], "failed")
+
+    def test_source_change_cannot_override_known_failure(self):
+        self.assertEqual(aggregate_status([{"status": "failed"}], source_changed=True), "failed")
+        self.assertEqual(aggregate_status([{"status": "passed"}], source_changed=True), "incomplete")
+        self.assertEqual(aggregate_status([{"status": "passed"}, {"status": "not_run"}]), "incomplete")
 
     def test_bounded_subprocess_keeps_error_exit_and_output(self):
         code, output, timed_out = run_process([sys.executable, "-c", "import sys; print('synthetic failure',file=sys.stderr); sys.exit(3)"], os.environ, 3)
@@ -65,6 +75,66 @@ class VerificationTests(unittest.TestCase):
         code, _output, timed_out = run_process([sys.executable, "-c", "import time; time.sleep(10)"], os.environ, 0.1)
         self.assertTrue(timed_out)
         self.assertNotEqual(code, 0)
+
+    def check_cancellation(self, number, full_entrypoint=False):
+        with tempfile.TemporaryDirectory(prefix="image-cancel-") as folder:
+            root = Path(folder)
+            ledger = root / "child.json"
+            child = '''import json, os, time
+from pathlib import Path
+path = Path(os.environ["SYNTHETIC_CHILD_LEDGER"])
+pending = path.with_suffix(".tmp")
+pending.write_text(json.dumps({"pid": os.getpid(), "pgid": os.getpgrp()}))
+pending.replace(path)
+time.sleep(30)
+'''
+            env = {**os.environ, "PYTHONPATH": str(ROOT), "SYNTHETIC_CHILD_LEDGER": str(ledger)}
+            if full_entrypoint:
+                node = root / "node"
+                node.write_text("#!" + sys.executable + "\n" + child)
+                node.chmod(0o755)
+                env["PATH"] = str(root) + os.pathsep + env.get("PATH", "")
+                command = [sys.executable, str(ROOT / "scripts/verify_image_quality.py"), "--output", str(root / "verification")]
+            else:
+                wrapper = "import os, sys\nfrom scripts.verify_image_quality import run_process\nrun_process([sys.executable, '-c', " + repr(child) + "], os.environ, 30)"
+                command = [sys.executable, "-c", wrapper]
+            process = subprocess.Popen(command, env=env, cwd=ROOT, stdout=subprocess.PIPE,
+                                       stderr=subprocess.STDOUT, start_new_session=True)
+            owned = None
+            try:
+                deadline = time.monotonic() + 5
+                while not ledger.exists():
+                    if process.poll() is not None or time.monotonic() >= deadline:
+                        self.fail("synthetic child did not become ready")
+                    time.sleep(0.02)
+                owned = json.loads(ledger.read_text())
+                process.send_signal(number)
+                process.communicate(timeout=8)
+                self.assertNotEqual(process.returncode, 0)
+                with self.assertRaises(ProcessLookupError):
+                    os.kill(owned["pid"], 0)
+                if full_entrypoint:
+                    report = json.loads((root / "verification/checks.json").read_text())
+                    self.assertTrue(report["cancelled"])
+                    self.assertEqual(report["status"], "incomplete")
+                    self.assertEqual(len(report["checks"]), 8)
+                    self.assertEqual(report["checks"][0]["reason"], "cancelled")
+                    self.assertTrue(all(row["status"] == "not_run" for row in report["checks"][1:]))
+            finally:
+                for pgid in ([owned["pgid"]] if owned else []) + [process.pid]:
+                    try:
+                        os.killpg(pgid, signal.SIGKILL)
+                    except ProcessLookupError:
+                        pass
+                process.communicate(timeout=5)
+
+    def test_user_interrupt_cleans_detached_child_process(self):
+        for number in (signal.SIGINT, signal.SIGTERM):
+            with self.subTest(signal=number):
+                self.check_cancellation(number)
+
+    def test_cancelled_entrypoint_records_remaining_groups_as_not_run(self):
+        self.check_cancellation(signal.SIGTERM, full_entrypoint=True)
 
     def run_container_mock(self, scenario):
         # The actual container script runs; only the external Docker daemon is replaced.

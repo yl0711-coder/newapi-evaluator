@@ -15,7 +15,7 @@ from datetime import datetime, timezone
 from urllib.parse import urlsplit, urlunsplit
 
 import httpx
-from PIL import Image, UnidentifiedImageError
+from PIL import Image, PngImagePlugin, UnidentifiedImageError
 from pydantic import BaseModel, ConfigDict, Field, SecretStr, field_validator
 from typing import Literal
 
@@ -132,12 +132,14 @@ class InvalidImage(ValueError):
     pass
 
 
-def strip_png_metadata(raw: bytes) -> bytes:
-    """Copy pixel data and bounded, structured colour chunks without re-encoding."""
+def prepare_png(raw: bytes):
+    """Remove free-form metadata before decoding; the final image is re-encoded."""
     if not raw.startswith(b"\x89PNG\r\n\x1a\n"):
         raise InvalidImage("unexpected_image_format")
-    kept = {b"IHDR", b"PLTE", b"IDAT", b"IEND", b"tRNS", b"gAMA", b"cHRM", b"sRGB", b"sBIT", b"bKGD"}
-    unsupported = {b"iCCP", b"cICP", b"mDCV", b"cLLI", b"acTL", b"fcTL", b"fdAT"}
+    kept = {b"IHDR", b"PLTE", b"IDAT", b"IEND", b"tRNS", b"gAMA", b"cHRM", b"sRGB"}
+    unsupported = {b"iCCP", b"cICP", b"mDCV", b"cLLI", b"acTL", b"fcTL", b"fdAT", b"sBIT", b"bKGD"}
+    colour_lengths = {b"gAMA": 4, b"cHRM": 32, b"sRGB": 1}
+    colours = {}
     result = bytearray(raw[:8])
     offset = 8
     while offset + 12 <= len(raw):
@@ -152,15 +154,31 @@ def strip_png_metadata(raw: bytes) -> bytes:
             raise InvalidImage("invalid_image")
         if kind in unsupported or (kind not in kept and not kind[0] & 32):
             raise InvalidImage("unsupported_png_features")
+        if kind == b"IHDR" and (length != 13 or (data[8] == 16 and data[9] != 0)):
+            # Pillow preserves 16-bit greyscale, but decodes 16-bit RGB(A) to 8 bits.
+            raise InvalidImage("unsupported_png_features")
+        if kind in colour_lengths:
+            if length != colour_lengths[kind] or kind in colours:
+                raise InvalidImage("invalid_image")
+            if kind == b"sRGB" and data[0] > 3:
+                raise InvalidImage("invalid_image")
+            if kind == b"gAMA" and not 0 < struct.unpack(">I", data)[0] <= 1_000_000:
+                raise InvalidImage("unsupported_png_features")
+            if kind == b"cHRM" and any(value > 100_000 for value in struct.unpack(">8I", data)):
+                raise InvalidImage("unsupported_png_features")
+            colours[kind] = data
         if kind in kept:
             # These chunks encode numeric rendering parameters, never free-form text.
             limits = {b"IHDR": 13, b"PLTE": 768, b"tRNS": 256, b"gAMA": 4,
-                      b"cHRM": 32, b"sRGB": 1, b"sBIT": 4, b"bKGD": 6, b"IEND": 0}
+                      b"cHRM": 32, b"sRGB": 1, b"IEND": 0}
             if kind in limits and length > limits[kind]:
                 raise InvalidImage("invalid_image")
             result.extend(raw[offset:end])
         if kind == b"IEND":
-            return bytes(result)
+            info = PngImagePlugin.PngInfo()
+            for name, data in colours.items():
+                info.add(name, data)
+            return bytes(result), info
         offset = end
     raise InvalidImage("invalid_image")
 
@@ -170,19 +188,29 @@ def normalize_png(encoded):
         raise InvalidImage("missing_image")
     try:
         raw = base64.b64decode(encoded, validate=True)
-        clean = strip_png_metadata(raw)
+        prepared, colour_info = prepare_png(raw)
         with warnings.catch_warnings():
             warnings.simplefilter("error", Image.DecompressionBombWarning)
-            with Image.open(io.BytesIO(clean)) as original:
+            with Image.open(io.BytesIO(prepared)) as original:
                 if original.format != "PNG":
                     raise InvalidImage("unexpected_image_format")
                 width, height = original.size
                 if width <= 0 or height <= 0 or width * height > MAX_PIXELS or max(width, height) > 3840:
                     raise InvalidImage("image_size_limit")
                 original.verify()
-            with Image.open(io.BytesIO(clean)) as original:
+            with Image.open(io.BytesIO(prepared)) as original:
                 original.load()
-        return clean, width, height, hashlib.sha256(raw).hexdigest()
+                if original.mode not in {"1", "L", "LA", "RGB", "RGBA", "P", "I;16"}:
+                    raise InvalidImage("unsupported_png_features")
+                # Rebuild pixels so IDAT tails and unused palette entries cannot carry text.
+                pixels = original if original.mode == "I;16" else original.convert("RGBA")
+                clean = Image.frombytes(pixels.mode, pixels.size, pixels.tobytes())
+                options = {}
+                if original.mode == "I;16" and "transparency" in original.info:
+                    options["transparency"] = original.info["transparency"]
+                output = io.BytesIO()
+                clean.save(output, format="PNG", pnginfo=colour_info, **options)
+        return output.getvalue(), width, height, hashlib.sha256(raw).hexdigest()
     except InvalidImage:
         raise
     except (ValueError, OSError, SyntaxError, UnidentifiedImageError,

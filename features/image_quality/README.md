@@ -21,7 +21,7 @@ POST /image-quality/api/generate 的 JSON 输入：
 | timeout_seconds | 1–600 秒，默认 600 |
 | confirm_live | 必须为 true；每次请求独立确认 |
 
-向上游只发送 model、prompt、size、quality、output_format=png、n=1。Authorization 仅用于用户指定端点，不跟随重定向，不读环境代理、不自动重试。响应体最多 48 MiB；PNG 验证后无损保留压缩像素、位深、调色板、透明度以及结构化色彩参数，移除文本、EXIF 等附加元数据。支持静态 PNG（含 16 位灰度）；含 ICC 配置、HDR 参数或动画控制块的 PNG 返回 unsupported_png_features，避免静默改变画面。仅返回 URL 的响应标记 image_url_only，不自动下载未知地址。
+向上游只发送 model、prompt、size、quality、output_format=png、n=1。Authorization 仅用于用户指定端点，不跟随重定向，不读环境代理、不自动重试。响应体最多 48 MiB；PNG 解码后按支持的像素模式重新编码，保留像素值、透明度以及安全的 gAMA/cHRM/sRGB 数值色彩参数，移除文本、EXIF、压缩数据尾随载荷和未使用的调色板内容。支持静态 1/2/4/8 位 PNG 和 16 位灰度；调色板按显示像素转为 RGBA。16 位彩色、ICC/HDR、动画、sBIT/bKGD 以及超出支持范围的色彩参数返回 unsupported_png_features，避免静默降低位深或改变画面。仅返回 URL 的响应标记 image_url_only，不自动下载未知地址。
 
 结果 HTTP 200 表示工作台已完成本次处理，不表示上游生图成功；以 status=success/failed、http_status 和 error_code 判断。输入无效为 422，未确认请求为 400；断开连接取消本地任务。上游错误正文不返回；error_code 为固定分类。total_seconds 为服务端总耗时，从开始请求上游至完成图片验证，不含浏览器与工作台之间的传输和页面渲染；upstream_seconds 为收到完整上游响应的耗时，两者单位均为秒。
 

@@ -1,6 +1,7 @@
 """Run registered workbench checks with bounded processes and explicit result states."""
 import argparse
 import ast
+from contextlib import contextmanager
 import hashlib
 from html.parser import HTMLParser
 import json
@@ -54,6 +55,10 @@ def classify(returncode, output, kind):
             elif kind == "container":
                 count = len(data["checks"])
                 failures = max(failures, int(data["status"] == "failed"))
+                child_failures = data["failure_count"]
+                if type(child_failures) is not int or child_failures < 0:
+                    raise ValueError("invalid failure count")
+                failures = max(failures, child_failures, int(data["status"] == "failed"))
                 complete = (complete and data["status"] == "passed"
                             and {row["mode"] for row in data["checks"]} == {"all", "image-quality"}
                             and all(row["status"] == "passed" for row in data["checks"]))
@@ -128,23 +133,73 @@ def syntax_check():
     print(json.dumps({"status": "passed", "syntax_units": checked}))
 
 
+class VerificationCancelled(KeyboardInterrupt):
+    def __init__(self, returncode=None, output=""):
+        self.returncode = returncode
+        self.output = output
+
+
+def request_cancel(_signum, _frame):
+    raise VerificationCancelled()
+
+
+@contextmanager
+def cancellation_signals(handler=request_cancel):
+    previous = {number: signal.signal(number, handler) for number in (signal.SIGINT, signal.SIGTERM)}
+    try:
+        yield
+    finally:
+        for number, previous_handler in previous.items():
+            signal.signal(number, previous_handler)
+
+
+def stop_owned_process(process):
+    with cancellation_signals(signal.SIG_IGN):
+        for number in (signal.SIGTERM, signal.SIGKILL):
+            try:
+                os.killpg(process.pid, number)
+            except ProcessLookupError:
+                pass
+            try:
+                output = process.communicate(timeout=5)[0]
+                # A descendant can close inherited pipes and outlive its group leader.
+                try:
+                    os.killpg(process.pid, signal.SIGKILL)
+                except ProcessLookupError:
+                    pass
+                return output
+            except subprocess.TimeoutExpired:
+                if number == signal.SIGKILL:
+                    raise
+
+
 def run_process(command, env, timeout):
-    try:
-        process = subprocess.Popen(command, cwd=ROOT, env=env, stdout=subprocess.PIPE,
-                                   stderr=subprocess.STDOUT, text=True, start_new_session=True)
-    except OSError:
-        return 127, "Required executable unavailable\n", False
-    try:
-        output, _ = process.communicate(timeout=timeout)
-        return process.returncode, output, False
-    except subprocess.TimeoutExpired:
-        os.killpg(process.pid, signal.SIGTERM)
+    with cancellation_signals():
         try:
-            output, _ = process.communicate(timeout=5)
+            process = subprocess.Popen(command, cwd=ROOT, env=env, stdout=subprocess.PIPE,
+                                       stderr=subprocess.STDOUT, text=True, start_new_session=True)
+        except OSError:
+            return 127, "Required executable unavailable\n", False
+        try:
+            output, _ = process.communicate(timeout=timeout)
+            return process.returncode, output, False
         except subprocess.TimeoutExpired:
-            os.killpg(process.pid, signal.SIGKILL)
-            output, _ = process.communicate(timeout=5)
-        return process.returncode, output, True
+            output = stop_owned_process(process)
+            return process.returncode, output, True
+        except KeyboardInterrupt:
+            output = stop_owned_process(process)
+            raise VerificationCancelled(process.returncode, output) from None
+        except BaseException:
+            stop_owned_process(process)
+            raise
+
+
+def aggregate_status(results, source_changed=False):
+    if any(row["status"] == "failed" for row in results):
+        return "failed"
+    if source_changed or not results or any(row["status"] != "passed" for row in results):
+        return "incomplete"
+    return "passed"
 
 
 def source_fingerprint():
@@ -197,38 +252,52 @@ def main():
     began = time.monotonic()
     revision = subprocess.check_output(["git", "rev-parse", "HEAD"], cwd=ROOT, text=True).strip()
     source_hash = source_fingerprint()
-    for name, command, timeout, kind in commands:
-        remaining = 1800 - (time.monotonic() - began)
-        if remaining <= 0:
-            results.append({"suite_id": name, "status": "not_run", "reason": "overall_budget"})
-            continue
-        started = time.monotonic()
-        print("Running " + name, flush=True)
-        code, text, timed_out = run_process(command, env, min(timeout, remaining))
+    active = None
+    cancelled = False
+
+    def record(name, command, kind, started, code, text, reason=None):
         (output / (name + ".log")).write_text(text)
         result = {"suite_id": name, "command": command, "exit_code": code,
-                  "seconds": round(time.monotonic() - started, 3),
-                  **classify(code, text, kind)}
-        if timed_out:
+                  "seconds": round(time.monotonic() - started, 3), **classify(code, text, kind)}
+        if reason:
+            result["reason"] = reason
             if result["status"] != "failed":
                 result["status"] = "incomplete"
-            result["reason"] = "timeout"
         results.append(result)
         (output / "checks.json").write_text(json.dumps({"revision": revision, "complete": False, "checks": results}, indent=2))
         print(name + ": " + result["status"], flush=True)
-    state = ("failed" if any(row["status"] == "failed" for row in results) else
-             "passed" if all(row["status"] == "passed" for row in results) else "incomplete")
-    if source_hash != source_fingerprint():
-        state = "incomplete"
+
+    with cancellation_signals():
+        try:
+            for name, command, timeout, kind in commands:
+                remaining = 1800 - (time.monotonic() - began)
+                if remaining <= 0:
+                    break
+                active = (name, command, kind, time.monotonic())
+                print("Running " + name, flush=True)
+                code, text, timed_out = run_process(command, env, min(timeout, remaining))
+                record(*active, code, text, "timeout" if timed_out else None)
+                active = None
+        except KeyboardInterrupt as exc:
+            cancelled = True
+            if active and not any(row["suite_id"] == active[0] for row in results):
+                record(*active, getattr(exc, "returncode", None), getattr(exc, "output", ""), "cancelled")
+    for name, command, _timeout, _kind in commands:
+        if not any(row["suite_id"] == name for row in results):
+            results.append({"suite_id": name, "command": command, "exit_code": None,
+                            "status": "not_run", "case_count": 0, "failure_count": 0, "skipped": 0,
+                            "reason": "cancelled" if cancelled else "overall_budget"})
+    source_changed = source_hash != source_fingerprint()
+    state = aggregate_status(results, source_changed)
     versions = subprocess.check_output([sys.executable, "-m", "pip", "freeze"], text=True)
     (output / "dependencies.txt").write_text(versions)
     (output / "checks.json").write_text(json.dumps({
         "revision": revision, "source_sha256": source_hash, "complete": True, "status": state, "checks": results,
-        "real_upstream_tested": False,
+        "real_upstream_tested": False, "source_changed": source_changed, "cancelled": cancelled,
         "worktree_status": subprocess.check_output(["git", "status", "--porcelain"], cwd=ROOT, text=True),
     }, indent=2))
     print(json.dumps({"status": state, "evidence": str(output)}))
-    return 0 if state == "passed" else 1
+    return 130 if cancelled else 0 if state == "passed" else 1
 
 
 if __name__ == "__main__":

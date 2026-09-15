@@ -17,7 +17,7 @@
     image_url_only: '仅返回了图片 URL；本次要求 Base64 图片，未自动访问该 URL。',
     invalid_image: '图片数据无效或不完整。',
     unexpected_image_format: '返回图片不是请求的 PNG 格式。',
-    unsupported_png_features: '图片包含暂不支持的 ICC 色彩配置、HDR 参数或动画，无法保真处理。',
+    unsupported_png_features: '图片的位深、色彩参数或动画格式暂不支持，无法保真处理。',
     image_size_limit: '返回图片超过允许的尺寸范围。',
     response_too_large: '响应超过 48 MiB 上限，已停止接收。',
   };
