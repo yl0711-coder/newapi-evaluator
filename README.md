@@ -114,3 +114,7 @@ make prod-ps
 准入测量引擎来自 `国产模型速度快测/main.py`；定时引擎来自 `定时稳定性测试/app`；第三项来自 `newapi-evaluator` 的 `feature/single-channel-reasoning-integrity` 分支提交 `be5cc982bd435d3aa00a2496311cd2b3695483bd` 下的 `tools/thinking-integrity-test`。
 
 `features/` 中保留引擎代码与离线自测，通过 `run.py --app ...` 独立使用；实际工作台只暴露引用公共渠道的适配接口，准入候选端保留临时输入接口。没有合入大仓库中的其他业务模块。
+
+## 请求特征诊断子项目
+
+根据历史 Token、耗时、状态码和流式标记，在本地 Mock 或经确认的公共渠道做合成请求对照。支持独立启动与工作台入口。详见 [使用说明](docs/请求特征诊断.md) 和 [测试清单](docs/请求特征诊断测试清单.md)。

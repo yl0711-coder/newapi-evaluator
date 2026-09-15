@@ -20,6 +20,7 @@ FEATURES = {
     "stability": ("定时稳定性测试", "features.stability.app.main"),
     "reasoning": ("非流式回答测试", "features.reasoning.api"),
     "capacity": ("中转站极限测试", "features.capacity.api"),
+    "diagnosis": ("请求特征诊断", "features.diagnosis.api"),
 }
 
 

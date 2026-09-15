@@ -1,0 +1,79 @@
+{
+  "checked_at_utc": "2026-09-14T08:32:32.747109+00:00",
+  "scope": "Source and README inspection of existing report display, persistence and exports; no runtime or security certification",
+  "repository": "/Users/lmurder/Desktop/api中转站/模型测试工作台",
+  "head": "f1c01de999e46d7800fd95a221b9f51b6c99b97d",
+  "branch": "codex/unify-workbench-style",
+  "worktree_dirty": true,
+  "files": [
+    {
+      "path": "README.md",
+      "sha256": "2238a0290f426ca3603d062b67f23f7e1339ce8c356ee0e4b54bdce0c4d85101",
+      "has_worktree_changes": false
+    },
+    {
+      "path": "features/admission/api.py",
+      "sha256": "41a6f6ef40c617080bc5badde1cb18098ed5ca44e7f0a06cb31dac5c0bc8b584",
+      "has_worktree_changes": false
+    },
+    {
+      "path": "features/admission/reporting.py",
+      "sha256": "7bc0ef41588042345de494d2ea8978cd0ee36bed7855b4fc2eb46274ad545c46",
+      "has_worktree_changes": false
+    },
+    {
+      "path": "features/admission/storage.py",
+      "sha256": "3dc6040f0a80f91aa530d0324a6b9ae721a4033633dd59f7a177309915660349",
+      "has_worktree_changes": false
+    },
+    {
+      "path": "features/admission/web/app.js",
+      "sha256": "d768244cb55cbf53a9a440b7f53845e52dac1953f941729e5b915a07ce277f11",
+      "has_worktree_changes": false
+    },
+    {
+      "path": "features/reasoning/main.py",
+      "sha256": "998e4c71b815f1fb2a82aa86deabb55a447ba34d64b98a4f9c278b0f76ea11fa",
+      "has_worktree_changes": false
+    },
+    {
+      "path": "features/reasoning/web/index.html",
+      "sha256": "50f27e903216759edda9659363434d4b049f179a9fb7fb48056c4a2198f60c65",
+      "has_worktree_changes": true
+    },
+    {
+      "path": "features/stability/app/config.py",
+      "sha256": "6783e50ecfba404344a6fa98c475343ce88b6074a390d293bd4dc242b91ff42b",
+      "has_worktree_changes": false
+    },
+    {
+      "path": "features/stability/app/storage.py",
+      "sha256": "7ac154a73b63326e4f2f91f3b9f88e7b0ec2489b9029f8b9822d1c3938455e92",
+      "has_worktree_changes": false
+    },
+    {
+      "path": "features/stability/app/scheduler.py",
+      "sha256": "f78651c7e40af049e719a39acf31366de2fc943cd0c7b093e2da1db7d9a348af",
+      "has_worktree_changes": false
+    },
+    {
+      "path": "features/stability/web/app.js",
+      "sha256": "737eacf3468ef3f62cf52cdc1241a3ae76c57c28024fe418c83849da70ad28a7",
+      "has_worktree_changes": false
+    },
+    {
+      "path": "relay_lab/report.py",
+      "sha256": "535287445c922ccc77108698022640554ae1ab88e085daec3e425540512ed8d9",
+      "has_worktree_changes": false
+    },
+    {
+      "path": "relay_lab/model.py",
+      "sha256": "2a44462e029b64aeeb87034c3e71bcf2f5285e0f24d373d4c3cb89f78753f721",
+      "has_worktree_changes": false
+    }
+  ],
+  "product_code_modified_by_this_task": false,
+  "runtime_tests_run": false,
+  "business_data_read": false,
+  "real_api_requests_sent": false
+}
