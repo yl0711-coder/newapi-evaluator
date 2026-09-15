@@ -1,0 +1,7 @@
+{
+  "base_url": "https://synthetic.example/v1",
+  "model": "gpt-image-2",
+  "size": "1024x1536",
+  "quality": "high",
+  "timeout_seconds": 60
+}

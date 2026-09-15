@@ -554,7 +554,7 @@ class IntegrationTests(unittest.IsolatedAsyncioTestCase):
             self.assertEqual(response.status_code,403)
 
     async def test_each_mode_has_only_its_feature_and_same_registry(self):
-        for mode in ("channels","admission","reasoning","stability","capacity"):
+        for mode in ("channels","admission","reasoning","stability","capacity","diagnosis","image-quality"):
             app = create_app(mode)
             async with app.router.lifespan_context(app):
                 async with httpx.AsyncClient(transport=httpx.ASGITransport(app=app),base_url="http://testserver") as client:
@@ -570,6 +570,12 @@ class IntegrationTests(unittest.IsolatedAsyncioTestCase):
         async with self.app.router.lifespan_context(self.app):
             response = await self.client.get("/api/health")
             self.assertEqual(response.json()["status"],"ok")
+            self.assertEqual(response.json()["features"],
+                             ["admission", "stability", "reasoning", "capacity", "diagnosis", "image-quality"])
+            platform = (await self.client.get("/api/platform")).json()
+            self.assertEqual([item["id"] for item in platform["features"]], response.json()["features"])
+            for feature in platform["features"]:
+                self.assertEqual((await self.client.get(feature["url"])).status_code, 200)
             self.assertTrue(scheduler.status()["running"])
         self.assertFalse(scheduler.status()["running"])
 

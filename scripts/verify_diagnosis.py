@@ -100,7 +100,7 @@ def main():
     if args.sha and (args.sha!=sha or len(sha)!=40 or subprocess.check_output(['git','status','--porcelain'],cwd=ROOT).strip() or subprocess.check_output(['git','branch','--show-current'],cwd=ROOT).strip()):parser.error('acceptance requires exact clean detached SHA')
     before=snapshot();(output/'tmp').mkdir();(output/'platform').mkdir()
     # Use only process infrastructure plus explicitly selected test tooling; never inherit business configuration.
-    allowed=('PATH','HOME','LANG','LC_ALL','SYSTEMROOT','SSL_CERT_FILE','SSL_CERT_DIR','PLAYWRIGHT_MODULE','PLAYWRIGHT_CHANNEL','PLAYWRIGHT_BROWSERS_PATH','DOCKER_HOST','DOCKER_CONTEXT')
+    allowed=('PATH','HOME','LANG','LC_ALL','SYSTEMROOT','SSL_CERT_FILE','SSL_CERT_DIR','PLAYWRIGHT_MODULE','PLAYWRIGHT_CHANNEL','PLAYWRIGHT_BROWSERS_PATH','UI_TEST_PORT','DOCKER_HOST','DOCKER_CONTEXT')
     env={k:v for k,v in os.environ.items() if k in allowed}
     env.update(PYTHONDONTWRITEBYTECODE='1',PYTHONPATH=str(ROOT),TMPDIR=str(output/'tmp'),PLATFORM_DATA_DIR=str(output/'platform'),RELAY_LAB_DATA_DIR=str(output),PYTHON_EXECUTABLE=sys.executable)
     py=sys.executable
