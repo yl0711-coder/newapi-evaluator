@@ -6,9 +6,11 @@ import hashlib
 import io
 import json
 import re
+import struct
 import time
 import uuid
 import warnings
+import zlib
 from datetime import datetime, timezone
 from urllib.parse import urlsplit, urlunsplit
 
@@ -130,28 +132,57 @@ class InvalidImage(ValueError):
     pass
 
 
+def strip_png_metadata(raw: bytes) -> bytes:
+    """Copy pixel data and bounded, structured colour chunks without re-encoding."""
+    if not raw.startswith(b"\x89PNG\r\n\x1a\n"):
+        raise InvalidImage("unexpected_image_format")
+    kept = {b"IHDR", b"PLTE", b"IDAT", b"IEND", b"tRNS", b"gAMA", b"cHRM", b"sRGB", b"sBIT", b"bKGD"}
+    unsupported = {b"iCCP", b"cICP", b"mDCV", b"cLLI", b"acTL", b"fcTL", b"fdAT"}
+    result = bytearray(raw[:8])
+    offset = 8
+    while offset + 12 <= len(raw):
+        length = struct.unpack_from(">I", raw, offset)[0]
+        end = offset + 12 + length
+        if end > len(raw):
+            raise InvalidImage("invalid_image")
+        kind = raw[offset + 4:offset + 8]
+        data = raw[offset + 8:end - 4]
+        checksum = struct.unpack_from(">I", raw, end - 4)[0]
+        if zlib.crc32(kind + data) != checksum:
+            raise InvalidImage("invalid_image")
+        if kind in unsupported or (kind not in kept and not kind[0] & 32):
+            raise InvalidImage("unsupported_png_features")
+        if kind in kept:
+            # These chunks encode numeric rendering parameters, never free-form text.
+            limits = {b"IHDR": 13, b"PLTE": 768, b"tRNS": 256, b"gAMA": 4,
+                      b"cHRM": 32, b"sRGB": 1, b"sBIT": 4, b"bKGD": 6, b"IEND": 0}
+            if kind in limits and length > limits[kind]:
+                raise InvalidImage("invalid_image")
+            result.extend(raw[offset:end])
+        if kind == b"IEND":
+            return bytes(result)
+        offset = end
+    raise InvalidImage("invalid_image")
+
+
 def normalize_png(encoded):
     if not isinstance(encoded, str) or len(encoded) > MAX_RESPONSE_BYTES:
         raise InvalidImage("missing_image")
     try:
         raw = base64.b64decode(encoded, validate=True)
+        clean = strip_png_metadata(raw)
         with warnings.catch_warnings():
             warnings.simplefilter("error", Image.DecompressionBombWarning)
-            with Image.open(io.BytesIO(raw)) as original:
+            with Image.open(io.BytesIO(clean)) as original:
                 if original.format != "PNG":
                     raise InvalidImage("unexpected_image_format")
                 width, height = original.size
                 if width <= 0 or height <= 0 or width * height > MAX_PIXELS or max(width, height) > 3840:
                     raise InvalidImage("image_size_limit")
                 original.verify()
-            with Image.open(io.BytesIO(raw)) as original:
+            with Image.open(io.BytesIO(clean)) as original:
                 original.load()
-                # Re-encode pixels only: relay-controlled text/metadata must not enter downloads.
-                pixels = original.convert("RGBA")
-                clean = Image.frombytes("RGBA", pixels.size, pixels.tobytes())
-                output = io.BytesIO()
-                clean.save(output, format="PNG")
-        return output.getvalue(), width, height, hashlib.sha256(raw).hexdigest()
+        return clean, width, height, hashlib.sha256(raw).hexdigest()
     except InvalidImage:
         raise
     except (ValueError, OSError, SyntaxError, UnidentifiedImageError,

@@ -4,9 +4,11 @@ import base64
 import io
 import json
 import os
+import struct
 from pathlib import Path
 import tempfile
 import unittest
+import zlib
 from unittest.mock import patch
 
 import httpx
@@ -74,8 +76,48 @@ class SettingsTests(unittest.TestCase):
         self.assertEqual((width, height), (16, 24))
         self.assertNotIn(b"synthetic-ephemeral-key", clean)
         with Image.open(io.BytesIO(clean)) as image:
-            self.assertEqual(image.getpixel((0, 0)), (21, 93, 80, 255))
+            self.assertEqual(image.getpixel((0, 0)), (21, 93, 80))
         self.assertEqual(len(upstream_hash), 64)
+
+    def test_png_preserves_16_bit_greyscale_without_clamping(self):
+        levels = [0, 257, 16384, 32768, 65535]
+        original = Image.frombytes("I;16", (5, 1), struct.pack("<5H", *levels))
+        output = io.BytesIO()
+        original.save(output, "PNG")
+        raw = output.getvalue()
+        clean, *_ = engine.normalize_png(base64.b64encode(raw).decode())
+        self.assertEqual(clean, raw)
+        with Image.open(io.BytesIO(clean)) as image:
+            self.assertEqual([image.getpixel((x, 0)) for x in range(5)], levels)
+
+    def test_png_preserves_palette_transparency_and_rendering_chunks(self):
+        original = Image.new("P", (2, 1))
+        original.putpalette([255, 0, 0, 0, 255, 0] + [0] * 762)
+        original.putdata([0, 1])
+        info = PngImagePlugin.PngInfo()
+        info.add(b"gAMA", struct.pack(">I", 45455))
+        info.add(b"sRGB", b"\0")
+        info.add_text("Comment", "synthetic-private-metadata")
+        output = io.BytesIO()
+        original.save(output, "PNG", transparency=bytes([0, 128]), pnginfo=info)
+        raw = output.getvalue()
+        clean, *_ = engine.normalize_png(base64.b64encode(raw).decode())
+        self.assertNotIn(b"synthetic-private-metadata", clean)
+        with Image.open(io.BytesIO(clean)) as image:
+            self.assertEqual(image.info["gamma"], 0.45455)
+            self.assertEqual(image.info["srgb"], 0)
+            rgba = image.convert("RGBA")
+            self.assertEqual([rgba.getpixel((x, 0)) for x in range(2)], [(255, 0, 0, 0), (0, 255, 0, 128)])
+
+    def test_unpreservable_colour_profiles_and_animation_are_explicitly_rejected(self):
+        for chunk in (b"iCCP", b"cICP", b"mDCV", b"cLLI", b"acTL"):
+            raw = synthetic_png()
+            data = b"synthetic-private-metadata"
+            # Insert an actual wire-format chunk; Pillow's writer omits some chunk names.
+            inserted = struct.pack(">I", len(data)) + chunk + data + struct.pack(">I", zlib.crc32(chunk + data))
+            raw = raw[:33] + inserted + raw[33:]
+            with self.assertRaisesRegex(engine.InvalidImage, "unsupported_png_features"):
+                engine.normalize_png(base64.b64encode(raw).decode())
 
     def test_invalid_image_and_format_rejected(self):
         jpeg = io.BytesIO()

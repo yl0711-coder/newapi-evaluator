@@ -16,44 +16,71 @@ ROOT = Path(__file__).resolve().parents[1]
 
 
 def classify(returncode, output, kind):
-    counts = [int(value) for value in re.findall(r"Ran (\d+) tests?", output)]
+    summaries = re.findall(r"(?m)^Ran (\d+) tests?[^\n]*\n\s*\n?(OK[^\n]*|FAILED[^\n]*)", output)
+    counts = [int(value) for value in re.findall(r"(?m)^Ran (\d+) tests?", output)]
     manual_checks = len(re.findall(r"(?m)^  OK\s", output)) if kind == "unittest" else 0
     count = sum(counts) + manual_checks if kind == "unittest" else 0
     skipped = sum(int(value) for value in re.findall(r"skipped=(\d+)", output))
-    passed = returncode == 0 and skipped == 0
+    failures = sum(int(value) for value in re.findall(r"(?:failures|errors|unexpected successes)=(\d+)", output))
+    failures += len(re.findall(r"(?m)^  FAIL\s", output))
+    if re.search(r"(?m)^FAILED\b", output):
+        failures = max(1, failures)
+    dependency_missing = bool(re.search(
+        r"ModuleNotFoundError|ImportError|Required executable unavailable|Cannot find module|"
+        r"Cannot connect to the Docker daemon|Executable doesn't exist", output))
+    exit_failed = returncode not in (None, 0, 127) and returncode > 0 and output.strip() and not dependency_missing
+    child_incomplete = False
+    complete = returncode == 0 and skipped == 0 and not dependency_missing
     if kind == "unittest":
-        passed = passed and len(counts) >= 3 and manual_checks > 0 and "test_image_quality" in output
+        complete = (complete and len(counts) == len(summaries) == 3
+                    and all(value > 0 for value in counts) and manual_checks >= 22
+                    and all(status == "OK" for _, status in summaries)
+                    and "test_image_quality" in output
+                    and "All engine and integration checks passed." in output)
     if kind in {"security", "syntax", "inspect", "container", "browser"}:
         try:
             data = json.loads(output.strip().splitlines()[-1])
             if kind == "security":
                 count = data["files_checked"]
-                passed = passed and data["passed"] is True
+                failures = max(failures, len(data.get("findings", [])), int(data["passed"] is False))
+                complete = complete and data["passed"] is True
             elif kind == "syntax":
                 count = data["syntax_units"]
-                passed = passed and data["status"] == "passed"
+                failures = max(failures, int(data["status"] == "failed"))
+                complete = complete and data["status"] == "passed"
             elif kind == "inspect":
                 count = 1
-                passed = passed and data["status"] == "valid" and data["network_requested"] is False and data["model"] == "gpt-image-2"
+                complete = complete and data["status"] == "valid" and data["network_requested"] is False and data["model"] == "gpt-image-2"
             elif kind == "container":
                 count = len(data["checks"])
-                passed = passed and data["status"] == "passed" and {row["mode"] for row in data["checks"]} == {"all", "image-quality"}
+                failures = max(failures, int(data["status"] == "failed"))
+                complete = (complete and data["status"] == "passed"
+                            and {row["mode"] for row in data["checks"]} == {"all", "image-quality"}
+                            and all(row["status"] == "passed" for row in data["checks"]))
             elif kind == "browser":
                 count = 1
-                passed = passed and data["status"] == "passed" and data["mockRequests"] > 0 and "image-quality" in data["checks"]
-        except (ValueError, KeyError, TypeError):
-            passed = False
-        except IndexError:
-            passed = False
+                failures = max(failures, int(data["status"] == "failed"))
+                complete = complete and data["status"] == "passed" and data["mockRequests"] > 0 and "image-quality" in data["checks"]
+            if data.get("status") == "incomplete":
+                complete = False
+                # The child distinguishes environmental gaps from known check failures.
+                child_incomplete = True
+                failures = max(failures, data.get("failure_count", 0))
+        except (ValueError, KeyError, TypeError, IndexError):
+            complete = False
     elif kind == "web":
         count = 1 if "UI contract tests passed:" in output else 0
     elif kind == "e2e":
         modes = set(re.findall(r"(?m)^(account-test|pool-test|gateway-test|long-task-test|chaos-test) passed: [1-9]\d* results$", output))
         count = len(modes)
-        passed = passed and count == 5 and "All five Mock CLI modes passed" in output
-    passed = passed and type(count) is int and count > 0
-    return {"status": "passed" if passed else "failed", "case_count": count, "skipped": skipped,
-            "framework_cases": sum(counts), "manual_checks": manual_checks}
+        complete = complete and count == 5 and "All five Mock CLI modes passed" in output
+    complete = complete and type(count) is int and count > 0
+    if exit_failed and not child_incomplete:
+        failures = max(1, failures)
+    status = "failed" if failures else "passed" if complete else "incomplete"
+    return {"status": status, "case_count": count, "failure_count": failures, "skipped": skipped,
+            "framework_cases": sum(counts), "manual_checks": manual_checks,
+            "framework_suites": [{"case_count": int(n), "result": result} for n, result in summaries]}
 
 
 class Scripts(HTMLParser):
@@ -183,7 +210,8 @@ def main():
                   "seconds": round(time.monotonic() - started, 3),
                   **classify(code, text, kind)}
         if timed_out:
-            result["status"] = "incomplete"
+            if result["status"] != "failed":
+                result["status"] = "incomplete"
             result["reason"] = "timeout"
         results.append(result)
         (output / "checks.json").write_text(json.dumps({"revision": revision, "complete": False, "checks": results}, indent=2))

@@ -109,6 +109,7 @@ const upstream = http.createServer(async (req, res) => {
   await page.waitForFunction(()=>document.querySelectorAll('.sample-card').length===1);
   await page.locator('.sample-image').evaluate(img=>img.decode());
   assert.equal(await page.locator('.sample-image').evaluate(img=>img.naturalWidth),64);
+  await page.getByText('服务端总耗时', {exact:true}).waitFor();
   assert.equal(await page.locator('#api-key').inputValue(),'');
   assert.equal(await page.locator('#confirm-live').isChecked(),false);
   assert.equal(requests.at(-1).body.model,'gpt-image-2');

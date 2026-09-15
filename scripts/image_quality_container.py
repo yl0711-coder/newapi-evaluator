@@ -2,8 +2,8 @@
 import argparse
 import base64
 import json
-import os
 from pathlib import Path
+import signal
 import subprocess
 import time
 import urllib.request
@@ -12,8 +12,29 @@ import uuid
 ROOT = Path(__file__).resolve().parents[1]
 
 
-def command(args, **options):
-    return subprocess.run(args, check=True, text=True, capture_output=True, timeout=60, **options).stdout.strip()
+def command(args, timeout=60, **options):
+    return subprocess.run(args, check=True, text=True, capture_output=True, timeout=timeout, **options).stdout.strip()
+
+
+class InspectionInterrupted(BaseException):
+    pass
+
+
+class DockerUnavailable(Exception):
+    pass
+
+
+def interrupted(_signum, _frame):
+    raise InspectionInterrupted()
+
+
+def remove_owned(args, identity):
+    try:
+        command(args, timeout=1.5)
+    except subprocess.CalledProcessError as exc:
+        # An interrupted creation may not have reached the Docker daemon.
+        if not any(message + identity in exc.stderr for message in ("No such image: ", "No such container: ")):
+            raise
 
 
 def main():
@@ -26,19 +47,30 @@ def main():
     output.mkdir(parents=True, exist_ok=False)
     tag = "image-quality-check:" + uuid.uuid4().hex
     active = None
-    built = False
     checks = []
     failures = []
+    incomplete = []
+    docker_ready = False
+    resources = {"image": tag, "containers": []}
+    (output / "resources.json").write_text(json.dumps(resources))
+    previous = {number: signal.signal(number, interrupted) for number in (signal.SIGTERM, signal.SIGINT)}
+    opener = urllib.request.build_opener(urllib.request.ProxyHandler({}))
     try:
+        try:
+            command(["docker", "info", "--format", "{{.ServerVersion}}"])
+        except (OSError, subprocess.SubprocessError):
+            raise DockerUnavailable() from None
+        docker_ready = True
         with (output / "build.log").open("w") as log:
             subprocess.run(["docker", "build", "--tag", tag, "."], cwd=ROOT,
                            stdout=log, stderr=subprocess.STDOUT, check=True, timeout=720)
-        built = True
         for mode in ("all", "image-quality"):
             data = output / mode
             data.mkdir(mode=0o777)
             data.chmod(0o777)
             active = "image-quality-" + uuid.uuid4().hex
+            resources["containers"].append(active)
+            (output / "resources.json").write_text(json.dumps(resources))
             command(["docker", "run", "--detach", "--name", active, "--read-only",
                      "--tmpfs", "/tmp:rw,nosuid,noexec,size=64m",
                      "--publish", "127.0.0.1::8090",
@@ -52,7 +84,7 @@ def main():
             def get(path):
                 request = urllib.request.Request("http://127.0.0.1:" + port + path,
                                                   headers={"Authorization": "Basic " + auth})
-                with urllib.request.urlopen(request, timeout=2) as response:
+                with opener.open(request, timeout=2) as response:
                     return response.read()
             deadline = time.monotonic() + 40
             while True:
@@ -74,22 +106,35 @@ def main():
             checks.append({"mode": mode, "status": "passed"})
             command(["docker", "rm", "--force", active])
             active = None
-    except (OSError, subprocess.SubprocessError, AssertionError, RuntimeError, ValueError) as exc:
+    except InspectionInterrupted:
+        incomplete.append("interrupted")
+    except (DockerUnavailable, OSError, subprocess.TimeoutExpired) as exc:
+        incomplete.append(type(exc).__name__)
+    except (subprocess.SubprocessError, AssertionError, RuntimeError, ValueError) as exc:
         failures.append(type(exc).__name__)
     finally:
+        # The outer runner gives this owned process group 5 seconds before SIGKILL.
+        # Bound the two cleanup commands to 3 seconds total and ignore repeat signals.
+        for number in previous:
+            signal.signal(number, signal.SIG_IGN)
         if active:
             try:
-                command(["docker", "rm", "--force", active])
-            except subprocess.SubprocessError:
+                remove_owned(["docker", "rm", "--force", active], active)
+            except (OSError, subprocess.SubprocessError):
                 failures.append("container_cleanup_failed")
-        if built:
+        if docker_ready:
             try:
-                command(["docker", "image", "rm", tag])
-            except subprocess.SubprocessError:
+                # Also attempt removal if build was interrupted after the daemon tagged it.
+                remove_owned(["docker", "image", "rm", tag], tag)
+            except (OSError, subprocess.SubprocessError):
                 failures.append("image_cleanup_failed")
-    status = "passed" if len(checks) == 2 and not failures else "failed"
-    (output / "checks.json").write_text(json.dumps({"status": status, "checks": checks, "failures": failures}, indent=2))
-    print(json.dumps({"status": status, "checks": checks, "failures": failures}))
+    status = "failed" if failures else "passed" if len(checks) == 2 and not incomplete else "incomplete"
+    report = {"status": status, "checks": checks, "failures": failures,
+              "failure_count": len(failures), "incomplete": incomplete, "resources": resources}
+    (output / "checks.json").write_text(json.dumps(report, indent=2))
+    print(json.dumps(report), flush=True)
+    for number, handler in previous.items():
+        signal.signal(number, handler)
     return 0 if status == "passed" else 1
 
 

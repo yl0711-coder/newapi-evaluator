@@ -17,6 +17,7 @@
     image_url_only: '仅返回了图片 URL；本次要求 Base64 图片，未自动访问该 URL。',
     invalid_image: '图片数据无效或不完整。',
     unexpected_image_format: '返回图片不是请求的 PNG 格式。',
+    unsupported_png_features: '图片包含暂不支持的 ICC 色彩配置、HDR 参数或动画，无法保真处理。',
     image_size_limit: '返回图片超过允许的尺寸范围。',
     response_too_large: '响应超过 48 MiB 上限，已停止接收。',
   };
@@ -58,7 +59,7 @@
     const grid = Workbench.node('div', '', 'metric-grid');
     appendMetric(grid, '请求模型', report.settings.model);
     appendMetric(grid, '返回模型（自报）', report.returned_model);
-    appendMetric(grid, '端到端耗时', report.total_seconds == null ? null : report.total_seconds + ' 秒');
+    appendMetric(grid, '服务端总耗时', report.total_seconds == null ? null : report.total_seconds + ' 秒');
     appendMetric(grid, 'HTTP 状态', report.http_status);
     if (image) appendMetric(grid, '实际尺寸', image.width + ' × ' + image.height);
     appendMetric(grid, '质量参数', report.settings.quality);
