@@ -1,0 +1,27 @@
+.image-heading { display:flex; justify-content:space-between; align-items:end; gap:28px; margin-bottom:30px; }
+.image-heading h1 { margin-bottom:0; }
+.image-heading>.muted { max-width:410px; }
+.image-workspace { display:grid; grid-template-columns:350px minmax(0,1fr); gap:32px; align-items:start; }
+.composer { margin:0; padding:22px; }
+.compact { gap:12px; }
+.comparison { min-width:0; padding-top:8px; }
+.comparison .dialog-heading { align-items:start; }
+.sample-grid { display:grid; grid-template-columns:repeat(2,minmax(0,1fr)); gap:18px; }
+.sample-card { min-width:0; border:1px solid var(--line); border-radius:12px; background:var(--surface); overflow:hidden; }
+.sample-image { width:100%; height:330px; display:block; object-fit:contain; background:#e8eae3; }
+.sample-body { padding:18px; overflow-wrap:anywhere; }
+.sample-body h3 { margin-bottom:10px; }
+.sample-body .metric-grid { grid-template-columns:repeat(2,minmax(0,1fr)); }
+.sample-body .metric-grid div { min-width:0; }
+.sample-body pre { font-size:11px; }
+.sample-body .actions { margin-top:16px; }
+.ratings { display:grid; grid-template-columns:repeat(3,minmax(0,1fr)); gap:8px; margin-top:16px; }
+.ratings label { font-size:12px; margin:0; }
+.ratings select { padding:6px; }
+.empty-state { border:1px dashed #baccc0; border-radius:14px; text-align:center; padding:64px 24px; }
+.empty-frame { display:flex; gap:15px; justify-content:center; margin-bottom:28px; }
+.empty-frame span { display:grid; place-items:center; width:105px; height:135px; border:1px solid #b6c8ba; color:#779383; border-radius:5px; background:linear-gradient(150deg,#e2e8de,#f6f5ef); font:italic 36px "Iowan Old Style",serif; }
+.empty-frame span:last-child { transform:translateY(12px); }
+.failure-art { display:grid; place-items:center; height:160px; background:#f3eee6; color:var(--danger); font-size:14px; }
+@media(max-width:1050px) { .image-workspace { grid-template-columns:310px minmax(0,1fr); gap:22px; } .sample-grid { grid-template-columns:1fr; } }
+@media(max-width:700px) { .image-heading { display:block; } .image-heading>.muted { margin-top:18px; } .image-workspace { grid-template-columns:1fr; } .compact { grid-template-columns:1fr 1fr; } .sample-image { height:380px; } .empty-state { padding:40px 18px; } }

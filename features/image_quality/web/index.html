@@ -1,0 +1,45 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+  <title>生图模型质量测试 · 模型测试工作台</title>
+  <link rel="stylesheet" href="/assets/common.css">
+  <link rel="stylesheet" href="./assets/app.css">
+  <script src="/assets/common.js" defer></script>
+  <script src="./assets/app.js" defer></script>
+</head>
+<body>
+<main class="page">
+  <header class="image-heading">
+    <div><p class="eyebrow">IMAGE QUALITY / GPT-IMAGE-2</p><h1>把画面放在一起，<br>让差异看得见。</h1></div>
+    <p class="muted">用同一份提示词与参数观察不同连接的表现。<br>画面质量由你判断；返回字段不构成模型身份证明。</p>
+  </header>
+  <div class="image-workspace">
+    <section class="panel composer">
+      <h2>创建一个样本</h2>
+      <form id="image-form">
+        <label>Base URL<input id="base-url" type="url" required maxlength="2048" placeholder="https://relay.example.com/v1" autocomplete="off"></label>
+        <p class="hint">支持服务根地址、带 /v1 的地址或完整生图接口地址。</p>
+        <label>API Key<input id="api-key" type="password" required maxlength="4096" autocomplete="off" spellcheck="false"></label>
+        <label>请求模型<input id="model" value="gpt-image-2" readonly></label>
+        <label>提示词<textarea id="prompt" rows="7" required maxlength="16000" placeholder="描述画面主体、构图、细节与风格…"></textarea></label>
+        <div class="two compact">
+          <label>图片尺寸<select id="size"><option value="1024x1536">1024 × 1536</option><option value="1536x1024">1536 × 1024</option><option value="1024x1024">1024 × 1024</option></select></label>
+          <label>质量<select id="quality"><option value="high">High</option><option value="medium">Medium</option><option value="low">Low</option></select></label>
+        </div>
+        <label>等待上限（秒）<input id="timeout" type="number" min="1" max="600" value="600" required></label>
+        <label class="check"><input id="confirm-live" type="checkbox" required>确认向上述地址发送本次 1 次生图请求，可能产生费用。</label>
+        <div class="actions"><button id="generate" type="submit">生成样本</button><button id="cancel" type="button" class="secondary" hidden>停止等待</button></div>
+        <p id="run-status" class="status" role="status" aria-live="polite"></p>
+        <p id="form-error" class="error" role="alert"></p>
+      </form>
+      <p class="hint">Key 仅本轮临时使用，提交后清空输入框。图片与评价只保留在当前页面，刷新会清空。</p>
+    </section>
+    <section class="comparison">
+      <div class="dialog-heading"><div><h2>本轮样本 <span id="sample-count" class="badge">0 / 6</span></h2><p class="hint">每个连接建议多次采样，参数相同的样本再作比较。</p></div><button id="clear" type="button" class="secondary" disabled>清空本轮</button></div>
+      <div id="empty-state" class="empty-state"><div class="empty-frame" aria-hidden="true"><span>01</span><span>02</span></div><h3>第一张画面，从这里开始</h3><p class="muted">填入连接和提示词，生成后可并排查看、评分和下载。</p></div>
+      <div id="samples" class="sample-grid"></div>
+    </section>
+  </div>
+</main>
+</body></html>
