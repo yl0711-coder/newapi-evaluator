@@ -13,6 +13,18 @@ let app, browser, logs = '';
 const upstream = http.createServer(async (req, res) => {
   const parts = []; for await (const chunk of req) parts.push(chunk);
   const body = JSON.parse(Buffer.concat(parts)); requests.push({key:req.headers.authorization, body});
+  if (req.url.endsWith('/images/generations')) {
+    if (req.headers.authorization === 'Bearer synthetic-image-rejected') {
+      res.writeHead(401, {'Content-Type':'application/json'});
+      res.end(JSON.stringify({error:{message:'synthetic rejected credential'}})); return;
+    }
+    const image = fs.readFileSync(path.join(root,'tests/fixtures/image_quality/response.json'));
+    const finish = () => {res.writeHead(200, {'Content-Type':'application/json','x-request-id':'synthetic-image-request'}); res.end(image);};
+    if (body.prompt === 'Synthetic delayed image fixture.') {
+      const timer = setTimeout(finish, 5000); res.on('close',()=>clearTimeout(timer));
+    } else finish();
+    return;
+  }
   if (body.stream) {
     res.writeHead(200, {'Content-Type':'text/event-stream'});
     res.write('data: ' + JSON.stringify({model:body.model,choices:[{delta:{content:'Test answer '},finish_reason:null}]}) + '\n\n');
@@ -86,14 +98,54 @@ const upstream = http.createServer(async (req, res) => {
   assert.equal(await page.locator('#downloads').getAttribute('hidden'),null);
   assert.ok(await page.locator('#history .history-card').count()>=1);
   await page.screenshot({path:path.join(data,'capacity-desktop.png'),fullPage:true});
-  for (const url of ['/','/channels/','/admission/','/reasoning/','/stability/','/capacity/']) {
+  await page.goto(base+'/image-quality/'); await page.locator('.platform-nav').waitFor();
+  await page.locator('#base-url').fill(upstreamUrl);
+  await page.locator('#api-key').fill('synthetic-image-key');
+  await page.locator('#prompt').fill('Synthetic image fixture with geometric shapes.');
+  const imageCallsBefore = requests.length;
+  await page.locator('#generate').click();
+  assert.equal(requests.length,imageCallsBefore);
+  await page.locator('#confirm-live').check(); await page.locator('#generate').click();
+  await page.waitForFunction(()=>document.querySelectorAll('.sample-card').length===1);
+  await page.locator('.sample-image').evaluate(img=>img.decode());
+  assert.equal(await page.locator('.sample-image').evaluate(img=>img.naturalWidth),64);
+  assert.equal(await page.locator('#api-key').inputValue(),'');
+  assert.equal(await page.locator('#confirm-live').isChecked(),false);
+  assert.equal(requests.at(-1).body.model,'gpt-image-2');
+  assert.equal(requests.at(-1).body.n,1);
+  await page.getByLabel('样本 1 构图').selectOption('4');
+  const imageReportPromise = page.waitForEvent('download');
+  await page.getByRole('button',{name:'导出指标',exact:true}).click();
+  const imageReport = JSON.parse(fs.readFileSync(await (await imageReportPromise).path(),'utf8'));
+  assert.equal(imageReport.scores.composition,4);
+  for (const forbidden of ['synthetic-image-key','Synthetic image fixture',upstreamUrl,'b64_json']) {
+    assert.ok(!JSON.stringify(imageReport).includes(forbidden));
+  }
+  const imageDownloadPromise = page.waitForEvent('download');
+  await page.getByRole('link',{name:'下载 PNG',exact:true}).click();
+  const imageBytes = fs.readFileSync(await (await imageDownloadPromise).path());
+  assert.equal(imageBytes.subarray(0,8).toString('hex'),'89504e470d0a1a0a');
+  await page.locator('#api-key').fill('synthetic-image-rejected');
+  await page.locator('#confirm-live').check(); await page.locator('#generate').click();
+  await page.waitForFunction(()=>document.querySelectorAll('.sample-card').length===2);
+  assert.match(await page.locator('.sample-card').last().textContent(),/接口拒绝鉴权/);
+  await page.locator('#api-key').fill('synthetic-image-key');
+  await page.locator('#prompt').fill('Synthetic delayed image fixture.');
+  await page.locator('#confirm-live').check(); await page.locator('#generate').click();
+  await page.locator('#cancel').click();
+  await page.waitForFunction(()=>document.querySelector('#form-error').textContent.includes('停止本地等待'));
+  assert.equal(await page.locator('#generate').isEnabled(),true);
+  await page.screenshot({path:path.join(data,'image-quality-desktop.png'),fullPage:true});
+  await page.locator('#clear').click(); assert.equal(await page.locator('.sample-card').count(),0);
+  await page.reload(); assert.equal(await page.locator('#api-key').inputValue(),'');
+  for (const url of ['/','/channels/','/admission/','/reasoning/','/stability/','/capacity/','/image-quality/']) {
     await page.setViewportSize({width:390,height:844}); await page.goto(base+url); await page.locator('.platform-nav').waitFor();
     const overflow = await page.evaluate(()=>({overflow:document.documentElement.scrollWidth>window.innerWidth+2,width:document.documentElement.scrollWidth,
       elements:[...document.querySelectorAll('*')].filter(element=>element.getBoundingClientRect().right>window.innerWidth+2).sort((a,b)=>b.getBoundingClientRect().right-a.getBoundingClientRect().right).slice(0,12).map(element=>`${element.tagName.toLowerCase()}${element.id?'#'+element.id:''}${element.className&&typeof element.className==='string'?'.'+element.className.trim().replace(/\s+/g,'.'):''}:${Math.round(element.getBoundingClientRect().right)}`)}));
     await page.screenshot({path:path.join(data,(url.replaceAll('/','')||'home')+'-mobile.png'),fullPage:true,animations:'disabled'});
     assert.equal(overflow.overflow,false,`Mobile overflow: ${url} (${overflow.width}px; ${overflow.elements.join(', ')})`);
   }
-  assert.deepEqual(errors,[]); console.log(JSON.stringify({status:'passed',mockRequests:requests.length,artifacts:data,checks:'frontend channel CRUD, ephemeral admission, report export, reasoning, explicit targets, integrated capacity Mock, desktop/mobile'}));
+  assert.deepEqual(errors,[]); console.log(JSON.stringify({status:'passed',mockRequests:requests.length,artifacts:data,checks:'frontend channel CRUD, ephemeral admission, report export, reasoning, explicit targets, integrated capacity Mock, image-quality confirmation/generation/export/cancel, desktop/mobile'}));
 })().catch(error=>{console.error(error);if(logs)console.error(logs);process.exitCode=1;}).finally(async()=>{
   if(browser) await browser.close();
   if(app) { app.kill('SIGTERM'); await new Promise(resolve=>app.once('exit',resolve)); }

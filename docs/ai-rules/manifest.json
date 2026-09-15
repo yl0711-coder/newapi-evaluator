@@ -1,0 +1,16 @@
+{
+  "version": "1.0",
+  "status": "formal",
+  "canonical_repository": "yl0711-coder/newapi-evaluator",
+  "files": {
+    "REPORTING.md": "08e9b331ddcac26d0f37ae66221cf3c3a9ecc872878de354d04724b2deeda940",
+    "TESTING.md": "bbf5cdf4f2c968f35deee9256463b55f20e459c2f1333f4366462431f531620b",
+    "PROJECTS.md": "a05ed75689673c33659641e22e7406ac05537a57c21c486324b345986a693e63",
+    "CODING.md": "062855c3c8b5bda60969e91b6668fb44e4ff0580fa6c337b8b0409f24135615a",
+    "PROJECT_RULES.template.md": "166063ea6ee04edc8920ee0e21e9f60279234321a351d7d497a44740c58c0e6a",
+    "reporting-baseline.json": "51aac190d86fd2d837bee2a85e40c62f10b6e9c2a4e010e1ab2d104bd711caf6",
+    "REVIEW.md": "2c9e26942b15f07b330c5b005590a68ccbae12fe1be536ebe239d21658cf7241",
+    "HANDOFF.md": "704ad1b001b8d775857faddab024e088a782e2370bc344d32f2d5810531f5f5e"
+  },
+  "source_branch": "feature/ai-coding-rules"
+}

@@ -1,0 +1,13 @@
+{
+  "model": "gpt-image-2",
+  "data": [
+    {
+      "b64_json": "iVBORw0KGgoAAAANSUhEUgAAAEAAAABgCAIAAAAip+O/AAABTElEQVR4nO3cMU7DQBBG4cdTrkLhi3EDxBkQN+BiLuio4Q50iIJIyLshfpivjOXJ/DtxHG+Rm/e3V8okTuIkTuIkTuIk7nTuwPJwz56sj09/cwISJ3ESJ3ESJ3ESJ3ESJ3ESJ3ESJ3ESJ3ESJ3ESJ391V2LEenf77evL8ws7D7Ceaf3r0bkxTr/T+uVi+Mvdj5xyqQCbW5mSYTTAYBPrcIahAFOWcB0rkr8PuPnMWVchY6WOOoF13vIPFjzqBPZD4iRO4iROjhlgmf1stWwteNQJMHUIy0CpA0+ASUNYxop43bdfhpdgwkdocxNTBjjnGtjQyqzvgNOUKp8N/eRn/U43tn4SI7C1eLlGzzn2fWAPJE7iJE7iJE7iJE7iJE7iJE7iJE7iJE7iJE7iJE7iJE7iJE7iJE7iJO7m/38lrkziJE7iJE7ivHYDoz4AIVVD4X4mt/kAAAAASUVORK5CYII="
+    }
+  ],
+  "usage": {
+    "input_tokens": 10,
+    "output_tokens": 20,
+    "total_tokens": 30
+  }
+}

@@ -554,7 +554,7 @@ class IntegrationTests(unittest.IsolatedAsyncioTestCase):
             self.assertEqual(response.status_code,403)
 
     async def test_each_mode_has_only_its_feature_and_same_registry(self):
-        for mode in ("channels","admission","reasoning","stability","capacity"):
+        for mode in ("channels","admission","reasoning","stability","capacity","image-quality"):
             app = create_app(mode)
             async with app.router.lifespan_context(app):
                 async with httpx.AsyncClient(transport=httpx.ASGITransport(app=app),base_url="http://testserver") as client:
