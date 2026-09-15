@@ -3,6 +3,7 @@ const fs = require('node:fs');
 const os = require('node:os');
 const path = require('node:path');
 const http = require('node:http');
+const net = require('node:net');
 const {spawn} = require('node:child_process');
 const {chromium} = require(process.env.PLAYWRIGHT_MODULE || 'playwright');
 const root = path.resolve(__dirname, '..');
@@ -11,7 +12,7 @@ const python = process.env.PYTHON_EXECUTABLE || path.join(root,'.venv','bin','py
 const requests = [];
 const heldImageResponses = new Set();
 let openEndedImages = 0;
-let app, browser, logs = '';
+let app, appExit, appError, browser, logs = '';
 const upstream = http.createServer(async (req, res) => {
   const parts = []; for await (const chunk of req) parts.push(chunk);
   const body = JSON.parse(Buffer.concat(parts)); requests.push({key:req.headers.authorization, body});
@@ -49,9 +50,19 @@ const upstream = http.createServer(async (req, res) => {
   await new Promise(resolve => upstream.listen(0,'127.0.0.1',resolve));
   const upstreamUrl = `http://127.0.0.1:${upstream.address().port}/v1`;
   const appPort = Number(process.env.UI_TEST_PORT || 18090), base = `http://127.0.0.1:${appPort}`;
+  const portCheck = net.createServer();
+  await new Promise((resolve,reject)=>{portCheck.once('error',reject);portCheck.listen(appPort,'127.0.0.1',resolve);});
+  await new Promise(resolve=>portCheck.close(resolve));
   app = spawn(python,['run.py','--port',String(appPort)],{cwd:root,env:{...process.env,PLATFORM_DATA_DIR:data,PLATFORM_EGRESS_ALLOWLIST:'127.0.0.1',PLATFORM_USERNAME:'',PLATFORM_PASSWORD:''},stdio:['ignore','pipe','pipe']});
+  appExit = new Promise(resolve=>{app.once('exit',resolve);app.once('error',error=>{appError=error;resolve();});});
   app.stderr.on('data',chunk=>logs+=chunk.toString());
-  for (let i=0; i<100; i++) { try { const r = await fetch(base+'/api/health'); if(r.ok) break; } catch {} await new Promise(resolve=>setTimeout(resolve,100)); }
+  let ready = false;
+  for (let i=0; i<100; i++) {
+    if(appError || app.exitCode!==null || app.signalCode!==null) throw new Error('Owned UI server failed to start');
+    try { const r = await fetch(base+'/api/health'); if(r.ok) {ready=true;break;} } catch {}
+    await new Promise(resolve=>setTimeout(resolve,100));
+  }
+  assert.ok(ready && !appError && app.exitCode===null && app.signalCode===null,'Owned UI server failed to start');
   browser = await chromium.launch({headless:true, ...(process.env.PLAYWRIGHT_CHANNEL ? {channel:process.env.PLAYWRIGHT_CHANNEL} : {})});
   const page = await browser.newPage({viewport:{width:1440,height:1000}});
   const errors = []; page.on('pageerror',e=>errors.push(e.message));
@@ -176,7 +187,7 @@ const upstream = http.createServer(async (req, res) => {
   assert.deepEqual(errors,[]); console.log(JSON.stringify({status:'passed',mockRequests:requests.length,artifacts:data,checks:'frontend channel CRUD, ephemeral admission, report export, reasoning, explicit targets, integrated capacity Mock, image-quality confirmation/generation/export/cancel, desktop/mobile'}));
 })().catch(error=>{console.error(error);if(logs)console.error(logs);process.exitCode=1;}).finally(async()=>{
   if(browser) await browser.close();
-  if(app) { app.kill('SIGTERM'); await new Promise(resolve=>app.once('exit',resolve)); }
+  if(app) { if(!appError && app.exitCode===null && app.signalCode===null) app.kill('SIGTERM'); await appExit; }
   for (const response of heldImageResponses) response.destroy();
   upstream.close();
 });

@@ -45,6 +45,8 @@ venv 由 python3 -m venv 创建在上述 IMAGE_TEST_ROOT/venv；tmp 需预先创
 
 开发合计 11 组，独立合计 12 组；legacy-acceptance 内部另记录十项。`scripts/verify_image_quality.py` 仍为生图原有八组入口，单独运行它不能宣称整合后的全部模块已通过。整合时采用上述并集以复用同 SHA 的公共组证据；语法组 `diagnosis_syntax.py` 同样覆盖全部 Python、JS/CJS/MJS 和 HTML 内联脚本。未配置类型/格式工具。
 
+工作台浏览器通过 UI_TEST_PORT 指定本轮独立端口，诊断统一执行器保留该设置。启动前先确认端口空闲，启动失败立即退出，清理能够处理已退出或无法启动的子进程；对应端口占用、创建失败和提前退出回归在 tests/test_image_quality_verification.py。
+
 整合环境沿用仓库外已核对依赖的开发/独立环境，所有执行数据、日志和截图使用本轮全新根；完整 argv、依赖指纹、逐组状态与映射保存在外置交接。当前本机证据根为 /Users/lmurder/Desktop/api中转站/中转站极限测试数据/生图质量测试/20260915-integration；独立验收另分配 independent 子目录。
 
 ## 生图八组清单

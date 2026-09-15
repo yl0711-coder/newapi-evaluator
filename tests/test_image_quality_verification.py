@@ -2,6 +2,7 @@ import json
 import os
 from pathlib import Path
 import signal
+import socket
 import subprocess
 import sys
 import tempfile
@@ -188,3 +189,41 @@ if args[0] == "port":
 
     def test_missing_docker_is_incomplete_without_resource_cleanup(self):
         self.run_container_mock("unavailable")
+
+
+class UIBootstrapTests(unittest.TestCase):
+    def run_ui(self, directory, port, python):
+        stub = directory / "playwright.cjs"
+        stub.write_text("module.exports={chromium:{launch(){throw new Error('Browser must not launch on startup failure');}}};")
+        env = {key: value for key, value in os.environ.items() if key in ("PATH", "HOME", "LANG", "LC_ALL")}
+        env.update(TMPDIR=str(directory), PYTHONDONTWRITEBYTECODE="1", PLAYWRIGHT_MODULE=str(stub),
+                   PYTHON_EXECUTABLE=python, UI_TEST_PORT=str(port))
+        return run_process(["node", "scripts/ui_smoke.cjs"], env, 5)
+
+    def test_occupied_port_fails_without_contacting_existing_service(self):
+        with tempfile.TemporaryDirectory() as directory, socket.socket() as existing:
+            existing.bind(("127.0.0.1", 0))
+            existing.listen()
+            code, text, timed_out = self.run_ui(Path(directory), existing.getsockname()[1], sys.executable)
+            self.assertEqual(code, 1)
+            self.assertFalse(timed_out)
+            self.assertIn("EADDRINUSE", text)
+            existing.settimeout(0.1)
+            with self.assertRaises(socket.timeout):
+                connection, _ = existing.accept()
+                connection.close()
+
+    def test_failed_child_startup_finishes_cleanup(self):
+        with tempfile.TemporaryDirectory() as directory:
+            exited = Path(directory) / "exited-python"
+            exited.write_text("#!/bin/sh\nexit 23\n")
+            exited.chmod(0o700)
+            for python in (Path(directory) / "absent-python", exited):
+                with self.subTest(kind=python.name), socket.socket() as available:
+                    available.bind(("127.0.0.1", 0))
+                    port = available.getsockname()[1]
+                    available.close()
+                    code, text, timed_out = self.run_ui(Path(directory), port, str(python))
+                    self.assertEqual(code, 1)
+                    self.assertFalse(timed_out)
+                    self.assertIn("Owned UI server failed to start", text)
