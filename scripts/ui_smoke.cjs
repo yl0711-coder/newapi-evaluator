@@ -289,6 +289,9 @@ const upstream = http.createServer(async (req, res) => {
     await page.locator('#burst-panel').waitFor({state:'visible'});
     assert.equal(await page.locator('#burst-rows tr').count(),3);
     assert.equal(await page.locator('#burst-chart svg').isVisible(),true);
+    assert.equal(await page.locator('#downloads a').first().evaluate(el=>getComputedStyle(el).color),
+      await page.locator('.platform-nav a[aria-current="page"]').evaluate(el=>getComputedStyle(el).color),
+      'Result downloads use the shared action color');
     assert.equal(await page.evaluate(()=>document.documentElement.scrollWidth>innerWidth+2),false,`Capacity batch results at ${width}px`);
     await page.screenshot({path:path.join(data,`capacity-batch-result-${width}.png`),fullPage:true,animations:'disabled'});
   }

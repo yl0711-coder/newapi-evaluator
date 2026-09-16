@@ -109,7 +109,8 @@ th:first-child,td:first-child { padding-left:12px; }
 .empty-chart strong { display:block; font-size:14px; font-weight:500; margin-top:8px; }
 .empty-chart p { font-size:12px; margin:6px 0; }
 .result-note { font-size:12px; color:var(--muted); margin:12px 0; line-height:1.7; }
-.downloads { display:flex; flex-wrap:wrap; gap:10px 18px; padding-top:16px; margin-top:18px; border-top:1px solid var(--line); font-size:14px; }
+.downloads { display:flex; flex-wrap:wrap; gap:10px 18px; padding-top:16px; margin-top:18px; border-top:1px solid var(--line); background:transparent; font-size:14px; }
+.downloads a { color:var(--accent); }
 .text-button { background:transparent; color:var(--accent); border-color:var(--line); padding:7px 12px; flex-shrink:0; }
 .text-button:hover { background:var(--soft); }
 .danger { color:var(--danger); }
