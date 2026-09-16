@@ -228,12 +228,69 @@ const upstream = http.createServer(async (req, res) => {
   await page.screenshot({path:path.join(data,'image-quality-desktop.png'),fullPage:true});
   await page.locator('#clear').click(); assert.equal(await page.locator('.sample-card').count(),0);
   await page.reload(); assert.equal(await page.locator('#api-key').inputValue(),'');
-  for (const url of ['/','/channels/','/admission/','/reasoning/','/stability/','/capacity/','/image-quality/']) {
-    await page.setViewportSize({width:390,height:844}); await page.goto(base+url); await page.locator('.platform-nav').waitFor();
-    const overflow = await page.evaluate(()=>({overflow:document.documentElement.scrollWidth>window.innerWidth+2,width:document.documentElement.scrollWidth,
-      elements:[...document.querySelectorAll('*')].filter(element=>element.getBoundingClientRect().right>window.innerWidth+2).sort((a,b)=>b.getBoundingClientRect().right-a.getBoundingClientRect().right).slice(0,12).map(element=>`${element.tagName.toLowerCase()}${element.id?'#'+element.id:''}${element.className&&typeof element.className==='string'?'.'+element.className.trim().replace(/\s+/g,'.'):''}:${Math.round(element.getBoundingClientRect().right)}`)}));
-    await page.screenshot({path:path.join(data,(url.replaceAll('/','')||'home')+'-mobile.png'),fullPage:true,animations:'disabled'});
-    assert.equal(overflow.overflow,false,`Mobile overflow: ${url} (${overflow.width}px; ${overflow.elements.join(', ')})`);
+  for (const width of [390,900,1440,1920]) {
+    let theme;
+    for (const url of ['/','/channels/','/admission/','/reasoning/','/stability/','/capacity/','/diagnosis/','/image-quality/']) {
+      await page.setViewportSize({width,height:1000}); await page.goto(base+url); await page.locator('.platform-nav').waitFor();
+      const appearance = await page.evaluate(() => {
+        const body=getComputedStyle(document.body), heading=getComputedStyle(document.querySelector('h1'));
+        return {font:body.fontFamily,background:body.backgroundColor,ink:body.color,
+          headingFont:heading.fontFamily,headingSize:heading.fontSize};
+      });
+      if (!theme) theme=appearance;
+      assert.deepEqual(appearance,theme,`Shared page theme: ${url} at ${width}px`);
+      const overflow = await page.evaluate(()=>({overflow:document.documentElement.scrollWidth>window.innerWidth+2,width:document.documentElement.scrollWidth,
+        elements:[...document.querySelectorAll('*')].filter(element=>element.getBoundingClientRect().right>window.innerWidth+2).sort((a,b)=>b.getBoundingClientRect().right-a.getBoundingClientRect().right).slice(0,12).map(element=>`${element.tagName.toLowerCase()}${element.id?'#'+element.id:''}${element.className&&typeof element.className==='string'?'.'+element.className.trim().replace(/\s+/g,'.'):''}:${Math.round(element.getBoundingClientRect().right)}`)}));
+      await page.screenshot({path:path.join(data,(url.replaceAll('/','')||'home')+`-${width}.png`),fullPage:true,animations:'disabled'});
+      assert.equal(overflow.overflow,false,`Mobile overflow: ${url} (${overflow.width}px; ${overflow.elements.join(', ')})`);
+    }
+  }
+  await page.setViewportSize({width:390,height:844});
+  await page.goto(base+'/stability/');
+  await page.locator('[data-view="schedules"]').click(); await page.locator('#new-schedule').click();
+  await page.locator('#schedule-dialog').waitFor({state:'visible'});
+  assert.equal(await page.locator('#schedule-dialog').evaluate(el=>el.scrollWidth>el.clientWidth+2),false,'Schedule form fits mobile dialog');
+  await page.locator('[data-close="schedule-dialog"]').last().click();
+  await page.goto(base+'/capacity/');
+  await page.waitForFunction(()=>document.querySelector('#connection').textContent.includes('已连接'));
+  for (const width of [390,800,900]) {
+    await page.setViewportSize({width,height:1000});
+    for (const mode of ['faders','mixed_burst']) {
+      await page.locator('#load-mode').selectOption(mode);
+      assert.equal(await page.evaluate(()=>document.documentElement.scrollWidth>innerWidth+2),false,`Capacity ${mode} at ${width}px`);
+      if(mode==='faders') {
+        for(const profile of ['short','medium','long']) {
+          const range=page.locator(`#fader-${profile}`);
+          await range.focus(); await page.keyboard.press('ArrowRight');
+          assert.equal(await range.inputValue(),'1');
+          assert.equal(await page.locator(`#fader-${profile}-number`).inputValue(),'1');
+          await page.keyboard.press('ArrowLeft');
+        }
+      }
+      await page.screenshot({path:path.join(data,`capacity-${mode}-${width}.png`),fullPage:true,animations:'disabled'});
+    }
+  }
+  const environment=page.locator('input[name="environment"][value="mock"]');
+  await environment.focus(); await page.keyboard.press('ArrowRight');
+  assert.equal(await page.locator('input[name="environment"][value="live"]').isChecked(),true);
+  assert.equal(await page.locator('input[name="environment"][value="live"] + span').evaluate(el=>getComputedStyle(el).outlineStyle),'solid');
+  await page.keyboard.press('ArrowLeft');
+  assert.equal(await environment.isChecked(),true);
+  await page.locator('#preset').selectOption('mixed_burst');
+  for (const [index,profile] of ['short','medium','long'].entries()) {
+    await page.locator(`#burst-${profile}-count`).fill('1');
+    await page.locator(`#burst-${profile}-limit`).fill(String([64,128,256][index]));
+  }
+  await page.locator('#burst-capacity').fill('2');
+  await page.locator('#test-form button[type="submit"]').click();
+  await page.waitForFunction(()=>document.querySelector('#result-status').textContent==='已完成',{},{timeout:40000});
+  for (const width of [390,800,900]) {
+    await page.setViewportSize({width,height:1000});
+    await page.locator('#burst-panel').waitFor({state:'visible'});
+    assert.equal(await page.locator('#burst-rows tr').count(),3);
+    assert.equal(await page.locator('#burst-chart svg').isVisible(),true);
+    assert.equal(await page.evaluate(()=>document.documentElement.scrollWidth>innerWidth+2),false,`Capacity batch results at ${width}px`);
+    await page.screenshot({path:path.join(data,`capacity-batch-result-${width}.png`),fullPage:true,animations:'disabled'});
   }
   assert.deepEqual(errors,[]); console.log(JSON.stringify({status:'passed',mockRequests:requests.length,artifacts:data,checks:'frontend channel CRUD, ephemeral admission, report export, reasoning, explicit targets, integrated capacity Mock, image-quality confirmation/generation/export/cancel, desktop/mobile'}));
 })().catch(error=>{console.error(error);if(logs)console.error(logs);process.exitCode=1;}).finally(async()=>{

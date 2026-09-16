@@ -121,6 +121,8 @@ make prod-ps
 
 ## 验证和来源
 
+八个工作台页面共用公共主题，保留各测试工具的专用布局与报告能力。前端样式约定、宽窄屏回归和发布验证入口见 [前端统一清单](docs/frontend-style.md)。
+
 运行 `python scripts/test_all.py` 执行原有引擎自测和共享渠道集成测试；模拟上游不会消耗真实渠道额度。新集成测试覆盖临时候选端不入库、密钥不下发、共用凭据更新、独立启动、定时选择、导入幂等、鉴权和跨站限制。
 
 准入测量引擎来自 `国产模型速度快测/main.py`；定时引擎来自 `定时稳定性测试/app`；第三项来自 `newapi-evaluator` 的 `feature/single-channel-reasoning-integrity` 分支提交 `be5cc982bd435d3aa00a2496311cd2b3695483bd` 下的 `tools/thinking-integrity-test`。

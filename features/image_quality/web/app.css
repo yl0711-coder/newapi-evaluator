@@ -1,5 +1,5 @@
-.image-heading { display:flex; justify-content:space-between; align-items:end; gap:28px; margin-bottom:30px; }
-.image-heading h1 { margin-bottom:0; }
+.image-heading { display:flex; justify-content:space-between; align-items:center; gap:28px; margin-bottom:28px; }
+.image-heading h1 { margin-bottom:12px; }
 .image-heading>.muted { max-width:410px; }
 .image-workspace { display:grid; grid-template-columns:350px minmax(0,1fr); gap:32px; align-items:start; }
 .composer { margin:0; padding:22px; }

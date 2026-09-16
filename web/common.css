@@ -1,6 +1,6 @@
-:root { --paper:#f4f2eb; --surface:#fffef9; --ink:#172c29; --muted:#64736d; --line:#d7ded5; --accent:#0a675d; --soft:#e5eee7; --danger:#ac342d; }
+:root { --paper:#f4f2eb; --surface:#fffef9; --ink:#172c29; --muted:#64736d; --line:#d7ded5; --accent:#0a675d; --soft:#e5eee7; --danger:#ac342d; --danger-soft:#f7e9e6; --warning:#6c521e; --warning-soft:#f7f0df; }
 * { box-sizing:border-box; }
-body { margin:0; color:var(--ink); background:radial-gradient(ellipse at 90% 0,#dce9df80,transparent 50%),var(--paper); font-family:"Avenir Next","PingFang SC","Microsoft YaHei",sans-serif; line-height:1.6; }
+body { margin:0; min-height:100vh; color:var(--ink); background:radial-gradient(ellipse at 90% 0,#dce9df80,transparent 50%),var(--paper); font-family:"Avenir Next","PingFang SC","Microsoft YaHei",sans-serif; line-height:1.6; }
 a { color:var(--accent); text-underline-offset:4px; }
 .platform-nav { display:flex; gap:22px; flex-wrap:wrap; align-items:center; padding:16px max(20px,calc((100vw - 1240px)/2)); background:#fffef9ed; border-bottom:1px solid var(--line); font:14px/1.5 "Avenir Next","PingFang SC",sans-serif; }
 .platform-nav a { color:var(--ink); text-decoration:none; }
@@ -18,6 +18,8 @@ p { margin:8px 0 18px; } .muted,.hint { color:var(--muted); font-size:14px; } .h
 button,.button { padding:10px 16px; border:1px solid var(--accent); border-radius:7px; background:var(--accent); color:white; font:inherit; font-size:14px; cursor:pointer; text-decoration:none; }
 button.secondary,.button.secondary { background:transparent; color:var(--accent); border-color:var(--line); }
 button:disabled { opacity:.5; cursor:not-allowed; }
+button:focus-visible,a:focus-visible,summary:focus-visible { outline:2px solid #659e92; outline-offset:3px; }
+input[type=checkbox],input[type=radio] { accent-color:var(--accent); }
 input,select,textarea { width:100%; padding:10px 12px; border:1px solid var(--line); border-radius:6px; background:#fff; color:var(--ink); font:inherit; font-size:14px; }
 input:focus,select:focus,textarea:focus { outline:2px solid #659e92; outline-offset:1px; }
 input[readonly] { background:var(--soft); } textarea { resize:vertical; }
