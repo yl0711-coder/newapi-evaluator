@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import math
+import re
 from time import perf_counter
 from typing import Any
 from urllib.parse import urlsplit, urlunsplit
@@ -27,6 +28,10 @@ def endpoint_url(base_url: str, protocol: str) -> str:
     value = base_url.strip().rstrip("/")
     parsed = urlsplit(value)
     path = parsed.path.rstrip("/")
+    if protocol == "responses":
+        path = re.sub(r"/(chat/completions|responses|messages)/?$", "", path)
+        path += "/responses" if path.endswith("/v1") else "/v1/responses"
+        return urlunsplit((parsed.scheme, parsed.netloc, path, "", ""))
     if protocol == "anthropic":
         if not path.endswith("/messages"):
             path = f"{path}/messages" if path.endswith("/v1") else f"{path}/v1/messages"
@@ -140,6 +145,9 @@ def _http_status(status_code: int) -> str:
 
 
 async def run_probe(client: httpx.AsyncClient, channel: dict[str, Any], probe: dict[str, Any]) -> dict[str, Any]:
+    if channel["protocol"] == "responses":
+        from .responses import run_probe as run_responses_probe
+        return await run_responses_probe(client, channel, probe)
     url = endpoint_url(channel["base_url"], channel["protocol"])
     started = perf_counter()
     base = {

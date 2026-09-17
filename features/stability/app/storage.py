@@ -113,6 +113,13 @@ CREATE TABLE IF NOT EXISTS report_groups (
   UNIQUE(family, label)
 );
 CREATE INDEX IF NOT EXISTS idx_runs_status_due ON runs(status, scheduled_for);
+CREATE TABLE IF NOT EXISTS model_observations (
+  run_id INTEGER NOT NULL, target_id INTEGER NOT NULL, registry_channel_id INTEGER NOT NULL,
+  model TEXT NOT NULL, protocol TEXT NOT NULL, connection_fingerprint TEXT NOT NULL,
+  tested_at REAL NOT NULL, summary_json TEXT NOT NULL,
+  PRIMARY KEY(run_id,target_id)
+);
+CREATE INDEX IF NOT EXISTS idx_model_observations ON model_observations(registry_channel_id,model,protocol,tested_at);
 CREATE INDEX IF NOT EXISTS idx_runs_retention ON runs(status,notify_status,finished_at);
 CREATE INDEX IF NOT EXISTS idx_results_run ON probe_results(run_id);
 """
@@ -230,6 +237,7 @@ def list_channels(*, include_secrets: bool = False, ids: list[int] | None = None
                     enabled=bool(item["enabled"] and channel["enabled"]))
         if include_secrets:
             item["api_key"] = channel["api_key"]
+            item["connection_fingerprint"] = get_registry().connection_fingerprint(channel)
         output.append(item)
     return output
 
@@ -414,14 +422,17 @@ def clear_probe_results(run_id: int) -> None:
         cur.execute("DELETE FROM probe_results WHERE run_id=?", (run_id,))
 
 
-def channel_latency_baseline(channel_id: int, model: str, max_runs: int = 30) -> dict[str, Any]:
+def channel_latency_baseline(channel_id: int, model: str, max_runs: int = 30, *, connection_fingerprint: str | None = None) -> dict[str, Any]:
     """Return the median of per-run successful-request P95 values from stable scheduled runs."""
     with cursor() as cur:
+        identity_filter = ("AND EXISTS (SELECT 1 FROM model_observations o WHERE o.run_id=r.id "
+                           "AND o.target_id=p.channel_id AND o.connection_fingerprint=?) " if connection_fingerprint else "")
+        params = (channel_id, model, connection_fingerprint, max_runs) if connection_fingerprint else (channel_id, model, max_runs)
         run_ids = [int(row[0]) for row in cur.execute(
             "SELECT DISTINCT r.id FROM runs r JOIN probe_results p ON p.run_id=r.id "
             "WHERE p.channel_id=? AND p.model=? AND r.source='schedule' AND r.status='completed' "
-            "ORDER BY r.scheduled_for DESC,r.id DESC LIMIT ?",
-            (channel_id, model, max_runs),
+            + identity_filter + "ORDER BY r.scheduled_for DESC,r.id DESC LIMIT ?",
+            params,
         ).fetchall()]
         per_run_p95: list[float] = []
         for run_id in run_ids:
@@ -442,10 +453,35 @@ def channel_latency_baseline(channel_id: int, model: str, max_runs: int = 30) ->
 
 def finish_run(run_id: int, status: str, summary: dict[str, Any], error: str = "") -> None:
     with cursor() as cur:
+        now = time.time()
         cur.execute(
             "UPDATE runs SET status=?,summary_json=?,error=?,lease_until=NULL,finished_at=? WHERE id=?",
-            (status, dumps(summary), error[:300], time.time(), run_id),
+            (status, dumps(summary), error[:300], now, run_id),
         )
+        if status == "completed":
+            for item in summary.get("channels", []):
+                if not item.get("connection_fingerprint") or not item.get("registry_channel_id"):
+                    continue
+                metrics = {key: item.get(key) for key in (
+                    "total", "completed", "timeout_count", "stream_break_count", "streaming_total",
+                    "pass_rate", "timeout_rate", "stream_break_rate", "p95_latency_ms", "p95_ttft_ms",
+                    "failures", "health_pass", "speed_assessment")}
+                cur.execute("""INSERT OR REPLACE INTO model_observations VALUES(?,?,?,?,?,?,?,?)""",
+                            (run_id, item["channel_id"], item["registry_channel_id"], item["model"],
+                             item["protocol"], item["connection_fingerprint"], now, dumps(metrics)))
+                cur.execute("""DELETE FROM model_observations WHERE registry_channel_id=? AND model=? AND protocol=?
+                    AND rowid NOT IN (SELECT rowid FROM model_observations WHERE registry_channel_id=? AND model=?
+                    AND protocol=? ORDER BY tested_at DESC,run_id DESC LIMIT 30)""",
+                            (item["registry_channel_id"], item["model"], item["protocol"]) * 2)
+
+
+def model_observations() -> list[dict[str, Any]]:
+    with cursor() as cur:
+        rows = [dict(row) for row in cur.execute("""SELECT o.*, r.id IS NOT NULL AS report_available
+            FROM model_observations o LEFT JOIN runs r ON r.id=o.run_id ORDER BY o.tested_at DESC,o.run_id DESC""")]
+    for row in rows:
+        row["summary"] = loads(row.pop("summary_json"), {})
+    return rows
 
 
 def update_notification(run_id: int, status: str, error: str = "") -> None:

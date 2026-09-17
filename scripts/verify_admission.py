@@ -46,6 +46,8 @@ def main():
         ("diagnosis-browser", ["node", "scripts/diagnosis_ui.cjs"], 300, "json"),
         ("diagnosis-inspect", [sys.executable, "-m", "features.diagnosis.inspect", "--data-dir", str(output / "platform")], 60, "inspect"),
         ("image-inspect", [sys.executable, "-m", "features.image_quality", "inspect-config", "--config", "tests/fixtures/image_quality/config.json"], 60, "image-inspect"),
+        ("model-coverage-inspect", [sys.executable, "scripts/inspect_model_coverage.py"], 60, "inspect"),
+        ("model-coverage-browser", ["node", "scripts/model_coverage_ui.cjs"], 300, "browser"),
     ]
     if args.sha:
         commands.append(("legacy-acceptance", [sys.executable, "scripts/acceptance.py", "--sha", sha,

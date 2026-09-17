@@ -361,6 +361,8 @@ async function boot() {
   await loadHealth();
   await Promise.all([loadInventory(), loadChannels()]);
   await Promise.all([loadSchedules(), loadRuns(), loadFeishu(), loadReportGroups()]);
+  const reportId = new URLSearchParams(location.search).get("run");
+  if (reportId && /^\d+$/.test(reportId)) await showRun(Number(reportId));
   setInterval(() => { loadHealth(); loadRuns(); }, 10000);
 }
 

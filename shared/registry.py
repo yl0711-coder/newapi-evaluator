@@ -144,6 +144,11 @@ class Registry:
             raise RegistryError("该公共渠道已停用")
         return result
 
+    def connection_fingerprint(self, channel: dict) -> str:
+        """Track connection identity independently of display names and schedule edits."""
+        payload = json.dumps([channel["base_url"], channel["api_key"]], separators=(",", ":"))
+        return hmac.new(self._key, payload.encode(), hashlib.sha256).hexdigest()
+
     def _insert(self, conn, data: dict) -> tuple[int, bool]:
         fingerprint = self._identity(data)
         row = conn.execute("SELECT id FROM channels WHERE fingerprint=?", (fingerprint,)).fetchone()

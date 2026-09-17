@@ -34,7 +34,7 @@ class AdmissionVerificationTests(unittest.TestCase):
             self.assertEqual(verifier.main(), 1)
             data = json.loads((Path(folder) / 'report/verification.json').read_text())
             self.assertEqual(data['status'], 'failed')
-            self.assertEqual(len(data['results']), 10)
+            self.assertEqual(len(data['results']), 12)
             self.assertEqual(data['results'][2]['status'], 'failed')
             self.assertTrue(all(row['status'] == 'passed' for i, row in enumerate(data['results']) if i != 2))
 
@@ -81,7 +81,7 @@ sys.exit(v.main())
                     data = json.loads((report / 'verification.json').read_text())
                     self.assertTrue(data['cancelled'])
                     self.assertEqual(data['status'], 'incomplete')
-                    self.assertEqual(len(data['results']), 10)
+                    self.assertEqual(len(data['results']), 12)
                     if stage == 'suite':
                         self.assertEqual(data['results'][0]['reason'], 'cancelled')
                         self.assertEqual(data['results'][0]['status'], 'incomplete')

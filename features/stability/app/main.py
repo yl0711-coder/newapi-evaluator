@@ -25,8 +25,14 @@ class ChannelInput(BaseModel):
     name: str = Field(min_length=1, max_length=80)
     registry_channel_id: int = Field(ge=1)
     model: str = Field(min_length=1, max_length=160)
-    protocol: Literal["openai", "anthropic"] = "openai"
+    protocol: Literal["openai", "anthropic", "responses"] = "openai"
     enabled: bool = True
+
+    @model_validator(mode="after")
+    def model_protocol(self):
+        if self.model == "gpt-6-astra":
+            self.protocol = "responses"
+        return self
 
 
 class ScheduleInput(BaseModel):

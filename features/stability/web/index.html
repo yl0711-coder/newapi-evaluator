@@ -79,7 +79,7 @@
       <div class="dialog-head"><div><p class="section-index">TARGET</p><h2 id="channel-title">新增渠道</h2></div><button class="icon" type="button" data-close="channel-dialog" aria-label="关闭">×</button></div>
       <div class="form-grid">
         <label>渠道名称<input id="channel-name" required maxlength="80" placeholder="例如：生产渠道 A"></label>
-        <label>协议<select id="channel-protocol"><option value="openai">OpenAI compatible</option><option value="anthropic">Anthropic Messages</option></select></label>
+        <label>协议<select id="channel-protocol"><option value="openai">OpenAI compatible</option><option value="anthropic">Anthropic Messages</option><option value="responses">OpenAI Responses</option></select></label>
         <label class="wide">公共渠道<select id="channel-registry" required></select><a href="/channels/" target="_blank" rel="noopener">新增或编辑公共渠道</a></label>
         <label>模型 ID<input id="channel-model" required placeholder="model-name"></label>
         <label class="check"><input type="checkbox" id="channel-enabled" checked> 启用渠道</label>

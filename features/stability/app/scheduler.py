@@ -95,7 +95,7 @@ def _thresholds(snapshot: dict[str, Any]) -> dict[str, Any]:
 
 
 def _apply_speed_threshold(
-    channel_id: int, model: str, summary: dict[str, Any], snapshot: dict[str, Any]
+    channel_id: int, model: str, summary: dict[str, Any], snapshot: dict[str, Any], connection_fingerprint: str | None = None
 ) -> dict[str, Any]:
     mode = str(snapshot.get("speed_threshold_mode") or "fixed")
     current_p95 = summary.get("p95_success_latency_ms")
@@ -112,7 +112,7 @@ def _apply_speed_threshold(
 
     required = int(snapshot.get("speed_baseline_min_runs") or 5)
     ratio = float(snapshot.get("speed_slow_ratio") or 1.5)
-    baseline = storage.channel_latency_baseline(channel_id, model)
+    baseline = storage.channel_latency_baseline(channel_id, model, connection_fingerprint=connection_fingerprint)
     baseline_p95 = baseline.get("median_p95_latency_ms")
     sample_count = int(baseline.get("sample_count") or 0)
     threshold = round(float(baseline_p95) * ratio) if baseline_p95 is not None else None
@@ -187,12 +187,18 @@ async def _measure_channel(
         for round_results in await asyncio.gather(*(run_round(number) for number in range(1, rounds + 1))):
             results.extend(round_results)
     summary = transport.summarize(results, _thresholds(snapshot))
-    summary = _apply_speed_threshold(channel["id"], channel["model"], summary, snapshot)
+    summary = _apply_speed_threshold(channel["id"], channel["model"], summary, snapshot, channel.get("connection_fingerprint"))
     return {
         "channel_id": channel["id"],
         "registry_channel_id": channel.get("registry_channel_id"),
         "channel_name": channel["name"],
         "model": channel["model"],
+        "protocol": channel["protocol"],
+        "connection_fingerprint": channel.get("connection_fingerprint"),
+        "health_pass": bool(summary["total"] and
+                            summary["pass_rate"] >= float(snapshot["min_success_rate"]) and
+                            summary["timeout_rate"] <= float(snapshot["max_timeout_rate"]) and
+                            summary["stream_break_rate"] <= float(snapshot["max_stream_break_rate"])),
         **summary,
     }
 

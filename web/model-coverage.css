@@ -1,0 +1,26 @@
+.coverage-controls { margin: 24px 0; }
+.coverage-controls h2 { margin-top: 0; }
+.coverage-controls .actions { flex-wrap: wrap; }
+.model-coverage { margin-top: 18px; min-width: 0; }
+.model-coverage > summary { cursor: pointer; font-weight: 650; }
+.coverage-scroll { overflow-x: auto; max-width: 100%; margin: 12px 0; }
+.coverage-table { border-collapse: collapse; width: 100%; min-width: 740px; font-size: 13px; }
+.coverage-table th, .coverage-table td { padding: 10px 8px; text-align: left; vertical-align: top; border-bottom: 1px solid var(--line, #deddd5); }
+.coverage-table th { white-space: nowrap; }
+.coverage-table small { display: block; max-width: 230px; overflow-wrap: anywhere; margin-top: 5px; }
+.coverage-table input[type=checkbox] { width: 18px; min-height: 18px; }
+.coverage-table button { font-size: 12px; padding: 5px 9px; min-height: 32px; }
+.coverage-state { display: inline-block; border-radius: 5px; padding: 3px 6px; background: #ecebe4; }
+.coverage-state.good { color: #205c42; background: #e4efe8; }
+.coverage-state.bad { color: #932f2f; background: #f8e8e5; }
+.coverage-state.wait { color: #805919; background: #f7efda; }
+.coverage-preview { max-height: 42vh; overflow: auto; overflow-wrap: anywhere; }
+.coverage-discovered { margin-top: 12px; }
+.coverage-discovered button { margin: 4px; max-width: 100%; overflow-wrap: anywhere; }
+.cards > .record { min-width: 0; }
+.cards > .record:has(.model-coverage[open]) { grid-column: 1 / -1; }
+@media (max-width: 620px) {
+  .coverage-controls .toolbar { display: grid; grid-template-columns: minmax(0,1fr); }
+  .coverage-controls .actions > button { flex: 1 1 42%; }
+  .coverage-controls input, .coverage-controls select { min-width: 0; max-width: 100%; }
+}

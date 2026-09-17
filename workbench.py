@@ -14,6 +14,7 @@ from shared.api import router
 from shared.config import WEB_DIR
 from shared.registry import get_registry
 from shared.scheduler_lock import scheduler_lock
+from features.model_coverage.api import router as model_coverage_router
 
 FEATURES = {
     "admission": ("准入测试", "features.admission.api"),
@@ -36,6 +37,9 @@ def create_app(mode: str | None = None):
     async def lifespan(_app):
         get_registry()
         async with AsyncExitStack() as stack:
+            if "stability" not in children:
+                from features.stability.app import storage
+                stack.callback(storage.close)
             if "stability" in children:
                 from features.stability.app.config import DATA_DIR
                 stack.enter_context(scheduler_lock(DATA_DIR))
@@ -46,6 +50,8 @@ def create_app(mode: str | None = None):
     app = FastAPI(title="模型测试工作台", docs_url=None, redoc_url=None, openapi_url=None, lifespan=lifespan)
     install_access(app)
     app.include_router(router)
+    app.include_router(model_coverage_router)
+    app.state.stability_available = "stability" in children
 
     @app.get("/api/platform")
     async def info():
