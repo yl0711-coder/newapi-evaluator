@@ -422,12 +422,21 @@ def clear_probe_results(run_id: int) -> None:
         cur.execute("DELETE FROM probe_results WHERE run_id=?", (run_id,))
 
 
-def channel_latency_baseline(channel_id: int, model: str, max_runs: int = 30, *, connection_fingerprint: str | None = None) -> dict[str, Any]:
+def channel_latency_baseline(channel_id: int, model: str, max_runs: int = 30, *, connection_fingerprint: str | None = None,
+                             protocol: str | None = None) -> dict[str, Any]:
     """Return the median of per-run successful-request P95 values from stable scheduled runs."""
     with cursor() as cur:
+        identity_conditions, identity_params = [], []
+        if connection_fingerprint:
+            identity_conditions.append("o.connection_fingerprint=?")
+            identity_params.append(connection_fingerprint)
+        if protocol:
+            identity_conditions.append("o.protocol=?")
+            identity_params.append(protocol)
         identity_filter = ("AND EXISTS (SELECT 1 FROM model_observations o WHERE o.run_id=r.id "
-                           "AND o.target_id=p.channel_id AND o.connection_fingerprint=?) " if connection_fingerprint else "")
-        params = (channel_id, model, connection_fingerprint, max_runs) if connection_fingerprint else (channel_id, model, max_runs)
+                           "AND o.target_id=p.channel_id AND " + " AND ".join(identity_conditions) + ") "
+                           if identity_conditions else "")
+        params = (channel_id, model, *identity_params, max_runs)
         run_ids = [int(row[0]) for row in cur.execute(
             "SELECT DISTINCT r.id FROM runs r JOIN probe_results p ON p.run_id=r.id "
             "WHERE p.channel_id=? AND p.model=? AND r.source='schedule' AND r.status='completed' "

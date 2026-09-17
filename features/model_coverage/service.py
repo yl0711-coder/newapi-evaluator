@@ -7,7 +7,7 @@ import time
 
 from shared.registry import Conflict, RegistryError, get_registry
 from features.stability.app import storage, transport
-from .catalog import Catalog
+from .catalog import Catalog, validate_protocol
 
 
 FRESH_SECONDS = 48 * 3600
@@ -114,6 +114,7 @@ def resolve_items(selections):
         channel = registry.resolve(selected["channel_id"])
         binding = catalog.binding(channel["id"], selected["model_id"])
         actual, protocol = binding["upstream_model"], binding["request_protocol"]
+        validate_protocol(protocol, binding["model"], actual)
         key = (channel["id"], actual, protocol)
         resolved[key] = {"channel_id": channel["id"], "model_id": binding["id"], "model": actual, "protocol": protocol,
                          "label": binding["label"], "connection_fingerprint": registry.connection_fingerprint(channel)}

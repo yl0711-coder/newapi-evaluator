@@ -212,6 +212,48 @@ class CoverageTests(unittest.IsolatedAsyncioTestCase):
         self.registry.save({**self.channel,'api_key':'','enabled':False},self.channel['id'],self.channel['version'])
         self.assertEqual(self.row()['enrollment'],'paused')
 
+    async def test_mapped_gpt6_requires_responses_for_verification_and_enrollment(self):
+        path = f"/api/model-coverage/channels/{self.channel['id']}/models/{self.model['id']}"
+        response = await self.client.put(path, json={'upstream_model': 'gpt-6-astra', 'protocol': 'openai'})
+        self.assertEqual(response.status_code, 400)
+        response = await self.client.put(path, json={'upstream_model': 'gpt-6-astra', 'protocol': 'responses'})
+        self.assertEqual(response.status_code, 200)
+        with patch.object(scheduler, 'tick'):
+            response = await self.client.post('/api/model-coverage/verify', json={'items': self.selection, 'confirm_live': True})
+        self.assertEqual(response.status_code, 202)
+        run = storage.get_run(response.json()['run_id'])
+        target = storage.get_channel(run['snapshot']['channel_ids'][0])
+        self.assertEqual((target['model'], target['protocol']), ('gpt-6-astra', 'responses'))
+        other = self.target(model='synthetic-existing')
+        plan = self.schedule([other])
+        body = {'schedule_id': plan, 'items': self.selection}
+        preview = await self.client.post('/api/model-coverage/enrollment/preview', json=body)
+        self.assertEqual(preview.status_code, 200)
+        response = await self.client.post('/api/model-coverage/enrollment', json={**body,
+                                         'preview_token': preview.json()['preview_token'], 'confirm_live': True})
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(set(storage.get_schedule(plan)['channel_ids']), {other, target['id']})
+
+    async def test_saved_invalid_mapping_cannot_create_verification_or_enroll(self):
+        self.catalog.bind(self.channel['id'], self.model['id'], 'gpt-6-astra', 'responses')
+        with self.registry.connect() as conn:
+            conn.execute("UPDATE channel_model_bindings SET protocol='openai'")
+        other = self.target(model='synthetic-existing')
+        plan = self.schedule([other])
+        with patch.object(scheduler, 'tick') as tick:
+            response = await self.client.post('/api/model-coverage/verify', json={'items': self.selection, 'confirm_live': True})
+        self.assertEqual(response.status_code, 400)
+        tick.assert_not_awaited()
+        body = {'schedule_id': plan, 'items': self.selection}
+        response = await self.client.post('/api/model-coverage/enrollment/preview', json=body)
+        self.assertEqual(response.status_code, 400)
+        response = await self.client.post('/api/model-coverage/enrollment', json={**body,
+                                         'preview_token': '0' * 64, 'confirm_live': True})
+        self.assertEqual(response.status_code, 400)
+        self.assertEqual(storage.list_runs(), [])
+        self.assertEqual(len(storage.list_channels()), 1)
+        self.assertEqual(storage.get_schedule(plan)['channel_ids'], [other])
+
     async def test_health_needs_multiple_batches_and_is_separate_from_speed(self):
         target=self.target()
         self.observation(target)
@@ -245,6 +287,38 @@ class CoverageTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(self.row()['measurement']['status'],'untested')
         self.catalog.bind(self.channel['id'],self.model['id'],'new-alias','anthropic')
         self.assertEqual(self.row()['measurement']['status'],'untested')
+
+    async def test_speed_baseline_does_not_cross_protocol_or_connection(self):
+        target = self.target()
+        for _ in range(5):
+            run_id = self.observation(target, source='schedule')
+            storage.add_probe_result(run_id, {
+                'channel_id': target, 'channel_name': 'Synthetic target', 'model': self.model['model'],
+                'round_number': 1, 'probe_id': 'synthetic-speed', 'ok': True,
+                'status': 'completed', 'latency_ms': 1000,
+            })
+        snapshot = ScheduleInput(name='Synthetic speed check', daily_times='23:58', channel_ids=[target],
+                                 rounds=1, round_interval_seconds=0, speed_threshold_mode='adaptive').model_dump()
+
+        async def probe_result(_client, _channel, probe):
+            return {'probe_id': probe['id'], 'ok': True, 'status': 'completed', 'latency_ms': 500,
+                    'ttft_ms': None, 'tokens_per_second': None, 'stream_break': False}
+
+        for protocol, rotate_key, expected_runs in [('openai', False, 5), ('responses', False, 0), ('openai', True, 0)]:
+            with self.subTest(protocol=protocol, rotate_key=rotate_key):
+                if rotate_key:
+                    self.registry.save({**self.channel, 'api_key': 'synthetic-rotated'},
+                                       self.channel['id'], self.channel['version'])
+                storage.upsert_channel({'id': target, 'name': 'Synthetic target', 'registry_channel_id': self.channel['id'],
+                                        'model': self.model['model'], 'protocol': protocol, 'enabled': True})
+                run_id = storage.create_run(snapshot, time.time(), source='coverage')
+                channel = storage.list_channels(include_secrets=True, ids=[target])[0]
+                with patch.object(scheduler.transport, 'run_probe', side_effect=probe_result):
+                    measured = await scheduler._measure_channel(run_id, channel, snapshot)
+                speed = measured['speed_assessment']
+                self.assertEqual(speed['historical_runs'], expected_runs)
+                self.assertEqual(speed['status'], 'normal' if expected_runs else 'collecting')
+                self.assertEqual(speed['baseline_median_p95_ms'], 1000 if expected_runs else None)
 
     async def test_report_pruning_preserves_last_observation(self):
         target=self.target(); run=self.observation(target)
@@ -344,6 +418,34 @@ class CoverageTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(self.row()['measurement']['status'],'stable')
         for _ in range(32): self.observation(target)
         self.assertEqual(len(storage.model_observations()),30)
+
+    async def test_readonly_inspection_tracks_channel_model_mapping(self):
+        from scripts.inspect_model_coverage import inspect
+        before = inspect(self.directory)
+        self.catalog.bind(self.channel['id'], self.model['id'], 'synthetic-model-alias', 'responses')
+        mapped = inspect(self.directory)
+        self.assertNotEqual(mapped['fingerprint'], before['fingerprint'])
+        self.assertEqual(mapped['mappings'], [{'channel_alias': f"channel-{self.channel['id']}",
+                         'model': self.model['model'], 'upstream_model': 'synthetic-model-alias', 'protocol': 'responses'}])
+        self.catalog.bind(self.channel['id'], self.model['id'], 'synthetic-model-alias', 'openai')
+        changed = inspect(self.directory)
+        self.assertNotEqual(changed['fingerprint'], mapped['fingerprint'])
+        self.assertEqual(changed['mappings'][0]['protocol'], 'openai')
+        self.assertEqual(changed['requests_sent'], 0)
+        self.assertFalse(changed['secrets_read'])
+
+    async def test_readonly_inspection_supports_uninitialized_catalog(self):
+        from scripts.inspect_model_coverage import inspect
+        legacy = Registry(self.directory / 'legacy')
+        default = inspect()
+        result = inspect(legacy.directory)
+        self.assertEqual(result['models'], default['models'])
+        self.assertEqual(result['mappings'], [])
+        self.assertEqual(default['mappings'], [])
+        with legacy.connect() as conn:
+            names = {row[0] for row in conn.execute("SELECT name FROM sqlite_master WHERE type='table'")}
+        self.assertNotIn('model_catalog', names)
+        self.assertNotIn('channel_model_bindings', names)
 
     async def test_enrollment_api_requires_confirmation_and_preserves_preview(self):
         target=self.target(model='other-synthetic'); plan=self.schedule([target])

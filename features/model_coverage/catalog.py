@@ -7,6 +7,7 @@ import time
 import uuid
 
 from shared.registry import Conflict, RegistryError
+from features.admission.main import required_protocol
 
 
 DEFAULT_MODELS = (
@@ -24,6 +25,11 @@ DEFAULT_MODELS = (
     ("claude-sonnet-4.6", "Claude Sonnet 4.6", "Claude", "anthropic"),
 )
 PROTOCOLS = {"openai", "anthropic", "responses"}
+
+
+def validate_protocol(protocol: str, *models: str) -> None:
+    if protocol not in PROTOCOLS or any(required_protocol(model) not in (None, protocol) for model in models):
+        raise RegistryError("模型协议无效；GPT-6 Astra 使用 Responses")
 
 
 def model_name(value: str) -> str:
@@ -65,10 +71,9 @@ class Catalog:
 
     def add(self, model: str, label: str, family: str, protocol: str):
         model = model_name(model)
-        if protocol not in PROTOCOLS or not label.strip() or not family.strip():
+        validate_protocol(protocol, model)
+        if not label.strip() or not family.strip():
             raise RegistryError("请填写名称、分组和有效协议")
-        if model == "gpt-6-astra" and protocol != "responses":
-            raise RegistryError("GPT-6 Astra 使用 Responses 协议")
         with self.registry.connect() as conn:
             conn.execute("BEGIN IMMEDIATE")
             if conn.execute("SELECT 1 FROM model_catalog WHERE model=?", (model,)).fetchone():
@@ -95,8 +100,7 @@ class Catalog:
         upstream_model = model_name(upstream_model)
         if channel["api_key"] in upstream_model:
             raise RegistryError("模型 ID 不能包含凭据")
-        if protocol not in PROTOCOLS or (model["model"] == "gpt-6-astra" and protocol != "responses"):
-            raise RegistryError("模型协议无效；GPT-6 Astra 使用 Responses")
+        validate_protocol(protocol, model["model"], upstream_model)
         with self.registry.connect() as conn:
             conn.execute("""INSERT INTO channel_model_bindings VALUES(?,?,?,?)
                 ON CONFLICT(channel_id,model_id) DO UPDATE SET upstream_model=excluded.upstream_model,

@@ -12,6 +12,7 @@ from fastapi.responses import FileResponse, JSONResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, ConfigDict, Field, model_validator
 from shared.registry import RegistryError, get_registry
+from features.admission.main import required_protocol
 
 from . import scheduler, storage, transport
 from .config import TIMEZONE, WEB_DIR
@@ -30,8 +31,7 @@ class ChannelInput(BaseModel):
 
     @model_validator(mode="after")
     def model_protocol(self):
-        if self.model == "gpt-6-astra":
-            self.protocol = "responses"
+        self.protocol = required_protocol(self.model) or self.protocol
         return self
 
 

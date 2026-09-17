@@ -94,6 +94,33 @@ class ResponsesTests(unittest.IsolatedAsyncioTestCase):
                        [{'type':'response.output_text.delta','delta':'different'},completed()]]:
             self.assertEqual((await self.run_response(httpx.Response(200,text=sse(events))))['status'],'invalid_response')
 
+    async def test_upstream_failure_has_its_own_classification_without_body(self):
+        failed = {'type': 'response.failed', 'response': {'status': 'failed',
+                  'error': {'code': 'server_error', 'message': 'synthetic-response-key private-body'}}}
+        for streaming in (True, False):
+            with self.subTest(streaming=streaming):
+                response = httpx.Response(200, text=sse([failed])) if streaming else httpx.Response(200, json=failed['response'])
+                result = await self.run_response(response, {**self.probe, 'stream': streaming})
+                self.assertEqual(result['status'], 'upstream_error')
+                self.assertFalse(result['ok'])
+                self.assertFalse(result['stream_break'])
+                self.assertNotIn('synthetic-response-key', json.dumps(result))
+                self.assertNotIn('private-body', json.dumps(result))
+        error_event = {'type': 'error', 'code': 'server_error', 'message': 'private-body'}
+        result = await self.run_response(httpx.Response(200, text=sse([error_event])))
+        self.assertEqual(result['status'], 'upstream_error')
+        self.assertNotIn('private-body', json.dumps(result))
+
+    async def test_protocol_damage_takes_precedence_over_upstream_failure(self):
+        failed = {'type': 'response.failed', 'response': {'status': 'failed'}}
+        cases = [[failed, failed], [completed(), failed],
+                 [{'type': 'response.failed', 'response': {'status': 'completed'}}],
+                 [completed(), {'type': 'error', 'code': 'server_error'}]]
+        for events in cases:
+            with self.subTest(events=[event['type'] for event in events]):
+                result = await self.run_response(httpx.Response(200, text=sse(events)))
+                self.assertEqual(result['status'], 'invalid_response')
+
     async def test_completed_only_content_and_reasoning_usage_do_not_invent_speed(self):
         result=await self.run_response(httpx.Response(200,text=sse([completed()])))
         self.assertTrue(result['ok']); self.assertIsNone(result['tokens_per_second'])

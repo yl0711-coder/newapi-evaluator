@@ -7,7 +7,7 @@
 | suite_id | 入口与覆盖 | 上限 |
 | --- | --- | --- |
 | workbench-python | scripts/test_all.py，完整三引擎及 unittest；包含 test_model_coverage.py 的手动获取、分页、失败保留、连接变化、精确映射、稳定样本/过期、接入派生状态、事务回滚、预览变化、去重、只读与鉴权；test_stability_responses.py 的请求/非流式/SSE/拒答/截断/断流/超时/取消/用量 | 900s |
-| model-coverage-inspect | scripts/inspect_model_coverage.py；无凭据、无出站、公开配置指纹 | 60s |
+| model-coverage-inspect | scripts/inspect_model_coverage.py；无凭据、无出站，公开配置及模型映射参与指纹，旧库缺表保持只读 | 60s |
 | model-coverage-browser | node scripts/model_coverage_ui.cjs；真实本地 HTTP + Edge：人工确认获取、12项、单次 GPT-6 六请求、结果回写、预览请求量、加入/重复跳过、新模型、映射、过滤、获取失败保留、刷新无出站、390/900/1440px | 300s |
 | workbench-browser | node scripts/ui_smoke.cjs；既有八页面交互与宽窄屏回归 | 600s |
 | 其余继承组 | admission-inspect、workbench-web、workbench-security、syntax、workbench-e2e、diagnosis-browser、diagnosis-inspect、image-inspect，及独立 legacy-acceptance | 见原清单 |

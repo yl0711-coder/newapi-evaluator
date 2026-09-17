@@ -95,7 +95,8 @@ def _thresholds(snapshot: dict[str, Any]) -> dict[str, Any]:
 
 
 def _apply_speed_threshold(
-    channel_id: int, model: str, summary: dict[str, Any], snapshot: dict[str, Any], connection_fingerprint: str | None = None
+    channel_id: int, model: str, summary: dict[str, Any], snapshot: dict[str, Any], connection_fingerprint: str | None = None,
+    protocol: str | None = None
 ) -> dict[str, Any]:
     mode = str(snapshot.get("speed_threshold_mode") or "fixed")
     current_p95 = summary.get("p95_success_latency_ms")
@@ -112,7 +113,7 @@ def _apply_speed_threshold(
 
     required = int(snapshot.get("speed_baseline_min_runs") or 5)
     ratio = float(snapshot.get("speed_slow_ratio") or 1.5)
-    baseline = storage.channel_latency_baseline(channel_id, model, connection_fingerprint=connection_fingerprint)
+    baseline = storage.channel_latency_baseline(channel_id, model, connection_fingerprint=connection_fingerprint, protocol=protocol)
     baseline_p95 = baseline.get("median_p95_latency_ms")
     sample_count = int(baseline.get("sample_count") or 0)
     threshold = round(float(baseline_p95) * ratio) if baseline_p95 is not None else None
@@ -187,7 +188,8 @@ async def _measure_channel(
         for round_results in await asyncio.gather(*(run_round(number) for number in range(1, rounds + 1))):
             results.extend(round_results)
     summary = transport.summarize(results, _thresholds(snapshot))
-    summary = _apply_speed_threshold(channel["id"], channel["model"], summary, snapshot, channel.get("connection_fingerprint"))
+    summary = _apply_speed_threshold(channel["id"], channel["model"], summary, snapshot,
+                                     channel.get("connection_fingerprint"), channel["protocol"])
     return {
         "channel_id": channel["id"],
         "registry_channel_id": channel.get("registry_channel_id"),
@@ -297,7 +299,7 @@ def _render_channel_details(channels: list[dict[str, Any]]) -> list[str]:
             labels = {
                 "timeout": "超时", "stream_break": "断流", "auth_error": "鉴权失败",
                 "rate_limited": "限流", "network_error": "网络错误",
-                "upstream_5xx": "上游 5xx", "content_mismatch": "内容不符",
+                "upstream_5xx": "上游 5xx", "upstream_error": "上游处理失败", "content_mismatch": "内容不符",
                 "empty_response": "空响应", "invalid_response": "无效响应",
             }
             detail += "；失败类型 " + "、".join(

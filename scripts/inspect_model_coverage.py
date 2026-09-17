@@ -16,7 +16,7 @@ from features.model_coverage.catalog import DEFAULT_MODELS
 
 def inspect(directory=None):
     models = [{'model':m[0], 'protocol':m[3]} for m in DEFAULT_MODELS]
-    channels = []
+    channels, mappings = [], []
     if directory is not None:
         database = Path(directory).resolve() / 'channels.db'
         if not database.is_file():
@@ -30,8 +30,13 @@ def inspect(directory=None):
                                  'enabled':bool(row[2]), 'version':row[3]})
             if 'model_catalog' in names:
                 models = [{'model':r[0],'protocol':r[1]} for r in conn.execute('SELECT model,protocol FROM model_catalog ORDER BY id')]
-    fingerprint = hashlib.sha256(json.dumps([channels,models],sort_keys=True).encode()).hexdigest()
-    return {'channels':channels,'models':models,'fingerprint':fingerprint,'extracted_at':int(time.time()),
+            if 'channel_model_bindings' in names:
+                mappings = [{'channel_alias':f'channel-{r[0]}', 'model':r[1], 'upstream_model':r[2], 'protocol':r[3]}
+                            for r in conn.execute('''SELECT b.channel_id,c.model,b.upstream_model,b.protocol
+                                FROM channel_model_bindings b JOIN model_catalog c ON c.id=b.model_id
+                                ORDER BY b.channel_id,b.model_id''')]
+    fingerprint = hashlib.sha256(json.dumps([channels,models,mappings],sort_keys=True).encode()).hexdigest()
+    return {'channels':channels,'models':models,'mappings':mappings,'fingerprint':fingerprint,'extracted_at':int(time.time()),
             'requests_sent':0,'secrets_read':False,'discovery_mode':'manual'}
 
 

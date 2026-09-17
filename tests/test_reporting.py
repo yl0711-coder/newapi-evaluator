@@ -63,6 +63,16 @@ class ReportFormattingTests(unittest.TestCase):
         self.assertEqual(slow["speed_assessment"]["status"], "slow")
         self.assertEqual(slow["verdict"], "fail")
 
+    def test_report_distinguishes_upstream_failure_from_invalid_response(self):
+        channel = {'registry_channel_id': 1, 'channel_name': 'Synthetic channel', 'model': 'synthetic-model',
+                   'verdict': 'fail', 'reasons': ['成功率低于阈值'], 'total': 2, 'completed': 0,
+                   'pass_rate': 0, 'failures': {'upstream_error': 1, 'invalid_response': 1}}
+        run = {'snapshot': {'report_groups': [{'family': 'Synthetic', 'label': '1x',
+                                               'registry_channel_ids': [1], 'always_normal': False}]}}
+        report = scheduler.render_notification(run, {'channels': [channel]})
+        self.assertIn('上游处理失败×1', report)
+        self.assertIn('无效响应×1', report)
+
     def test_unstable_channel_report_contains_concrete_rates_and_counts(self):
         run = {"snapshot": {"report_groups": [{
             "family": "Codex", "label": "0.7x", "registry_channel_ids": [3], "always_normal": False,

@@ -29,6 +29,7 @@ async def run_probe(client, channel, probe):
         blocks = {}
         terminal = ""
         protocol_error = False
+        upstream_error = False
         refused = False
         first = last = None
         count = 0
@@ -58,9 +59,12 @@ async def run_probe(client, channel, probe):
                 if not event or not event["recognized"] or event["format"] != "responses":
                     protocol_error = True
                     continue
-                if terminal and (event["response_status"] or event["content"] or event["reasoning"] or event["block_content"] is not None):
+                if terminal and (event["response_status"] or event["content"] or event["reasoning"]
+                                 or event["block_content"] is not None or event["protocol_error"] == "upstream_error"):
                     protocol_error = True
-                protocol_error = protocol_error or bool(event["protocol_error"])
+                event_error = event["protocol_error"]
+                protocol_error = protocol_error or bool(event_error and event_error != "upstream_error")
+                upstream_error = upstream_error or event_error == "upstream_error"
                 terminal = event["response_status"] or terminal
                 refused = refused or event["refused"]
                 actual = scrub(event["actual_model"] or actual, channel["api_key"])[:160]
@@ -100,7 +104,7 @@ async def run_probe(client, channel, probe):
                     answer += delta
                     if len(answer) > 1_048_576:
                         raise ValueError("response_too_large")
-        status = ("invalid_response" if protocol_error else "upstream_5xx" if terminal == "failed"
+        status = ("invalid_response" if protocol_error else "upstream_error" if upstream_error or terminal == "failed"
                   else "stream_break" if not terminal and probe["stream"] else "truncated" if terminal != "completed"
                   else "refused" if refused else "empty_response" if not answer.strip()
                   else "completed" if _matches(probe, answer) else "content_mismatch")
