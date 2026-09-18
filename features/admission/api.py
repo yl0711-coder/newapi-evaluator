@@ -15,6 +15,7 @@ from shared.network import guarded_transport
 from shared.redaction import EventRedactor
 from shared.registry import RegistryError, normalize
 from . import feishu, main as engine, reporting, storage
+from features.protocol_admission.api import app as protocol_app
 
 
 _feishu_tasks: set[asyncio.Task[None]] = set()
@@ -158,7 +159,8 @@ async def lifespan(_app):
     for entry in storage.list_unsynced_feishu_records():
         _schedule_feishu_record(entry["id"])
     try:
-        yield
+        async with protocol_app.router.lifespan_context(protocol_app):
+            yield
     finally:
         if _feishu_tasks:
             await asyncio.gather(*tuple(_feishu_tasks), return_exceptions=True)
@@ -295,4 +297,5 @@ async def remove_report(report_id: int):
     return {"deleted": True}
 
 
+app.mount("/protocol", protocol_app)
 app.mount("/", StaticFiles(directory=Path(__file__).parent / "web", html=True))

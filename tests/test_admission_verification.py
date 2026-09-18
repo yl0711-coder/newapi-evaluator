@@ -34,9 +34,12 @@ class AdmissionVerificationTests(unittest.TestCase):
             self.assertEqual(verifier.main(), 1)
             data = json.loads((Path(folder) / 'report/verification.json').read_text())
             self.assertEqual(data['status'], 'failed')
-            self.assertEqual(len(data['results']), 12)
-            self.assertEqual(data['results'][2]['status'], 'failed')
-            self.assertTrue(all(row['status'] == 'passed' for i, row in enumerate(data['results']) if i != 2))
+            self.assertEqual(len(data['results']), 14)
+            rows = {row['suite_id']: row for row in data['results']}
+            self.assertIn('protocol-inspect', rows)
+            self.assertIn('protocol-browser', rows)
+            self.assertEqual(rows['workbench-web']['status'], 'failed')
+            self.assertTrue(all(row['status'] == 'passed' for name, row in rows.items() if name != 'workbench-web'))
 
     def test_cancel_during_collection_or_suite_cleans_child_and_records_incomplete(self):
         for stage, number in [('collection', signal.SIGINT), ('suite', signal.SIGTERM)]:
@@ -81,7 +84,7 @@ sys.exit(v.main())
                     data = json.loads((report / 'verification.json').read_text())
                     self.assertTrue(data['cancelled'])
                     self.assertEqual(data['status'], 'incomplete')
-                    self.assertEqual(len(data['results']), 12)
+                    self.assertEqual(len(data['results']), 14)
                     if stage == 'suite':
                         self.assertEqual(data['results'][0]['reason'], 'cancelled')
                         self.assertEqual(data['results'][0]['status'], 'incomplete')

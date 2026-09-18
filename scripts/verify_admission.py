@@ -36,6 +36,8 @@ def main():
                PLATFORM_DATA_DIR=str(output / "platform"), RELAY_LAB_DATA_DIR=str(output),
                PYTHON_EXECUTABLE=sys.executable)
     commands = [
+        ("protocol-inspect", [sys.executable, "scripts/inspect_protocol_admission.py"], 60, "inspect"),
+        ("protocol-browser", ["node", "scripts/protocol_admission_ui.cjs"], 300, "browser"),
         ("admission-inspect", [sys.executable, "scripts/inspect_admission.py", "--protocol", "openai"], 60, "inspect"),
         ("workbench-python", [sys.executable, "scripts/test_all.py"], 900, "python"),
         ("workbench-web", ["node", "scripts/test_web.js"], 120, "web"),

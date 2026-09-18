@@ -14,6 +14,7 @@ from urllib.parse import urlsplit
 from cryptography.fernet import Fernet, InvalidToken
 
 from .config import DATA_DIR, prepare_data_dir
+from .channel_protocol import clean_profile
 
 
 class RegistryError(ValueError):
@@ -53,7 +54,8 @@ def normalize(data: dict[str, Any]) -> dict[str, Any]:
         raise RegistryError("渠道状态无效")
     return {"name": name, "base_url": url, "scope": scope, "multiplier": multiplier,
             "api_key": key, "note": note, "enabled": bool(data.get("enabled", True)),
-            "source_kind": str(data.get("source_kind", "manual"))[:80], "status": status}
+            "source_kind": str(data.get("source_kind", "manual"))[:80], "status": status,
+            "protocol_profile": clean_profile(data.get("protocol_profile"), [key])}
 
 
 class Registry:
@@ -94,6 +96,9 @@ class Registry:
                 fingerprint TEXT NOT NULL UNIQUE, note TEXT NOT NULL DEFAULT '', enabled INTEGER NOT NULL,
                 source_kind TEXT NOT NULL, status TEXT NOT NULL DEFAULT 'recorded', version INTEGER NOT NULL DEFAULT 1,
                 created_at REAL NOT NULL, updated_at REAL NOT NULL)""")
+            columns = {row[1] for row in conn.execute("PRAGMA table_info(channels)")}
+            if "protocol_profile" not in columns:
+                conn.execute("ALTER TABLE channels ADD COLUMN protocol_profile TEXT NOT NULL DEFAULT '{}'")
 
     @contextmanager
     def connect(self):
@@ -118,7 +123,7 @@ class Registry:
         result = {k: row[k] for k in ("id", "name", "base_url", "scope", "multiplier", "note",
                                       "enabled", "source_kind", "status", "version", "created_at", "updated_at")}
         result["enabled"] = bool(result["enabled"])
-        result.update(has_key=True, key_masked="***")
+        result.update(has_key=True, key_masked="***", protocol_profile=clean_profile(json.loads(row["protocol_profile"])))
         return result
 
     def list(self) -> list[dict]:
@@ -156,9 +161,9 @@ class Registry:
             return row[0], False
         now = time.time()
         cur = conn.execute("""INSERT INTO channels
-            (name,base_url,scope,multiplier,key_enc,fingerprint,note,enabled,source_kind,status,created_at,updated_at)
-            VALUES(?,?,?,?,?,?,?,?,?,?,?,?)""", (data["name"], data["base_url"], data["scope"], data["multiplier"],
-            self.encrypt(data["api_key"]), fingerprint, data["note"], int(data["enabled"]), data["source_kind"], data["status"], now, now))
+            (name,base_url,scope,multiplier,key_enc,fingerprint,note,enabled,source_kind,status,created_at,updated_at,protocol_profile)
+            VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?)""", (data["name"], data["base_url"], data["scope"], data["multiplier"],
+            self.encrypt(data["api_key"]), fingerprint, data["note"], int(data["enabled"]), data["source_kind"], data["status"], now, now, json.dumps(data["protocol_profile"], ensure_ascii=False)))
         return cur.lastrowid, True
 
     def import_records(self, records: list[dict]) -> dict:
@@ -193,12 +198,15 @@ class Registry:
                 raise Conflict("渠道已被修改，请刷新后重新编辑")
             if not data.get("api_key"):
                 data = {**data, "api_key": self._cipher.decrypt(row["key_enc"].encode()).decode()}
+            if data.get("protocol_profile") is None:
+                data = {**data, "protocol_profile": json.loads(row["protocol_profile"])}
             clean = normalize(data)
             try:
                 conn.execute("""UPDATE channels SET name=?,base_url=?,scope=?,multiplier=?,key_enc=?,fingerprint=?,
-                    note=?,enabled=?,status=?,version=version+1,updated_at=? WHERE id=?""",
+                    note=?,enabled=?,status=?,version=version+1,updated_at=?,protocol_profile=? WHERE id=?""",
                     (clean["name"], clean["base_url"], clean["scope"], clean["multiplier"], self.encrypt(clean["api_key"]),
-                     self._identity(clean), clean["note"], int(clean["enabled"]), clean["status"], time.time(), channel_id))
+                     self._identity(clean), clean["note"], int(clean["enabled"]), clean["status"], time.time(),
+                     json.dumps(clean["protocol_profile"], ensure_ascii=False), channel_id))
             except sqlite3.IntegrityError as exc:
                 raise Conflict("相同地址、密钥、分类和倍率的渠道已存在") from exc
         return self.get(channel_id)

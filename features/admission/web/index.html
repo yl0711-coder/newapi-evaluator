@@ -1,6 +1,7 @@
 <!doctype html>
 <html lang="zh-CN"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>准入测试 | 模型测试工作台</title><link rel="stylesheet" href="/assets/common.css"><link rel="stylesheet" href="./styles.css"><script src="/assets/common.js" defer></script><script src="./app.js" defer></script></head>
 <body><main class="page"><p class="eyebrow">ADMISSION / PAIRED REPORT</p><h1>同题双端对照，综合查看能力、速度与稳定性。</h1><p class="muted">候选端与参照端同时接收相同题目和参数。系统整理运行证据，是否准入由人员直接阅读报告后判断。</p>
+<p><a href="./protocol/">协议识别与 NewAPI 配置准入</a>：先核对候选接口能力和目标分组，再继续下方质量快测。</p>
 <form id="compare-form" class="panel" autocomplete="off"><fieldset id="setup"><legend>测试配置</legend>
 <div class="two"><label>模型预设<select id="preset"></select></label><label>测试轮数<select id="rounds"><option value="1">1 轮 / 证据有限</option><option value="2" selected>2 轮 / 首轮预热，第二轮评测</option><option value="3">3 轮 / 首轮预热，后两轮评测</option><option value="5">5 轮 / 首轮预热，后四轮评测</option></select></label></div>
 <div class="two"><fieldset><legend>候选端 / 临时使用</legend><label>粘贴渠道连接信息<textarea id="candidate-import" rows="3" placeholder="JSON、curl、BASE_URL / API_KEY 或普通文本" spellcheck="false"></textarea></label><div class="actions"><button type="button" id="extract" class="secondary">提取 URL 与 Key</button><span id="extract-status" class="hint" role="status"></span></div>

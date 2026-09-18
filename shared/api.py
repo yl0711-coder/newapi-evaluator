@@ -5,6 +5,7 @@ from pydantic import BaseModel, ConfigDict, Field
 
 from .registry import Conflict, RegistryError, get_registry
 from .importer import extract
+from .channel_protocol import ProtocolProfile, UPSTREAM_TYPES, CHANNEL_TYPES, SOURCE_TYPES
 
 router = APIRouter(prefix="/api/registry")
 
@@ -20,6 +21,7 @@ class ChannelInput(BaseModel):
     enabled: bool = True
     status: Literal["recorded", "online"] = "recorded"
     version: int | None = None
+    protocol_profile: ProtocolProfile | None = None
 
 
 class ImportInput(BaseModel):
@@ -44,6 +46,11 @@ def resolve(selection: Selection) -> dict:
             "model": selection.model, "protocol": selection.protocol}
 
 
+@router.get("/protocol-options")
+async def protocol_options():
+    return {"upstream_types": UPSTREAM_TYPES, "channel_types": CHANNEL_TYPES, "source_types": SOURCE_TYPES}
+
+
 @router.get("/channels")
 async def channels():
     return {"channels": get_registry().list()}
@@ -52,23 +59,27 @@ async def channels():
 @router.post("/channels")
 async def add_channel(body: ChannelInput):
     try:
-        return get_registry().save(body.model_dump())
+        return get_registry().save(body.model_dump(mode="json"))
     except Conflict as exc:
         raise HTTPException(409, str(exc)) from exc
     except RegistryError as exc:
         raise HTTPException(400, str(exc)) from exc
+    except ValueError:
+        raise HTTPException(400, "协议资料格式无效或包含凭据") from None
 
 
 @router.put("/channels/{channel_id}")
 async def update_channel(channel_id: int, body: ChannelInput):
     try:
-        return get_registry().save(body.model_dump(), channel_id, body.version)
+        return get_registry().save(body.model_dump(mode="json"), channel_id, body.version)
     except KeyError as exc:
         raise HTTPException(404, "公共渠道不存在") from exc
     except Conflict as exc:
         raise HTTPException(409, str(exc)) from exc
     except RegistryError as exc:
         raise HTTPException(400, str(exc)) from exc
+    except ValueError:
+        raise HTTPException(400, "协议资料格式无效或包含凭据") from None
 
 
 @router.post("/import")
