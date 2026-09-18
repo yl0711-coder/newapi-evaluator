@@ -31,9 +31,12 @@ const upstream=http.createServer(async(req,res)=>{
 async function freePort(){const server=net.createServer();await new Promise(r=>server.listen(0,'127.0.0.1',r));const port=server.address().port;await new Promise(r=>server.close(r));return port;}
 (async()=>{
   await new Promise(r=>upstream.listen(0,'127.0.0.1',r));const upstreamUrl=`http://127.0.0.1:${upstream.address().port}/v1`,port=await freePort(),base=`http://127.0.0.1:${port}`;
-  app=spawn(process.env.PYTHON_EXECUTABLE,['-B','run.py','--app','admission','--port',String(port)],{cwd:root,env:{...process.env,PLATFORM_DATA_DIR:data,PLATFORM_EGRESS_ALLOWLIST:'127.0.0.1',PLATFORM_USERNAME:'',PLATFORM_PASSWORD:''},stdio:['ignore','pipe','pipe']});
-  app.stdout.resume();app.stderr.resume();appExit=new Promise(resolve=>{app.once('exit',resolve);app.once('error',resolve);});
-  let ready=false;for(let i=0;i<100;i++){if(app.exitCode!==null)throw new Error('Owned server exited');try{if((await fetch(base+'/api/health')).ok){ready=true;break;}}catch{}await new Promise(r=>setTimeout(r,100));}assert.ok(ready);
+  async function startApp(mode){
+    app=spawn(process.env.PYTHON_EXECUTABLE,['-B','run.py','--app',mode,'--port',String(port)],{cwd:root,env:{...process.env,PLATFORM_DATA_DIR:data,PLATFORM_EGRESS_ALLOWLIST:'127.0.0.1',PLATFORM_USERNAME:'',PLATFORM_PASSWORD:''},stdio:['ignore','pipe','pipe']});
+    app.stdout.resume();app.stderr.resume();appExit=new Promise(resolve=>{app.once('exit',resolve);app.once('error',resolve);});
+    let ready=false;for(let i=0;i<100;i++){if(app.exitCode!==null)throw new Error('Owned server exited');try{if((await fetch(base+'/api/health')).ok){ready=true;break;}}catch{}await new Promise(r=>setTimeout(r,100));}assert.ok(ready);
+  }
+  await startApp('admission');
   browser=await chromium.launch({headless:true,...(process.env.PLAYWRIGHT_CHANNEL?{channel:process.env.PLAYWRIGHT_CHANNEL}:{})});const page=await browser.newPage({viewport:{width:1440,height:1000}}),errors=[];page.on('pageerror',e=>errors.push(e.name));
   await page.goto(base+'/channels/');await page.locator('#add').click();await page.locator('#url').fill(upstreamUrl);await page.locator('#name').fill('Synthetic protocol candidate');await page.locator('#key').fill('synthetic-saved-key');await page.locator('#multiplier').fill('1');
   await page.locator('#channel-upstream_type').selectOption('newapi');await page.locator('#channel-proposed_type').selectOption('newapi');await page.locator('#channel-confirmation_source').selectOption('supplier');await page.locator('#channel-confirmed_on').fill('2026-01-01');await page.locator('#save').click();await page.locator('#editor').waitFor({state:'hidden'});
@@ -50,5 +53,6 @@ async function freePort(){const server=net.createServer();await new Promise(r=>s
   await page.locator('#channel').selectOption('');await page.locator('#base-url').fill(upstreamUrl);await page.locator('#api-key').fill('synthetic-held-key');await page.locator('#confirm-live').check();await page.locator('#preview').click();await page.locator('#start:not([disabled])').waitFor();await page.locator('#start').click();
   for(let i=0;i<100&&!held.size;i++)await new Promise(r=>setTimeout(r,10));assert.equal(held.size,1);await page.locator('#stop').click();await page.getByText('本轮协议探测已结束。',{exact:true}).waitFor();assert.equal(requests.length,11);assert.equal(await page.locator('#api-key').inputValue(),'');
   await page.reload();await page.getByText('准备就绪。先预览请求数量，再开始探测。',{exact:true}).waitFor();assert.equal(await page.locator('#history button').count(),2);assert.deepEqual(errors,[]);
-  console.log(JSON.stringify({status:'passed',checks:14,mockRequests:requests.length,real_upstream_tested:false,evidence:data}));
+  app.kill('SIGTERM');await appExit;await startApp('channels');await page.goto(base+'/channels/');await page.locator('#list article.record').waitFor();assert.equal(await page.getByRole('link',{name:'协议准入',exact:true}).count(),0);assert.equal((await fetch(base+'/admission/protocol/')).status,404);assert.deepEqual(errors,[]);
+  console.log(JSON.stringify({status:'passed',checks:16,mockRequests:requests.length,real_upstream_tested:false,evidence:data}));
 })().catch(error=>{console.error(error.stack);process.exitCode=1;}).finally(async()=>{if(browser)await browser.close();for(const res of held)res.destroy();if(app&&app.exitCode===null){app.kill('SIGTERM');await appExit;}upstream.closeAllConnections();await new Promise(r=>upstream.close(r));});

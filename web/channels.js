@@ -1,7 +1,8 @@
 const $ = id => document.getElementById(id);
-let channels = [];
+let channels = [], protocolAvailable = false;
 async function refresh() {
-  const [data] = await Promise.all([Workbench.api('/api/registry/channels'), ModelCoverage.load()]);
+  const [data, platform] = await Promise.all([Workbench.api('/api/registry/channels'), Workbench.ready, ModelCoverage.load()]);
+  protocolAvailable = platform.features.some(feature => feature.id === 'admission');
   channels = data.channels; ModelCoverage.setChannels(channels); render();
 }
 function render() {
@@ -13,7 +14,7 @@ function render() {
     card.append(Workbench.node('h3', c.name), Workbench.node('span', c.enabled ? (c.status === 'online' ? '已上线' : '已记录') : '已停用', 'badge'),
       Workbench.node('p', `${c.scope || '通用'} · ${c.multiplier}x · #${c.id}`), Workbench.node('p', c.base_url, 'muted'), Workbench.node('p', '密钥已保存', 'hint'));
     if (c.note) card.append(Workbench.node('p', c.note, 'hint'));
-    const actions = Workbench.node('div', '', 'actions'); const edit = Workbench.node('button', '编辑', 'secondary'); edit.addEventListener('click', () => open(c)); actions.append(edit); const protocol=Workbench.node('a','协议准入');protocol.href='/admission/protocol/?channel='+c.id;actions.append(protocol); card.append(actions, ModelCoverage.render(c)); return card;
+    const actions = Workbench.node('div', '', 'actions'); const edit = Workbench.node('button', '编辑', 'secondary'); edit.addEventListener('click', () => open(c)); actions.append(edit); if(protocolAvailable){const protocol=Workbench.node('a','协议准入');protocol.href='/admission/protocol/?channel='+c.id;actions.append(protocol);} card.append(actions, ModelCoverage.render(c)); return card;
   }));
   if (!visible.length) $('list').append(Workbench.node('p', '没有匹配的渠道。', 'muted'));
 }

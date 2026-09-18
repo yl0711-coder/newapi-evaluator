@@ -26,7 +26,7 @@
 
 探测每项仅发一次 HTTP 请求，串行执行；不自动重试，不跟随重定向，不采用环境代理，使用现有出站地址白名单。每次最多读取 1 MiB 正文，分别约束响应头/正文首段、空闲和总超时，整批上限 1800 秒。停止会取消在途请求，未执行项保留；进程重启把未结束运行标为 interrupted，不自动恢复发请求。
 
-流式请求验证各自的结束信号及事件顺序：Responses 对应 completed/incomplete/failed，Chat 对应 finish_reason 与 `[DONE]`，Messages 对应 block/message 事件。生成截断与传输缺少终态分开分类。usage 缺失不填零。流式 TTFT 为首个可见文本增量的接收耗时，非流式为 null；响应头和总耗时另存毫秒值。
+SSE 接收支持 LF、CRLF、CR 换行及开头 UTF-8 BOM，包括跨块分片。流式请求验证各自的结束信号及事件顺序：Responses 对应 completed/incomplete/failed，Chat 对应 finish_reason 与 `[DONE]`，Messages 对应 block/message 事件。生成截断与传输缺少终态分开分类。usage 缺失不填零。流式 TTFT 为首个可见文本增量的接收耗时，非流式为 null；响应头和总耗时另存毫秒值。
 
 Alpha Search 为 `POST /v1/alpha/search` 的非流式 JSON。包含搜索会话 id、实际模型和 `commands.search_query`，`response_length` 位于 commands。每次运行使用独立合成 RFC 9110 查询，不携带用户会话。响应要求 output 字符串；results 可以缺省/null/空数组，encrypted_output 可以缺省/null。对可识别的标准页来源及 RFC 9110 内容判定结果有效；普通非空字符串记“格式通过、结果待确认”。该内容检查不证明实时联网或搜索真实性，不解密 encrypted_output。仅有 200 或 RC26 工具计费不算通过。
 
@@ -38,7 +38,7 @@ HTTP 401/403 表示鉴权/访问限制；404/405 默认待核对方法、路径�
 
 RC26 Alpha Search 类型限制与候选端能力分别核对。OpenAI 等不在放行名单的拟配置类型，即使候选端返回有效 Alpha Search 结果，也阻止进入搜索分组。来源未确认、拟配置不一致或高级自定义需要人工确认。鉴权、确定不支持、坏响应、流式结束或必测 usage 错误形成对应模板阻断。超时和未知结果不算协议通过。任意检查尚未通过都保留缺口。
 
-本阶段状态为“禁止进入该分组”“仅允许内部测试”“待人工确认”，不会无条件输出“允许灰度”。质量、稳定性门槛和 NexusAPI 实际 channel_id、模型映射、重试链路及计费证据尚未采集，统一标为未评估/未验证。返回模型仅用于精确匹配提示，不能证明真实模型身份。网关尝试不可观察时为 null；Eval 一次尝试不等于全链路零重试。Mock 结论始终带演示标识。
+本阶段状态为“禁止进入该分组”“仅允许内部测试”“待人工确认”，不会无条件输出“允许灰度”。质量、稳定性门槛和 NexusAPI 实际 channel_id、模型映射、重试链路及计费证据尚未采集，统一标为未评估/未验证。返回模型与请求模型不一致时需复核映射或版本别名，结果保留待确认；精确匹配也不能证明真实模型身份。网关尝试不可观察时为 null；Eval 一次尝试不等于全链路零重试。Mock 结论始终带演示标识。
 
 ## 数据与接口
 
@@ -66,3 +66,5 @@ RC26 Alpha Search 类型限制与候选端能力分别核对。OpenAI 等不在�
 - [RC26 Alpha Search 转发和计费](https://github.com/QuantumNous/new-api/blob/v1.0.0-rc.26/relay/alpha_search_handler.go)
 - [RC26 渠道名称及类型编号](https://github.com/QuantumNous/new-api/blob/v1.0.0-rc.26/constant/channel.go)
 - [RC26 Codex 适配器](https://github.com/QuantumNous/new-api/blob/v1.0.0-rc.26/relay/channel/codex/adaptor.go)
+
+SSE 分行依据：[WHATWG Event Stream 解析规则](https://html.spec.whatwg.org/multipage/server-sent-events.html#parsing-an-event-stream)。

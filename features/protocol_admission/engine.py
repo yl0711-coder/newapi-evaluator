@@ -8,6 +8,7 @@ from urllib.parse import urlsplit
 import httpx
 
 from shared.network import guarded_transport
+from shared.channel_protocol import safe_text
 from .catalog import request_body
 
 MAX_BODY = 1_048_576
@@ -146,18 +147,37 @@ class StreamState:
         self.lines = []
         self.events = []
         self.ttft = None
+        self.at_start = True
+        self.skip_lf = False
 
     def feed(self, chunk, elapsed):
         self.buffer += chunk
-        while b"\n" in self.buffer:
-            line, self.buffer = self.buffer.split(b"\n", 1)
-            line = line.rstrip(b"\r")
+        if self.at_start:
+            bom = b"\xef\xbb\xbf"
+            if len(self.buffer) < 3 and bom.startswith(self.buffer):
+                return
+            if self.buffer.startswith(bom):
+                self.buffer = self.buffer[3:]
+            self.at_start = False
+        while self.buffer:
+            if self.skip_lf:
+                if self.buffer.startswith(b"\n"):
+                    self.buffer = self.buffer[1:]
+                self.skip_lf = False
+            boundaries = [index for index in (self.buffer.find(b"\n"), self.buffer.find(b"\r")) if index >= 0]
+            if not boundaries:
+                return
+            index = min(boundaries)
+            line, separator = self.buffer[:index], self.buffer[index:index + 1]
+            self.buffer = self.buffer[index + 1:]
+            self.skip_lf = separator == b"\r"
             if not line:
                 if self.lines:
-                    self.event(b"\n".join(self.lines).decode("utf-8"), elapsed)
+                    self.event(b"\n".join(self.lines).decode("utf-8", errors="replace"), elapsed)
                     self.lines = []
             elif line.startswith(b"data:"):
-                self.lines.append(line[5:].lstrip(b" "))
+                value = line[5:]
+                self.lines.append(value[1:] if value.startswith(b" ") else value)
 
     def event(self, data, elapsed):
         if data == "[DONE]":
@@ -299,7 +319,10 @@ async def execute(probe, base, key, plan, session_id, transport=None):
                     request_id = response.headers.get("x-request-id") or response.headers.get("request-id")
                     # Preserve correlation without accepting arbitrary upstream text into evidence.
                     if request_id and re.fullmatch(r"[a-zA-Z0-9_.:-]{1,160}", request_id) and key not in request_id:
-                        result["request_id"] = request_id
+                        try:
+                            result["request_id"] = safe_text(request_id)
+                        except ValueError:
+                            pass
                     result["content_type_json"] = "json" in response.headers.get("content-type", "").lower()
                     iterator = response.aiter_bytes().__aiter__()
                     while True:
@@ -338,5 +361,9 @@ async def execute(probe, base, key, plan, session_id, transport=None):
     observed = result.pop("observed_model", None)
     if observed == probe.upstream_model:
         result["model_match_status"] = "matched"
+    elif observed is not None:
+        result["model_match_status"] = "mismatch"
+        if result["result_status"] == "passed":
+            result.update(result_status="unconfirmed", error_class="model_mapping_unconfirmed")
     result["status"] = "passed" if result["transport_status"] == result["schema_status"] == result["result_status"] == "passed" else "unconfirmed" if result["result_status"] == "unconfirmed" else "failed"
     return result

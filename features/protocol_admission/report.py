@@ -6,6 +6,7 @@ from .models import GroupTarget
 
 LABELS = {"blocked": "禁止进入该分组", "internal_only": "仅允许内部测试", "manual_review": "待人工确认"}
 ERRORS = {
+    "model_mapping_unconfirmed": "返回模型与请求模型不同，请核对映射或版本别名",
     "upstream_protocol_unsupported": "上游明确表示不支持此接口",
     "authentication_failed": "鉴权或访问限制", "local_protocol_unsupported": "当前渠道类型在网关本地拒绝接口",
     "endpoint_unconfirmed": "方法、路径或分组尚需确认", "request_invalid": "请求参数或模型需要核对",

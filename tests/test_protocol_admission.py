@@ -69,6 +69,10 @@ class ProtocolContractTests(unittest.TestCase):
         with self.assertRaises(ValueError):
             ProtocolProfile(description="Authorization: Bearer synthetic-secret")
 
+    def test_group_rejects_credential_shaped_labels(self):
+        with self.assertRaises(ValueError):
+            plan(groups=[{"name": "sk-synthetic-group-0123456789", "template": "codex_search"}])
+
     def test_alpha_optional_fields_and_semantics(self):
         p = probe("alpha_search")
         output = "RFC 9110: https://www.rfc-editor.org/rfc/rfc9110.html"
@@ -108,6 +112,21 @@ class ProtocolContractTests(unittest.TestCase):
         for bad in [events[:-1], events + ["[DONE]"], events + [events[-1]], [{"type": "response.completed", "response": {**response_body(), "status": "failed"}}]]:
             state = StreamState(probe("responses_stream")); state.feed(wire(bad), 1)
             self.assertEqual(state.analyze()["result_status"], "failed")
+
+    def test_sse_cr_lf_crlf_and_bom_across_single_byte_fragments(self):
+        events = [{"choices": [{"index": 0, "delta": {"content": "READY"}, "finish_reason": None}]},
+                  {"choices": [{"index": 0, "delta": {}, "finish_reason": "stop"}], "usage": {"prompt_tokens": 5, "completion_tokens": 1}}, "[DONE]"]
+        for separator in [b"\n", b"\r\n", b"\r"]:
+            for prefix in [b"", b"\xef\xbb\xbf"]:
+                with self.subTest(separator=separator, bom=bool(prefix)):
+                    state = StreamState(probe("chat_stream"))
+                    content = prefix + wire(events).replace(b"\n", separator)
+                    for byte in content:
+                        state.feed(bytes([byte]), 1)
+                    self.assertEqual(state.analyze()["result_status"], "passed")
+                    incomplete = StreamState(probe("chat_stream"))
+                    incomplete.feed(content[:-len(separator)], 1)
+                    self.assertEqual(incomplete.analyze()["result_status"], "failed")
 
     def test_chat_requires_finish_done_and_usage(self):
         chunks = [{"choices": [{"index": 0, "delta": {"content": "READY"}, "finish_reason": None}]},
@@ -182,6 +201,22 @@ class ProtocolExecutionTests(unittest.IsolatedAsyncioTestCase):
         stale = manager.report(run["id"])
         self.assertEqual(stale["freshness"], "changed")
         self.assertTrue(any("重新" in value for value in stale["conclusion"]["warnings"]))
+
+    async def test_returned_model_mismatch_needs_confirmation(self):
+        body = response_body(); body["model"] = "synthetic-different-model"
+        result = await execute(probe("responses_json"), "https://synthetic.invalid", "synthetic-key", plan(), "session",
+                               httpx.MockTransport(lambda request: httpx.Response(200, json=body)))
+        self.assertEqual(result["schema_status"], "passed")
+        self.assertEqual(result["model_match_status"], "mismatch")
+        self.assertEqual(result["status"], "unconfirmed")
+        self.assertEqual(result["error_class"], "model_mapping_unconfirmed")
+
+    async def test_request_id_credential_shape_is_not_retained(self):
+        for identifier, expected in [("sk-synthetic-correlation-0123456789", None), ("request-fixture-001", "request-fixture-001")]:
+            result = await execute(probe("responses_json"), "https://synthetic.invalid", "synthetic-key", plan(), "session",
+                                   httpx.MockTransport(lambda request: httpx.Response(200, json=response_body(), headers={"x-request-id": identifier})))
+            self.assertEqual(result["request_id"], expected)
+            self.assertEqual(result["status"], "passed")
 
     async def test_timeout_and_body_limit(self):
         class Delayed(httpx.AsyncByteStream):
@@ -261,6 +296,21 @@ class ProtocolExecutionTests(unittest.IsolatedAsyncioTestCase):
             await manager.start(StartInput(**altered, preview_fingerprint=f))
         self.assertEqual(self.store.list(), [])
 
+    async def test_cancel_before_first_instruction_finishes_report(self):
+        p = plan()
+        manager = Manager(self.store, self.registry)
+        async with manager.lifespan():
+            run = await manager.start(StartInput(**p.model_dump(), preview_fingerprint=manager.preview(p)["fingerprint"]))
+            await manager.stop(run["id"])
+            report = self.store.get(run["id"])
+            self.assertEqual(report["state"], "cancelled")
+            self.assertIsNone(manager.active_id)
+            self.assertEqual(sum(r["attempts"] for r in report["probes"]), 0)
+        async with manager.lifespan():
+            next_run = await manager.start(StartInput(**p.model_dump(), preview_fingerprint=manager.preview(p)["fingerprint"]))
+        self.assertEqual(self.store.get(next_run["id"])["state"], "cancelled")
+        self.assertIsNone(manager.active_id)
+
     async def test_cancel_and_recovery(self):
         entered = asyncio.Event()
         async def delayed(request):
@@ -301,6 +351,14 @@ class ProtocolAPITests(unittest.TestCase):
         body["protocol_profile"]["note"] = body["api_key"]
         with self.assertRaises(ValueError):
             self.registry.save(body, updated["id"], updated["version"])
+
+    def test_rotated_key_cannot_copy_previous_key_to_protocol_notes(self):
+        body = {"base_url": "https://rotation.invalid", "api_key": "synthetic-before-rotation", "multiplier": 1}
+        saved = self.registry.save(body)
+        with self.assertRaises(ValueError):
+            self.registry.save({**body, "api_key": "synthetic-after-rotation", "protocol_profile": {"note": body["api_key"]}},
+                               saved["id"], saved["version"])
+        self.assertEqual(self.registry.get(saved["id"], secret=True)["api_key"], body["api_key"])
 
     def test_existing_database_migration(self):
         saved = self.registry.save({"base_url": "https://legacy.invalid", "api_key": "synthetic-legacy-key", "multiplier": .7})

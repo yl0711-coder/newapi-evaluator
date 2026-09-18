@@ -35,8 +35,7 @@ class Manager:
             yield
         finally:
             if self.task and not self.task.done():
-                self.task.cancel()
-                await asyncio.gather(self.task, return_exceptions=True)
+                await self.stop(self.active_id)
 
     def preview(self, plan):
         config = plan.model_dump(mode="json", exclude={"api_key", "mode", "confirm_live", "preview_fingerprint"})
@@ -148,4 +147,11 @@ class Manager:
             return {"stopped": False}
         self.task.cancel()
         await asyncio.gather(self.task, return_exceptions=True)
+        # A task cancelled before its first instruction never enters run()'s finally.
+        report = self.store.get(identifier)
+        if report["state"] == "running":
+            report["state"] = "cancelled"
+            self.store.save(evaluate(report))
+        if self.active_id == identifier:
+            self.active_id = None
         return {"stopped": True}

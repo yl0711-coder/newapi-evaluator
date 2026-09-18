@@ -1,5 +1,5 @@
 from typing import Literal
-from pydantic import BaseModel, ConfigDict, Field, SecretStr, model_validator
+from pydantic import BaseModel, ConfigDict, Field, SecretStr, field_validator, model_validator
 from shared.channel_protocol import ProtocolProfile, safe_text
 
 
@@ -16,6 +16,11 @@ class GroupTarget(StrictModel):
     name: str = Field(min_length=1, max_length=80, pattern=r"^[\w.\-]+$")
     template: Literal["codex_standard", "codex_search", "openai_common", "claude"]
     include_responses: bool = False
+
+    @field_validator("name")
+    @classmethod
+    def safe_name(cls, value):
+        return safe_text(value)
 
 
 class PlanInput(StrictModel):

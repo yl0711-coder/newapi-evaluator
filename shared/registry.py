@@ -25,7 +25,7 @@ class Conflict(RegistryError):
     pass
 
 
-def normalize(data: dict[str, Any]) -> dict[str, Any]:
+def normalize(data: dict[str, Any], *, previous_key: str = "") -> dict[str, Any]:
     url = str(data.get("base_url", "")).strip().rstrip("/")
     try:
         parts = urlsplit(url)
@@ -55,7 +55,7 @@ def normalize(data: dict[str, Any]) -> dict[str, Any]:
     return {"name": name, "base_url": url, "scope": scope, "multiplier": multiplier,
             "api_key": key, "note": note, "enabled": bool(data.get("enabled", True)),
             "source_kind": str(data.get("source_kind", "manual"))[:80], "status": status,
-            "protocol_profile": clean_profile(data.get("protocol_profile"), [key])}
+            "protocol_profile": clean_profile(data.get("protocol_profile"), [key, previous_key])}
 
 
 class Registry:
@@ -196,11 +196,17 @@ class Registry:
                 raise KeyError("公共渠道不存在")
             if version != row["version"]:
                 raise Conflict("渠道已被修改，请刷新后重新编辑")
+            try:
+                previous_key = self._cipher.decrypt(row["key_enc"].encode()).decode()
+            except InvalidToken:
+                if not data.get("api_key"):
+                    raise RegistryError("渠道密钥无法解密，请替换密钥") from None
+                previous_key = ""
             if not data.get("api_key"):
-                data = {**data, "api_key": self._cipher.decrypt(row["key_enc"].encode()).decode()}
+                data = {**data, "api_key": previous_key}
             if data.get("protocol_profile") is None:
                 data = {**data, "protocol_profile": json.loads(row["protocol_profile"])}
-            clean = normalize(data)
+            clean = normalize(data, previous_key=previous_key)
             try:
                 conn.execute("""UPDATE channels SET name=?,base_url=?,scope=?,multiplier=?,key_enc=?,fingerprint=?,
                     note=?,enabled=?,status=?,version=version+1,updated_at=?,protocol_profile=? WHERE id=?""",
