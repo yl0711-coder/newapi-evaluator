@@ -86,6 +86,17 @@ class ProtocolContractTests(unittest.TestCase):
             self.assertEqual((r["schema_status"], r["result_status"]), ("passed", "unconfirmed"))
         self.assertEqual(analyze_json({"output": output, "error": {"message": "synthetic error"}}, p)["result_status"], "failed")
 
+    def test_search_error_with_expected_source_is_not_success(self):
+        source = "RFC 9110 https://www.rfc-editor.org/rfc/rfc9110.html"
+        values = [{"output": prefix + source} for prefix in ["Error: failed to fetch ", "Search failed. Requested source: ", "搜索失败："]]
+        values += [{"output": source, "results": [{"type": "error", "message": "Synthetic failure"}]}]
+        for body in values:
+            result = analyze_json(body, probe("alpha_search"))
+            self.assertEqual(result["schema_status"], "passed")
+            self.assertEqual(result["result_status"], "failed")
+            self.assertEqual(result["error_class"], "search_failed")
+        self.assertEqual(analyze_json({"output": source}, probe("alpha_search"))["result_status"], "passed")
+
     def test_usage_truncation_and_tool_contract(self):
         body = response_body()
         self.assertEqual(analyze_json(body, probe("responses_json"))["result_status"], "passed")

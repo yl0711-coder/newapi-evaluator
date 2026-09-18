@@ -77,6 +77,14 @@ def search_evidence(body):
     return False
 
 
+def search_failed(body):
+    if body.get("error"):
+        return True
+    if any(isinstance(item, dict) and (item.get("error") or item.get("type") == "error") for item in body.get("results") or []):
+        return True
+    return re.match(r"\s*(?:error\s*[:：]|error\s+(?:searching|fetching)\b|search\s+failed\b|failed\s+to\s+(?:search|fetch|retrieve)\b|搜索失败|检索失败|错误\s*[:：])", body["output"], re.I) is not None
+
+
 def analyze_json(body, probe):
     result = {"schema_status": "failed", "result_status": "failed", "error_class": "invalid_schema",
               "usage_present": False, "protocol_completed": False, "observed_model": None}
@@ -86,8 +94,8 @@ def analyze_json(body, probe):
         if not isinstance(body.get("output"), str) or (body.get("results") is not None and not isinstance(body["results"], list)) or (body.get("encrypted_output") is not None and not isinstance(body["encrypted_output"], str)):
             return result
         result.update(schema_status="passed", protocol_completed=True, error_class="", result_status="unconfirmed")
-        if body.get("error"):
-            result.update(result_status="failed", error_class="upstream_error")
+        if search_failed(body):
+            result.update(result_status="failed", error_class="search_failed")
         elif not body["output"].strip():
             result.update(error_class="empty_output")
         elif search_evidence(body):
