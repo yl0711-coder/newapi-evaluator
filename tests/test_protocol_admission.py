@@ -11,7 +11,6 @@ import unittest
 from unittest.mock import patch
 
 import httpx
-from fastapi.testclient import TestClient
 
 from features.protocol_admission.api import create_app
 from features.protocol_admission.catalog import probes, request_body
@@ -326,6 +325,7 @@ class ProtocolAPITests(unittest.TestCase):
         self.assertNotIn("synthetic.invalid", json.dumps(value))
 
     def test_api_error_redaction_and_html_json_equivalence(self):
+        from fastapi.testclient import TestClient
         app = create_app(self.directory / "reports", self.registry)
         with TestClient(app) as client:
             invalid = client.post('/api/runs', json={"api_key": "synthetic-hidden-key", "models": "wrong"})
