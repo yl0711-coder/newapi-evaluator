@@ -10,7 +10,7 @@ const upstream=http.createServer(async(req,res)=>{
   const usage={input_tokens:9,output_tokens:2};let value,events;
   if(req.url==='/v1/alpha/search'){
     assert.equal(body.commands.search_query.length,1);assert.equal(body.commands.response_length,'short');assert.ok(!body.stream&&body.id);
-    value={output:'RFC 9110 HTTP Semantics https://www.rfc-editor.org/rfc/rfc9110.html'};
+    value={output:'RFC 9110 HTTP Semantics (https://www.rfc-editor.org/rfc/rfc9110.html)\n【turn0search0】 [wordlim: 200] Standard reference.'};
   }else if(req.url==='/v1/responses'){
     assert.equal(body.store,false);assert.equal(body.max_output_tokens,2048);
     value={status:'completed',model:body.model,usage,output:body.tools?[{type:'function_call',call_id:'fixture-call',name:'protocol_probe',arguments:'{"marker":"ready"}'}]:[{type:'message',content:[{type:'output_text',text:'READY'}]}]};

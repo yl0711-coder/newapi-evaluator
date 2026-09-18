@@ -11,7 +11,7 @@ def response(request):
     tool = bool(body.get("tools"))
     if path.endswith("/alpha/search"):
         return httpx.Response(200, json={"output": "RFC 9110 HTTP Semantics https://www.rfc-editor.org/rfc/rfc9110.html",
-            "results": [{"type": "text_result", "url": "https://www.rfc-editor.org/rfc/rfc9110.html"}]})
+            "results": [{"type": "text_result", "title": "RFC 9110 HTTP Semantics", "url": "https://www.rfc-editor.org/rfc/rfc9110.html"}]})
     if path.endswith("/responses"):
         content = [{"type": "function_call", "call_id": "synthetic-call", "name": "protocol_probe", "arguments": '{"marker":"ready"}'}] if tool else [{"type": "message", "content": [{"type": "output_text", "text": "READY"}]}]
         value = {"id": "synthetic-response", "object": "response", "model": model, "status": "completed", "output": content, "usage": usage}

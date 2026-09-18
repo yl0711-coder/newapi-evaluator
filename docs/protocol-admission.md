@@ -28,7 +28,7 @@
 
 SSE 接收支持 LF、CRLF、CR 换行及开头 UTF-8 BOM，包括跨块分片。流式请求验证各自的结束信号及事件顺序：Responses 对应 completed/incomplete/failed，Chat 对应 finish_reason 与 `[DONE]`，Messages 对应 block/message 事件。生成截断与传输缺少终态分开分类。usage 缺失不填零。流式 TTFT 为首个可见文本增量的接收耗时，非流式为 null；响应头和总耗时另存毫秒值。
 
-Alpha Search 为 `POST /v1/alpha/search` 的非流式 JSON。包含搜索会话 id、实际模型和 `commands.search_query`，`response_length` 位于 commands。每次运行使用独立合成 RFC 9110 查询，不携带用户会话。响应要求 output 字符串；results 可以缺省/null/空数组，encrypted_output 可以缺省/null。明确的搜索失败前缀或结构化错误优先记失败，即使同时含预期来源链接。对可识别的标准页来源及 RFC 9110 内容判定结果有效；普通非空字符串记“格式通过、结果待确认”。该内容检查不证明实时联网或搜索真实性，不解密 encrypted_output。仅有 200 或 RC26 工具计费不算通过。
+Alpha Search 为 `POST /v1/alpha/search` 的非流式 JSON。包含搜索会话 id、实际模型和 `commands.search_query`，`response_length` 位于 commands。每次运行使用独立合成 RFC 9110 查询，不携带用户会话。响应要求 output 字符串；results 可以缺省/null/空数组，encrypted_output 可以缺省/null。明确的搜索失败前缀或结构化错误优先记失败，即使同时含预期来源链接。只对已识别的 text_result（来源 URL 和相关标题/摘要），或标题/URL 紧接搜索引用的格式，核对 RFC 9110 标准页来源。只有名称和链接的普通正文可能是查询回显，仍记“格式通过、结果待确认”；明确无结果前缀同样保留待确认。该内容检查不证明实时联网或搜索真实性，不解密 encrypted_output。仅有 200 或 RC26 工具计费不算通过。
 
 HTTP 401/403 表示鉴权/访问限制；404/405 默认待核对方法、路径和分组，不直接证明上游缺少端点。上游明确的 unsupported endpoint 错误码或 RC26 本地拒绝可形成确定阻断。400/422 要检查请求及模型。限流、超时、连接错误和 5xx 分别记录，不用于反推供应商程序。
 

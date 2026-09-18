@@ -36,6 +36,9 @@ def probe(check):
     return next(v for v in probes(p) if v.check == check)
 
 
+SEARCH_OUTPUT = "RFC 9110 HTTP Semantics (https://www.rfc-editor.org/rfc/rfc9110.html)\n【turn0search0】 [wordlim: 200] Standard reference.\n"
+
+
 def response_body():
     return {"object": "response", "id": "fixture-response", "status": "completed", "model": "synthetic-model",
             "output": [{"type": "message", "content": [{"type": "output_text", "text": "Synthetic ready"}]}],
@@ -75,7 +78,7 @@ class ProtocolContractTests(unittest.TestCase):
 
     def test_alpha_optional_fields_and_semantics(self):
         p = probe("alpha_search")
-        output = "RFC 9110: https://www.rfc-editor.org/rfc/rfc9110.html"
+        output = SEARCH_OUTPUT
         for body in [{"output": output}, {"output": output, "results": []}, {"output": output, "results": None, "encrypted_output": None},
                      {"output": output, "results": [17, {"future": True}], "extra": "accepted"}]:
             self.assertEqual(analyze_json(body, p)["result_status"], "passed")
@@ -87,7 +90,7 @@ class ProtocolContractTests(unittest.TestCase):
         self.assertEqual(analyze_json({"output": output, "error": {"message": "synthetic error"}}, p)["result_status"], "failed")
 
     def test_search_error_with_expected_source_is_not_success(self):
-        source = "RFC 9110 https://www.rfc-editor.org/rfc/rfc9110.html"
+        source = SEARCH_OUTPUT
         values = [{"output": prefix + source} for prefix in ["Error: failed to fetch ", "Search failed. Requested source: ", "搜索失败："]]
         values += [{"output": source, "results": [{"type": "error", "message": "Synthetic failure"}]}]
         for body in values:
@@ -96,6 +99,17 @@ class ProtocolContractTests(unittest.TestCase):
             self.assertEqual(result["result_status"], "failed")
             self.assertEqual(result["error_class"], "search_failed")
         self.assertEqual(analyze_json({"output": source}, probe("alpha_search"))["result_status"], "passed")
+
+    def test_echoed_url_and_no_results_do_not_prove_search(self):
+        echoed = "Requested source: RFC 9110 https://www.rfc-editor.org/rfc/rfc9110.html"
+        for output in [echoed, "No results found. " + echoed, "No search results. " + SEARCH_OUTPUT, "未找到搜索结果。" + SEARCH_OUTPUT]:
+            result = analyze_json({"output": output}, probe("alpha_search"))
+            self.assertEqual(result["schema_status"], "passed")
+            self.assertEqual(result["result_status"], "unconfirmed")
+        structured = {"output": "Found a standard reference.", "results": [{"type": "text_result", "url": "https://www.rfc-editor.org/rfc/rfc9110.html", "title": "RFC 9110 HTTP Semantics"}]}
+        self.assertEqual(analyze_json(structured, probe("alpha_search"))["result_status"], "passed")
+        structured["results"][0].pop("title")
+        self.assertEqual(analyze_json(structured, probe("alpha_search"))["result_status"], "unconfirmed")
 
     def test_usage_truncation_and_tool_contract(self):
         body = response_body()
@@ -248,7 +262,7 @@ class ProtocolExecutionTests(unittest.IsolatedAsyncioTestCase):
                 length = next(int(line.split(b':')[1]) for line in header.split(b'\r\n') if line.lower().startswith(b'content-length:'))
                 body = json.loads(await reader.readexactly(length))
                 seen.append(body)
-                data = json.dumps({"output": "RFC 9110 https://www.rfc-editor.org/rfc/rfc9110.html"}).encode()
+                data = json.dumps({"output": SEARCH_OUTPUT}).encode()
                 writer.write(b'HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: ' + str(len(data)).encode() + b'\r\n\r\n' + data)
                 await writer.drain()
             finally:

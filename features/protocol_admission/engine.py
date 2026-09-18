@@ -61,20 +61,23 @@ def tool_valid(item, protocol):
 
 
 def search_evidence(body):
-    output = body["output"]
-    candidates = re.findall(r"https?://[^\s<>\]\)\"]+", output)
-    for item in body.get("results") or []:
-        if isinstance(item, dict) and item.get("type") == "text_result" and isinstance(item.get("url"), str):
-            candidates.append(item["url"])
-    relevant = re.search(r"RFC\s*9110", output, re.I) is not None
-    for value in candidates:
+    def target_source(value, content):
+        if not isinstance(value, str) or not re.search(r"RFC\s*9110", content, re.I):
+            return False
         try:
             parts = urlsplit(value)
-            if relevant and parts.hostname in {"rfc-editor.org", "www.rfc-editor.org"} and parts.path.rstrip("/.") in {"/rfc/rfc9110", "/rfc/rfc9110.html", "/info/rfc9110"}:
-                return True
+            return parts.scheme in {"http", "https"} and parts.hostname in {"rfc-editor.org", "www.rfc-editor.org"} and parts.path.rstrip("/.") in {"/rfc/rfc9110", "/rfc/rfc9110.html", "/info/rfc9110"}
         except ValueError:
-            continue
-    return False
+            return False
+
+    for item in body.get("results") or []:
+        if isinstance(item, dict) and item.get("type") == "text_result":
+            content = " ".join(item[key] for key in ("title", "snippet") if isinstance(item.get(key), str))
+            if target_source(item.get("url"), content):
+                return True
+    # Recognize a source heading followed by a search citation, not arbitrary echoed URLs.
+    citations = re.finditer(r"(?m)^([^\r\n]+?)\s*\((https?://[^\s()]+)\)[ \t]*\r?\n[ \t]*【([A-Za-z0-9_-]*(?:search|view)[A-Za-z0-9_-]*)】", body["output"])
+    return any(target_source(match[2], match[1]) for match in citations)
 
 
 def search_failed(body):
@@ -98,6 +101,8 @@ def analyze_json(body, probe):
             result.update(result_status="failed", error_class="search_failed")
         elif not body["output"].strip():
             result.update(error_class="empty_output")
+        elif re.match(r"\s*(?:no\s+(?:search\s+)?results\b|未找到(?:搜索|检索)?结果|没有(?:搜索|检索)?结果)", body["output"], re.I):
+            result.update(error_class="search_no_results")
         elif search_evidence(body):
             result.update(result_status="passed")
         else:

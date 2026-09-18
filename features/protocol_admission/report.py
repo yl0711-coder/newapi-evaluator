@@ -6,6 +6,7 @@ from .models import GroupTarget
 
 LABELS = {"blocked": "禁止进入该分组", "internal_only": "仅允许内部测试", "manual_review": "待人工确认"}
 ERRORS = {
+    "search_no_results": "搜索工具报告未找到结果，本次能力待确认",
     "search_failed": "搜索工具明确返回失败",
     "model_mapping_unconfirmed": "返回模型与请求模型不同，请核对映射或版本别名",
     "upstream_protocol_unsupported": "上游明确表示不支持此接口",
