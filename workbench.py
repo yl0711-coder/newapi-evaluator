@@ -55,8 +55,10 @@ def create_app(mode: str | None = None):
 
     @app.get("/api/platform")
     async def info():
-        return {"mode": mode, "features": [{"id": name, "name": FEATURES[name][0], "url": f"/{name}/"}
-                                           for name in selected]}
+        features = [{"id": name, "name": FEATURES[name][0], "url": f"/{name}/"} for name in selected]
+        if "admission" in children:
+            features.insert(0, {"id": "protocol-admission", "name": "模型与协议检测", "url": "/admission/protocol/"})
+        return {"mode": mode, "features": features}
 
     @app.get("/api/health")
     async def health():

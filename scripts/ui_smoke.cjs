@@ -78,16 +78,20 @@ const upstream = http.createServer(async (req, res) => {
   const page = await browser.newPage({viewport:{width:1440,height:1000}});
   const errors = []; page.on('pageerror',e=>errors.push(e.message));
   await page.goto(base+'/');
-  await page.locator('#features a').nth(5).waitFor();
+  await page.locator('#features a').nth(6).waitFor();
   assert.deepEqual(await page.locator('#features a').evaluateAll(cards=>cards.map(card=>card.getAttribute('href'))),
-    ['/admission/','/stability/','/reasoning/','/capacity/','/diagnosis/','/image-quality/']);
+    ['/admission/protocol/','/admission/','/stability/','/reasoning/','/capacity/','/diagnosis/','/image-quality/']);
+  await page.locator('#features a[href="/admission/protocol/"]').click();
+  await page.getByText('先获取或输入模型，再预览并开始检测。',{exact:true}).waitFor();
+  assert.equal(await page.locator('.platform-nav a[aria-current="page"]').textContent(),'模型与协议检测');
+  await page.locator('.platform-nav').getByRole('link',{name:'模型测试工作台',exact:true}).click();
   await page.locator('#features a[href="/diagnosis/"]').click();
   await page.getByText('准备就绪。',{exact:false}).waitFor();
   await page.goto(base+'/');
   await page.locator('#features a[href="/image-quality/"]').click();
   await page.locator('#prompt').waitFor();
   await page.goto(base+'/');
-  await page.locator('#features a').nth(5).waitFor();
+  await page.locator('#features a').nth(6).waitFor();
   await page.screenshot({path:path.join(data,'workbench-home-desktop.png'),fullPage:true});
   await page.setViewportSize({width:390,height:844});
   assert.equal(await page.evaluate(()=>document.documentElement.scrollWidth>innerWidth+2),false);
@@ -230,7 +234,7 @@ const upstream = http.createServer(async (req, res) => {
   await page.reload(); assert.equal(await page.locator('#api-key').inputValue(),'');
   for (const width of [390,900,1440,1920]) {
     let theme;
-    for (const url of ['/','/channels/','/admission/','/reasoning/','/stability/','/capacity/','/diagnosis/','/image-quality/']) {
+    for (const url of ['/','/channels/','/admission/protocol/','/admission/','/reasoning/','/stability/','/capacity/','/diagnosis/','/image-quality/']) {
       await page.setViewportSize({width,height:1000}); await page.goto(base+url); await page.locator('.platform-nav').waitFor();
       const appearance = await page.evaluate(() => {
         const body=getComputedStyle(document.body), heading=getComputedStyle(document.querySelector('h1'));

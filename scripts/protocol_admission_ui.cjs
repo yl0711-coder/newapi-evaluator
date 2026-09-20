@@ -49,10 +49,22 @@ async function freePort(){const server=net.createServer();await new Promise(r=>s
   }
   await startApp('admission');
   browser=await chromium.launch({headless:true,...(process.env.PLAYWRIGHT_CHANNEL?{channel:process.env.PLAYWRIGHT_CHANNEL}:{})});const page=await browser.newPage({viewport:{width:1440,height:1000}}),errors=[];page.on('pageerror',e=>errors.push(e.name));
+  await page.goto(base+'/');await page.locator('#features a').first().waitFor();
+  const homeEntry=page.locator('#features a').filter({has:page.getByRole('heading',{name:'模型与协议检测',exact:true})});
+  assert.equal(await homeEntry.count(),1,'Homepage exposes model and protocol detection');
+  await homeEntry.click();await page.getByText('先获取或输入模型，再预览并开始检测。',{exact:true}).waitFor();
+  assert.equal(new URL(page.url()).pathname,'/admission/protocol/');
+  assert.equal(await page.locator('.platform-nav a[aria-current="page"]').textContent(),'模型与协议检测');
+  await page.goto(base+'/admission/');await page.locator('.platform-nav').getByRole('link',{name:'模型与协议检测',exact:true}).click();
+  await page.getByText('先获取或输入模型，再预览并开始检测。',{exact:true}).waitFor();assert.equal(requests.length,0);
+  await page.setViewportSize({width:390,height:844});await page.goto(base+'/');await page.locator('#features a').first().waitFor();
+  await homeEntry.click();await page.getByText('先获取或输入模型，再预览并开始检测。',{exact:true}).waitFor();
+  assert.equal(await page.evaluate(()=>document.documentElement.scrollWidth>innerWidth+2),false);
+  await page.setViewportSize({width:1440,height:1000});
   await page.goto(base+'/channels/');await page.locator('#add').click();await page.locator('#url').fill(upstreamUrl);await page.locator('#name').fill('Synthetic protocol candidate');await page.locator('#key').fill('synthetic-saved-key');await page.locator('#multiplier').fill('1');
   assert.equal(await page.locator('#channel-protocol-profile').count(),0);
   await page.locator('#save').click();await page.locator('#editor').waitFor({state:'hidden'});
-  await page.getByRole('link',{name:'模型与协议检测',exact:true}).click();await page.getByText('先获取或输入模型，再预览并开始检测。',{exact:true}).waitFor();
+  await page.locator('#list').getByRole('link',{name:'模型与协议检测',exact:true}).click();await page.getByText('先获取或输入模型，再预览并开始检测。',{exact:true}).waitFor();
   assert.equal(await page.locator('#temporary').isVisible(),false);assert.equal(await page.locator('#profile').count(),0);assert.equal(requests.length,0);
   await page.locator('#mode').selectOption('live');await page.locator('#confirm-live').check();
   await page.locator('#fetch-models').click();await page.getByText('上游模型列表：3 个，尚未检测。',{exact:true}).waitFor();
@@ -87,5 +99,6 @@ async function freePort(){const server=net.createServer();await new Promise(r=>s
   await page.locator('#stop').click();await page.getByText('本轮模型与协议检测已结束。',{exact:true}).waitFor();assert.equal(requests.length,20);assert.equal(await page.locator('#api-key').inputValue(),'');
   await page.reload();await page.getByText('先获取或输入模型，再预览并开始检测。',{exact:true}).waitFor();assert.equal(await page.locator('#history button').count(),2);assert.deepEqual(errors,[]);
   app.kill('SIGTERM');await appExit;await startApp('channels');await page.goto(base+'/channels/');await page.locator('#list article.record').waitFor();assert.equal(await page.getByRole('link',{name:'模型与协议检测',exact:true}).count(),0);assert.equal((await fetch(base+'/admission/protocol/')).status,404);assert.deepEqual(errors,[]);
-  console.log(JSON.stringify({status:'passed',checks:23,mockRequests:requests.length,real_upstream_tested:false,evidence:data}));
+  await page.goto(base+'/');await page.getByText('当前仅启动公共渠道管理。',{exact:true}).waitFor();assert.equal(await page.locator('#features a').count(),0);assert.equal(await page.getByRole('link',{name:'模型与协议检测',exact:true}).count(),0);
+  console.log(JSON.stringify({status:'passed',checks:27,mockRequests:requests.length,real_upstream_tested:false,evidence:data}));
 })().catch(error=>{console.error(error.stack);process.exitCode=1;}).finally(async()=>{if(browser)await browser.close();for(const res of held)res.destroy();if(app&&app.exitCode===null){app.kill('SIGTERM');await appExit;}upstream.closeAllConnections();await new Promise(r=>upstream.close(r));});
