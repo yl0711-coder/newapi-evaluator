@@ -82,6 +82,8 @@ async function freePort(){const server=net.createServer();await new Promise(r=>s
   await page.locator('#mode').selectOption('live');await page.locator('#manual-model').fill('synthetic-upstream');await page.locator('#add-model').click();
   await page.locator('#confirm-live').check();await page.locator('#preview').click();await page.locator('#start:not([disabled])').waitFor();await page.locator('#start').click();
   for(let i=0;i<100&&!held.size;i++)await new Promise(r=>setTimeout(r,10));assert.equal(held.size,1);
+  await page.waitForFunction(()=>Array.from(document.querySelectorAll('#results tr')).some(row=>row.cells[1].textContent==='检测中'));
+  assert.ok(!(await page.locator('#results').textContent()).includes('本项通过'));
   await page.locator('#stop').click();await page.getByText('本轮模型与协议检测已结束。',{exact:true}).waitFor();assert.equal(requests.length,20);assert.equal(await page.locator('#api-key').inputValue(),'');
   await page.reload();await page.getByText('先获取或输入模型，再预览并开始检测。',{exact:true}).waitFor();assert.equal(await page.locator('#history button').count(),2);assert.deepEqual(errors,[]);
   app.kill('SIGTERM');await appExit;await startApp('channels');await page.goto(base+'/channels/');await page.locator('#list article.record').waitFor();assert.equal(await page.getByRole('link',{name:'模型与协议检测',exact:true}).count(),0);assert.equal((await fetch(base+'/admission/protocol/')).status,404);assert.deepEqual(errors,[]);
