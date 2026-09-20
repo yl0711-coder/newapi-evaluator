@@ -22,6 +22,11 @@ class ModeRecoveryTests(unittest.IsolatedAsyncioTestCase):
                                   'long_task': {'steps': 5, 'fail_step': 3, 'stream_chunks': 12, 'stream_chunk_delay': .002}})
 
     async def test_account_limits_and_raw_artifacts(self):
+        # Keep event-loop and socket scheduling noise small relative to the
+        # deterministic mock latency. Otherwise a busy shared CI runner can
+        # make the capacity-2 stage exceed the 2x latency threshold even
+        # though the mock account has not reached its configured limit.
+        self.cfg['mock']['accounts'][0]['latency'] = .03
         value = await Lab(self.cfg, self.root / 'account').run('account-test')
         self.assertEqual(value['analysis']['max_stable_concurrency'], 2)
         self.assertEqual(value['analysis']['rate_limit_point'], 4)
