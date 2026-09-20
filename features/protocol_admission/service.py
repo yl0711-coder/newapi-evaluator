@@ -8,7 +8,8 @@ from uuid import uuid4
 
 import httpx
 
-from shared.channel_protocol import clean_profile
+from features.model_coverage.catalog import Catalog
+from features.model_coverage.discovery import fetch_models, request_models
 from .catalog import fingerprint, probes
 from .engine import endpoint, execute
 from .mock import response as mock_response
@@ -57,7 +58,40 @@ class Manager:
         return {"fingerprint": fingerprint(config), "request_count": len(checks), "probes": checks,
                 "maximum_seconds": min(1800, len(checks) * plan.total_timeout),
                 "attempts_per_probe": 1, "gateway_retries": "不可观察", "phase": "direct_probe",
-                "can_execute": plan.profile.credential_mode == "api_key", "channel_version": channel_version}
+                "channel_version": channel_version}
+
+    def connection(self, plan):
+        base, key = plan.base_url, plan.api_key.get_secret_value()
+        if plan.channel_id:
+            channel = self.registry.resolve(plan.channel_id)
+            base, key = channel["base_url"], channel["api_key"]
+        if plan.mode == "live":
+            if not plan.confirm_live:
+                raise ValueError("真实请求需要本次明确确认")
+            if not base or not key or len(key) > 4096 or any(ord(c) < 33 or ord(c) > 126 for c in key):
+                raise ValueError("请填写有效接口根地址和 API Key")
+            endpoint(base, "/responses")
+        return base, key
+
+    def cached_models(self, channel_id):
+        channel = self.registry.resolve(channel_id)
+        value = Catalog(self.registry).discoveries().get(channel_id)
+        valid = value and value.get("succeeded_at") and value["connection_fingerprint"] == self.registry.connection_fingerprint(channel)
+        return {"models": value["models"] if valid else [], "source": "saved",
+                "succeeded_at": value["succeeded_at"] if valid else None,
+                "error": value["error"] if valid else "", "ok": bool(valid)}
+
+    async def discover(self, plan):
+        base, key = self.connection(plan)
+        if plan.mode == "mock":
+            return {"models": ["demo-model-a", "demo-model-b"], "ok": True, "error": "", "source": "mock"}
+        transport = self.transport_factory() if self.transport_factory else None
+        if plan.channel_id:
+            result = await fetch_models(self.registry, plan.channel_id, "auto", transport)
+        else:
+            models, error = await request_models(base, key, transport=transport)
+            result = {"models": models or [], "ok": not error, "error": error}
+        return {**result, "source": "upstream"}
 
     async def start(self, plan):
         if self.task and not self.task.done():
@@ -65,28 +99,19 @@ class Manager:
         preview = self.preview(plan)
         if plan.preview_fingerprint != preview["fingerprint"]:
             raise ValueError("配置或渠道已变化，请重新预览请求清单")
-        if not preview["can_execute"]:
-            raise ValueError("OAuth 直连不在第一阶段执行范围，请使用供应商 API Key 接口或后续网关验证")
-        base, key = plan.base_url, plan.api_key.get_secret_value()
+        base, key = self.connection(plan)
         if plan.channel_id:
             channel = self.registry.resolve(plan.channel_id)
             if channel["version"] != preview["channel_version"]:
                 raise ValueError("渠道已变化，请重新预览")
             base, key = channel["base_url"], channel["api_key"]
-        if plan.mode == "live":
-            if not plan.confirm_live:
-                raise ValueError("真实探测需要本次明确确认")
-            if not base or not key or len(key) > 4096 or any(ord(c) < 33 or ord(c) > 126 for c in key):
-                raise ValueError("真实探测需要有效接口根地址和 API Key")
-            endpoint(base, "/responses")
-        clean_profile(plan.profile.model_dump(mode="json"), [key])
         config = plan.model_dump(mode="json", exclude={"api_key", "base_url", "confirm_live", "preview_fingerprint"})
         if key and key in json.dumps(config, ensure_ascii=False):
-            raise ValueError("模型、分组或协议资料不能包含渠道密钥")
+            raise ValueError("模型名称不能包含渠道密钥")
         config.update(channel_version=preview["channel_version"], masked_host="host-" + fingerprint(urlsplit(base).hostname or "mock")[:12],
                       preview_fingerprint=preview["fingerprint"])
         identifier = uuid4().hex
-        report = {"version": 1, "id": identifier, "created_at": time.time(), "state": "running", "config": config,
+        report = {"version": 2, "id": identifier, "created_at": time.time(), "state": "running", "config": config,
                   "request_count": preview["request_count"], "search_session_id": "eval-" + uuid4().hex,
                   "probes": [{**row, "status": "not_run", "attempts": 0, "error_class": "not_run"} for row in preview["probes"]]}
         self.store.save(evaluate(report))
@@ -127,7 +152,7 @@ class Manager:
             self.active_id = None
 
     def report(self, identifier):
-        report = self.store.get(identifier)
+        report = evaluate(self.store.get(identifier))
         config = report["config"]
         current = "snapshot_only"
         if config["channel_id"]:
@@ -137,7 +162,7 @@ class Manager:
             except KeyError:
                 current = "unavailable"
             if current != "current":
-                report["conclusion"]["warnings"].append("公共渠道资料已变化或不可用，请重新执行协议验证；此报告保留原配置快照")
+                report["warnings"].append("公共渠道已变化或不可用，请重新检测；以下为历史结果")
         report["freshness"] = current
         return report
 

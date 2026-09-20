@@ -1,35 +1,155 @@
-const $=id=>document.getElementById(id), api=(path,options)=>Workbench.api('./api/'+path,options);
-let metadata, channels=[], preview=null, active=null, poll=null;
-const states={passed:'通过',failed:'失败',unconfirmed:'待确认',not_run:'未执行',running:'进行中',completed:'已完成',cancelled:'已停止',interrupted:'已中断'};
-function plan(){
-  const models=$('models').value.split('\n').map(x=>x.trim()).filter(Boolean).map(line=>{const p=line.split('=');if(p.length>2)throw new Error('模型映射格式应为 标准模型=上游模型');return {model:p[0].trim(),upstream_model:p[1]?.trim()||''};});
-  const groups=Object.keys(metadata.templates).filter(id=>$(`use-${id}`).checked).map(id=>({name:$(`group-${id}`).value.trim(),template:id,include_responses:id==='openai_common'&&$('include-responses').checked}));
-  if(!models.length||!groups.length)throw new Error('至少填写一个模型并选择一个目标场景。');
-  return {channel_id:Number($('channel').value)||null,base_url:$('base-url').value.trim(),profile:ProtocolProfileForm.get('probe'),models,groups,
-    total_timeout:Number($('total-timeout').value),first_byte_timeout:Number($('first-timeout').value),idle_timeout:Number($('idle-timeout').value)};
+const $ = id => document.getElementById(id);
+const api = (path, options) => Workbench.api('./api/' + path, options);
+const node = (...args) => Workbench.node(...args);
+const states = {passed:'通过', failed:'未通过', unconfirmed:'待确认', not_run:'未检测', running:'检测中', completed:'已完成', cancelled:'已停止', interrupted:'已中断'};
+let metadata, channels = [], preview = null, active = null, poll = null, generation = 0;
+const available = new Set(), selected = new Set();
+
+function connection() {
+  return {channel_id:Number($('channel').value) || null, base_url:$('base-url').value.trim()};
 }
-function invalidate(){preview=null;$('start').disabled=true;$('preview-list').replaceChildren();}
-function running(value){$('setup').disabled=value;$('preview').disabled=value;$('start').disabled=value||!preview;$('stop').hidden=!value;}
-function message(error){$('error').textContent=error?.message||'';}
-async function history(){const data=await api('runs');$('history').replaceChildren(...data.runs.map(r=>{const b=Workbench.node('button',`${new Date(r.created_at*1000).toLocaleString()} · ${r.mode} · ${states[r.state]||r.state}`,'secondary');b.type='button';b.onclick=()=>show(r.id).catch(message);return b;}));}
-async function show(id){
-  const report=await api('runs/'+id), c=report.conclusion;
-  $('report').hidden=false;
-  const types=await ProtocolProfileForm.options;
-  $('conclusion').replaceChildren(Workbench.node('p',`${states[report.state]||report.state} · ${report.config.mode==='mock'?'本地 Mock 演示':'候选渠道直测'}`),
-    Workbench.node('p',`声明：${types.upstream_types[c.declared_type]}；拟配置：${types.channel_types[c.proposed_type]}；推荐：${types.channel_types[c.recommended_type]}`),
-    Workbench.node('p',c.recommendation_basis,'hint'),...c.warnings.map(w=>Workbench.node('p',w,'error')));
-  $('group-results').replaceChildren(...c.groups.map(g=>{const card=Workbench.node('article','',`panel ${g.state}`);card.append(Workbench.node('h3',`${g.name}：${g.label}`),...g.reasons.map(r=>Workbench.node('p',r)));return card;}));
-  $('results').replaceChildren(...report.probes.map(p=>{const row=document.createElement('tr');for(const text of [`${p.model} · ${p.label}`,states[p.status]||p.status,`${p.http_status??'—'} / ${p.protocol_completed?'已结束':'未确认'}`,`总计 ${p.total_ms??'—'} ms；首字 ${p.ttft_ms??'不适用或未观测'}${p.ttft_ms==null?'':' ms'}`,metadata.errors[p.error_class]||p.error_class||'本项检查通过'])row.append(Workbench.node('td',text));return row;}));
-  $('checklist').replaceChildren(...c.checklist.map(x=>Workbench.node('li',x)));
-  for(const format of ['json','html'])$(`export-${format}`).href=`./api/runs/${id}/export/${format}`;
-  if(active===id&&report.state!=='running'){active=null;clearInterval(poll);poll=null;running(false);invalidate();$('message').textContent='本轮协议探测已结束。';await history();}
-  return report;
+function plan() {
+  if (!selected.size) throw new Error('请选择至少一个模型。');
+  return {...connection(), models:[...selected].map(model => ({model}))};
 }
-$('probe-form').addEventListener('input',()=>{if(!active)invalidate();});
-$('channel').addEventListener('change',()=>{const channel=channels.find(c=>c.id===Number($('channel').value));$('temporary').hidden=Boolean(channel);$('api-key').value='';ProtocolProfileForm.set('probe',channel?.protocol_profile||{});invalidate();});
-$('mode').addEventListener('change',()=>{$('live-confirm-label').hidden=$('mode').value!=='live';$('confirm-live').checked=false;invalidate();});
-$('preview').addEventListener('click',async()=>{message();try{preview=await api('preview',{method:'POST',body:JSON.stringify(plan())});const list=document.createElement('ul');for(const p of preview.probes)list.append(Workbench.node('li',`${p.model}${p.upstream_model!==p.model?' → '+p.upstream_model:''} · ${p.label}`));$('preview-list').replaceChildren(Workbench.node('p',`共 ${preview.request_count} 次请求，每项尝试 1 次，最长 ${preview.maximum_seconds} 秒。网关内部重试另行核对。`),list);$('start').disabled=!preview.can_execute;if(!preview.can_execute)throw new Error('OAuth 直连需要后续网关验证，第一阶段使用供应商 API Key 接口。');}catch(e){message(e);}});
-$('probe-form').addEventListener('submit',async event=>{event.preventDefault();message();if(!preview)return;let body;try{body={...plan(),api_key:$('api-key').value,mode:$('mode').value,confirm_live:$('confirm-live').checked,preview_fingerprint:preview.fingerprint};running(true);const r=await api('runs',{method:'POST',body:JSON.stringify(body)});$('api-key').value='';active=r.id;$('message').textContent='正在逐项探测。';await show(active);if(active)poll=setInterval(()=>show(active).catch(message),1000);}catch(e){running(false);message(e);}finally{if(body)body.api_key='';}});
-$('stop').addEventListener('click',async()=>{if(active){const id=active;try{await api(`runs/${id}/stop`,{method:'POST'});await show(id);}catch(e){message(e);}}});
-(async()=>{metadata=await api('meta');await ProtocolProfileForm.mount($('profile'),'probe');ProtocolProfileForm.set('probe');channels=(await Workbench.api('/api/registry/channels')).channels.filter(c=>c.enabled);for(const c of channels)$('channel').append(new Option(Workbench.label(c),c.id));const requested=new URLSearchParams(location.search).get('channel');if(channels.some(c=>String(c.id)===requested)){$('channel').value=requested;$('channel').dispatchEvent(new Event('change'));}for(const [id,value]of Object.entries(metadata.templates)){const box=Workbench.node('div','','group'),label=Workbench.node('label',value.name,'check'),check=document.createElement('input'),name=document.createElement('input');check.type='checkbox';check.id=`use-${id}`;label.prepend(check);name.id=`group-${id}`;name.value=id;name.maxLength=80;name.setAttribute('aria-label',value.name+'目标分组');box.append(label,name);$('groups').append(box);}await history();$('message').textContent='准备就绪。先预览请求数量，再开始探测。';})().catch(message);
+function invalidate() {
+  preview = null; $('start').disabled = true; $('preview-list').replaceChildren();
+}
+function error(value) { $('error').textContent = value?.message || ''; }
+function busy(value) {
+  $('setup').disabled = value; $('preview').disabled = value;
+  $('start').disabled = value || !preview; $('stop').hidden = !active;
+}
+function renderModels() {
+  const query = $('model-filter').value.trim().toLowerCase();
+  const matches = [...available].filter(model => model.toLowerCase().includes(query));
+  $('model-list').replaceChildren(...matches.slice(0, 200).map(model => {
+    const label = node('label', model, 'check'), checkbox = document.createElement('input');
+    checkbox.type = 'checkbox'; checkbox.checked = selected.has(model);
+    checkbox.setAttribute('aria-label', '选择模型 ' + model);
+    checkbox.addEventListener('change', () => {
+      if (checkbox.checked && selected.size >= metadata.max_models) {
+        checkbox.checked = false; error(new Error('每批最多检测 5 个模型，请分批选择。')); return;
+      }
+      checkbox.checked ? selected.add(model) : selected.delete(model);
+      invalidate(); renderModels();
+    });
+    label.prepend(checkbox); return label;
+  }));
+  $('model-count').textContent = `列表共 ${available.size} 个模型，匹配 ${matches.length} 个${matches.length > 200 ? '，当前显示前 200 个，请搜索缩小范围' : ''}。列表名称仅为上游声明，尚未检测。`;
+  $('selection-count').textContent = `已选择 ${selected.size} 个${selected.size ? '：' + [...selected].join('、') : ''}`;
+}
+async function resetConnection() {
+  const ticket = ++generation;
+  invalidate(); available.clear(); selected.clear(); renderModels();
+  $('report').hidden = true; $('fetch-status').textContent = ''; $('confirm-live').checked = false;
+  if (!$('channel').value) return;
+  try {
+    const value = await api('models?channel_id=' + $('channel').value);
+    if (ticket !== generation) return;
+    value.models.forEach(model => available.add(model)); renderModels();
+    $('fetch-status').textContent = value.ok ? `已载入上次获取的 ${value.models.length} 个模型${value.error ? '；最近获取未成功，可重新获取' : ''}。` : '尚未获取模型，可点击获取或手动输入。';
+  } catch (e) { if (ticket === generation) error(e); }
+}
+async function history() {
+  const data = await api('runs');
+  $('history').replaceChildren(...data.runs.map(run => {
+    const button = node('button', `${new Date(run.created_at * 1000).toLocaleString()} · ${run.mode === 'mock' ? 'Mock 演示' : '真实检测'} · ${states[run.state] || run.state}`, 'secondary');
+    button.type = 'button'; button.onclick = () => show(run.id).catch(error); return button;
+  }));
+}
+async function show(id) {
+  const report = await api('runs/' + id);
+  $('report').hidden = false;
+  $('conclusion').replaceChildren(node('p', `${states[report.state] || report.state} · ${report.config.mode === 'mock' ? '本地 Mock 演示' : '真实上游检测'}`),
+    ...report.warnings.map(value => node('p', value, 'error')));
+  $('capabilities').replaceChildren(...report.capabilities.map(model => {
+    const row = node('tr'); row.append(node('td', model.upstream_model));
+    for (const protocol of Object.keys(metadata.protocols)) {
+      const value = model.protocols[protocol], cell = node('td', value.label, value.status);
+      cell.append(node('small', `普通：${value.details.basic.label} · 流式：${value.details.stream.label}`, 'hint'));
+      row.append(cell);
+    }
+    const cell = node('td'), details = node('details'); details.append(node('summary', '工具与搜索'));
+    for (const protocol of ['responses', 'anthropic']) details.append(node('p', `${model.protocols[protocol].name} 工具：${model.protocols[protocol].details.tool.label}`));
+    details.append(node('p', 'Alpha Search：' + model.search.label)); cell.append(details); row.append(cell); return row;
+  }));
+  $('results').replaceChildren(...report.probes.map(probe => {
+    const row = node('tr');
+    for (const text of [`${probe.model} · ${probe.label}`, states[probe.status] || probe.status, probe.http_status ?? '—', `${probe.total_ms ?? '—'} ms`, metadata.errors[probe.error_class] || probe.error_class || '本项通过']) row.append(node('td', String(text)));
+    return row;
+  }));
+  for (const format of ['json', 'html']) $(`export-${format}`).href = `./api/runs/${id}/export/${format}`;
+  if (active === id && report.state !== 'running') {
+    active = null; clearInterval(poll); poll = null; busy(false); invalidate();
+    $('message').textContent = '本轮模型与协议检测已结束。'; await history();
+  }
+}
+$('channel').addEventListener('change', () => {
+  $('temporary').hidden = Boolean($('channel').value); $('api-key').value = ''; resetConnection();
+});
+$('mode').addEventListener('change', () => {
+  const live = $('mode').value === 'live'; $('live-confirm-label').hidden = !live;
+  $('mode-hint').textContent = live ? '按所选模型实际发出请求，可能产生上游费用。临时密钥不保存到数据库或报告。' : '演示模式不会请求真实上游，结果仅供体验。';
+  resetConnection();
+});
+for (const id of ['base-url', 'api-key']) $(id).addEventListener('input', resetConnection);
+$('model-filter').addEventListener('input', renderModels);
+$('confirm-live').addEventListener('change', invalidate);
+$('add-model').addEventListener('click', () => {
+  const model = $('manual-model').value.trim();
+  if (!model) return;
+  if (!selected.has(model) && selected.size >= metadata.max_models) { error(new Error('每批最多检测 5 个模型。')); return; }
+  available.add(model); selected.add(model); $('manual-model').value = ''; invalidate(); renderModels();
+});
+$('fetch-models').addEventListener('click', async () => {
+  error(); const ticket = ++generation;
+  const body = {...connection(), api_key:$('api-key').value, mode:$('mode').value, confirm_live:$('confirm-live').checked};
+  busy(true); $('fetch-status').textContent = '正在获取模型列表…';
+  try {
+    const data = await api('models', {method:'POST', body:JSON.stringify(body)});
+    if (ticket !== generation) return;
+    if (!data.ok) throw new Error('模型列表获取失败（' + data.error + '），可手动输入模型继续检测。');
+    available.clear(); data.models.forEach(model => available.add(model));
+    for (const model of selected) available.add(model);
+    renderModels(); $('fetch-status').textContent = `${data.source === 'mock' ? 'Mock 演示列表' : '上游模型列表'}：${data.models.length} 个，尚未检测。`;
+  } catch (e) { error(e); $('fetch-status').textContent = '本次获取失败，保留页面中原有模型。'; }
+  finally { body.api_key = ''; busy(false); }
+});
+$('preview').addEventListener('click', async () => {
+  error(); const ticket = generation;
+  try {
+    const current = plan(); busy(true);
+    const value = await api('preview', {method:'POST', body:JSON.stringify(current)});
+    if (ticket !== generation) return;
+    preview = value;
+    $('preview-list').replaceChildren(node('p', `${selected.size} 个模型，共 ${value.request_count} 次请求，每项 1 次。检测三种协议的普通/流式调用，以及 Responses/Claude 工具和 Alpha Search。最长 ${value.maximum_seconds} 秒。`));
+  } catch (e) { invalidate(); error(e); }
+  finally { busy(false); }
+});
+$('probe-form').addEventListener('submit', async event => {
+  event.preventDefault(); error(); if (!preview) return;
+  let body;
+  try {
+    body = {...plan(), api_key:$('api-key').value, mode:$('mode').value, confirm_live:$('confirm-live').checked, preview_fingerprint:preview.fingerprint};
+    busy(true); const run = await api('runs', {method:'POST', body:JSON.stringify(body)});
+    $('api-key').value = ''; active = run.id; busy(true); $('message').textContent = '正在逐模型检测协议…';
+    await show(active); if (active) poll = setInterval(() => show(active).catch(error), 1000);
+  } catch (e) { busy(false); error(e); }
+  finally { if (body) body.api_key = ''; }
+});
+$('stop').addEventListener('click', async () => {
+  if (!active) return;
+  const id = active;
+  try { await api(`runs/${id}/stop`, {method:'POST'}); await show(id); } catch (e) { error(e); }
+});
+(async () => {
+  metadata = await api('meta'); channels = (await Workbench.api('/api/registry/channels')).channels.filter(channel => channel.enabled);
+  for (const channel of channels) $('channel').append(new Option(Workbench.label(channel), channel.id));
+  const query = new URLSearchParams(location.search);
+  if (channels.some(channel => String(channel.id) === query.get('channel'))) {
+    $('channel').value = query.get('channel'); $('temporary').hidden = true; await resetConnection();
+  }
+  if (query.get('model')) { available.add(query.get('model')); selected.add(query.get('model')); }
+  renderModels(); await history(); $('message').textContent = '先获取或输入模型，再预览并开始检测。';
+})().catch(error);

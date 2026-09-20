@@ -3,11 +3,10 @@ from dataclasses import dataclass
 import hashlib
 import json
 
-TEMPLATES = {
-    "codex_standard": {"name": "Codex 标准", "checks": ["responses_json", "responses_stream", "responses_tool"]},
-    "codex_search": {"name": "Codex 搜索", "checks": ["responses_json", "responses_stream", "responses_tool", "alpha_search"]},
-    "openai_common": {"name": "OpenAI 通用", "checks": ["chat_json", "chat_stream"]},
-    "claude": {"name": "Claude", "checks": ["messages_json", "messages_stream", "messages_tool", "messages_long"]},
+PROTOCOLS = {
+    "openai": {"name": "Chat Completions", "basic": "chat_json", "stream": "chat_stream"},
+    "responses": {"name": "Responses", "basic": "responses_json", "stream": "responses_stream", "tool": "responses_tool"},
+    "anthropic": {"name": "Claude Messages", "basic": "messages_json", "stream": "messages_stream", "tool": "messages_tool"},
 }
 CHECKS = {
     "responses_json": ("responses", "/responses", False, "text", "Responses 非流式"),
@@ -19,15 +18,7 @@ CHECKS = {
     "messages_json": ("anthropic", "/messages", False, "text", "Messages 非流式"),
     "messages_stream": ("anthropic", "/messages", True, "text", "Messages 流式"),
     "messages_tool": ("anthropic", "/messages", False, "tool", "Messages 工具格式"),
-    "messages_long": ("anthropic", "/messages", False, "long", "Messages 长文本基础（约 8 KiB）"),
 }
-
-
-def group_checks(group):
-    checks = list(TEMPLATES[group.template]["checks"])
-    if group.template == "openai_common" and group.include_responses:
-        checks += TEMPLATES["codex_standard"]["checks"]
-    return checks
 
 
 @dataclass(frozen=True)
@@ -44,9 +35,8 @@ class Probe:
 
 
 def probes(plan):
-    checks = list(dict.fromkeys(check for group in plan.groups for check in group_checks(group)))
     return [Probe(f"m{i}-{check}", check, model.model, model.upstream_model or model.model, *CHECKS[check])
-            for i, model in enumerate(plan.models) for check in checks]
+            for i, model in enumerate(plan.models) for check in CHECKS]
 
 
 def fingerprint(value):
@@ -56,8 +46,6 @@ def fingerprint(value):
 def request_body(probe, session_id):
     # Independent synthetic inputs are product probe definitions; no user history is copied.
     prompt = "Reply with READY."
-    if probe.purpose == "long":
-        prompt = "Read this synthetic context and reply with READY.\n" + "context " * 1024
     parameters = {"type": "object", "properties": {"marker": {"type": "string", "enum": ["ready"]}},
                   "required": ["marker"], "additionalProperties": False}
     if probe.protocol == "alpha_search":

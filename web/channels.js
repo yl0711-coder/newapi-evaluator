@@ -3,7 +3,7 @@ let channels = [], protocolAvailable = false;
 async function refresh() {
   const [data, platform] = await Promise.all([Workbench.api('/api/registry/channels'), Workbench.ready, ModelCoverage.load()]);
   protocolAvailable = platform.features.some(feature => feature.id === 'admission');
-  channels = data.channels; ModelCoverage.setChannels(channels); render();
+  channels = data.channels; ModelCoverage.setProtocolAvailable(protocolAvailable); $('protocol-entry').hidden = !protocolAvailable; ModelCoverage.setChannels(channels); render();
 }
 function render() {
   const query = $('search').value.trim().toLowerCase(), state = $('status-filter').value;
@@ -14,17 +14,15 @@ function render() {
     card.append(Workbench.node('h3', c.name), Workbench.node('span', c.enabled ? (c.status === 'online' ? '已上线' : '已记录') : '已停用', 'badge'),
       Workbench.node('p', `${c.scope || '通用'} · ${c.multiplier}x · #${c.id}`), Workbench.node('p', c.base_url, 'muted'), Workbench.node('p', '密钥已保存', 'hint'));
     if (c.note) card.append(Workbench.node('p', c.note, 'hint'));
-    const actions = Workbench.node('div', '', 'actions'); const edit = Workbench.node('button', '编辑', 'secondary'); edit.addEventListener('click', () => open(c)); actions.append(edit); if(protocolAvailable){const protocol=Workbench.node('a','协议准入');protocol.href='/admission/protocol/?channel='+c.id;actions.append(protocol);} card.append(actions, ModelCoverage.render(c)); return card;
+    const actions = Workbench.node('div', '', 'actions'); const edit = Workbench.node('button', '编辑', 'secondary'); edit.addEventListener('click', () => open(c)); actions.append(edit); if(protocolAvailable){const protocol=Workbench.node('a','模型与协议检测');protocol.href='/admission/protocol/?channel='+c.id;actions.append(protocol);} card.append(actions, ModelCoverage.render(c)); return card;
   }));
   if (!visible.length) $('list').append(Workbench.node('p', '没有匹配的渠道。', 'muted'));
 }
 async function open(c = null) {
-  await ProtocolProfileForm.mount($('channel-protocol-profile'), 'channel');
   $('channel-form').reset(); $('id').value = c?.id || ''; $('version').value = c?.version || '';
   $('editor-title').textContent = c ? '编辑渠道' : '新增已上线渠道';
   for (const [id, field] of [['url','base_url'],['name','name'],['scope','scope'],['note','note']]) $(id).value = c?.[field] || '';
   $('multiplier').value = c?.multiplier ?? ''; $('state').value = c?.status || 'online'; $('enabled').checked = c ? c.enabled : true;
-  ProtocolProfileForm.set('channel', c?.protocol_profile || {});
   $('key').value = ''; $('key').required = !c; $('form-error').textContent = ''; $('editor').showModal();
 }
 $('add').addEventListener('click', () => open()); $('close').addEventListener('click', () => $('editor').close());
@@ -36,7 +34,7 @@ $('channel-form').addEventListener('submit', async event => {
   const id = $('id').value;
   const body = {name:$('name').value.trim(), base_url:$('url').value.trim(), api_key:$('key').value.trim(),
     multiplier:Number($('multiplier').value), scope:$('scope').value.trim(), note:$('note').value.trim(),
-    status:$('state').value, enabled:$('enabled').checked, version:Number($('version').value) || null, protocol_profile:ProtocolProfileForm.get('channel')};
+    status:$('state').value, enabled:$('enabled').checked, version:Number($('version').value) || null};
   try { await Workbench.api(`/api/registry/channels${id ? `/${id}` : ''}`, {method:id ? 'PUT' : 'POST', body:JSON.stringify(body)});
     $('key').value = ''; $('editor').close(); await refresh(); $('message').textContent = '渠道已保存，各测试工具共用。';
   } catch (e) { $('form-error').textContent = e.message; } finally { body.api_key = ''; $('save').disabled = false; }

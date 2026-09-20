@@ -9,8 +9,8 @@ from pydantic import ValidationError
 
 from shared.config import DATA_DIR
 from shared.registry import get_registry
-from .catalog import TEMPLATES
-from .models import PlanInput, StartInput
+from .catalog import PROTOCOLS, CHECKS
+from .models import PlanInput, StartInput, DiscoveryInput
 from .report import ERRORS, html_report
 from .service import Manager
 from .storage import Store
@@ -31,7 +31,7 @@ async def parse(request, model):
     except asyncio.TimeoutError:
         raise HTTPException(408, "请求内容接收超时") from None
     except (ValidationError, ValueError):
-        raise HTTPException(422, "字段格式或范围不符合要求，请检查模型、分组、日期和协议资料") from None
+        raise HTTPException(422, "字段格式或范围不符合要求，请检查渠道、模型和请求参数") from None
 
 
 def create_app(directory=None, registry=None, transport_factory=None):
@@ -41,7 +41,7 @@ def create_app(directory=None, registry=None, transport_factory=None):
         async with app.state.manager.lifespan():
             yield
 
-    app = FastAPI(title="协议识别与 NewAPI 配置准入", lifespan=lifespan, docs_url=None, redoc_url=None, openapi_url=None)
+    app = FastAPI(title="模型与协议检测", lifespan=lifespan, docs_url=None, redoc_url=None, openapi_url=None)
 
     @app.exception_handler(ValueError)
     async def invalid(_, exc):
@@ -57,7 +57,15 @@ def create_app(directory=None, registry=None, transport_factory=None):
 
     @app.get("/api/meta")
     async def meta():
-        return {"templates": TEMPLATES, "errors": ERRORS, "newapi_version": "v1.0.0-rc.26", "phase": 1}
+        return {"protocols": PROTOCOLS, "errors": ERRORS, "checks_per_model": len(CHECKS), "max_models": 5}
+
+    @app.get("/api/models")
+    async def cached_models(channel_id: int, request: Request):
+        return request.app.state.manager.cached_models(channel_id)
+
+    @app.post("/api/models")
+    async def discover(request: Request):
+        return await request.app.state.manager.discover(await parse(request, DiscoveryInput))
 
     @app.post("/api/preview")
     async def preview(request: Request):

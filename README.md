@@ -43,9 +43,9 @@ python3 -m venv .venv
 
 准入预设新增 **GPT-6 Astra**（`gpt-6-astra`），固定使用 Responses；推理强度 low，每题 `max_output_tokens=4096`（含推理）。技术报告展示推理用量与完成状态。[参数与验证说明](docs/admission-gpt6.md)。
 
-## 协议识别与 NewAPI 配置准入
+## 模型与协议检测
 
-从准入页面进入 `/admission/protocol/`，填写供应商声明、模型映射、目标场景与分组，预览请求数量后进行一次最小接口探测。公共渠道支持保存协议来源和拟配置类型。四套模板覆盖 Codex 标准/搜索、OpenAI 通用与 Claude；报告分开记录接口能力、类型建议、分组阻断、待确认项和后台检查清单，支持历史、JSON 与 HTML 下载。默认本地 Mock，真实请求需本次明确确认。第一阶段不无条件放行灰度，质量、稳定性和 NexusAPI 端到端证据分别核对。详见 [子功能规格](docs/protocol-admission.md) 和 [测试清单](docs/protocol-admission-testing.md)。
+从公共渠道或准入页面进入 `/admission/protocol/`，选择已有渠道或填写 URL 和 Key，手动获取上游模型，再勾选最多5个模型检测。模型列表与常用模型覆盖共用缓存；也可手动输入模型。结果以“模型 × Chat Completions / Responses / Claude Messages”展示，分别查看普通调用、流式、工具及搜索。无需供应商、NewAPI类型或分组配置，不输出配置建议。默认Mock；真实请求需本次明确确认，先预览请求数量。历史报告及JSON/HTML下载保留。详见 [功能说明](docs/protocol-admission.md) 与 [测试清单](docs/protocol-admission-testing.md)。
 
 ## 常用模型覆盖
 

@@ -1,10 +1,7 @@
 import html
 import json
-from shared.channel_protocol import CHANNEL_TYPES, UPSTREAM_TYPES, CHANNEL_TYPE_IDS
-from .catalog import group_checks
-from .models import GroupTarget
+from .catalog import PROTOCOLS
 
-LABELS = {"blocked": "禁止进入该分组", "internal_only": "仅允许内部测试", "manual_review": "待人工确认"}
 ERRORS = {
     "search_no_results": "搜索工具报告未找到结果，本次能力待确认",
     "search_failed": "搜索工具明确返回失败",
@@ -22,71 +19,63 @@ ERRORS = {
     "idle_timeout": "正文读取空闲超时", "total_timeout": "请求总超时", "search_result_unconfirmed": "搜索正文格式正确，尚未识别到预期来源",
     "cancelled": "已停止", "not_run": "未执行", "interrupted": "服务中断，本次结果未完成", "internal_error": "探测执行异常",
 }
-BLOCKING_ERRORS = {"upstream_protocol_unsupported", "authentication_failed", "local_protocol_unsupported", "request_invalid", "invalid_schema", "invalid_tool_call",
-                   "stream_incomplete", "stream_protocol_error", "invalid_json_or_event", "generation_incomplete", "usage_missing"}
+
+STATUS_LABELS = {"supported": "支持", "unsupported": "不支持", "failed": "未通过",
+                 "unconfirmed": "待确认", "not_tested": "未检测", "running": "检测中"}
+UNCERTAIN_ERRORS = {"authentication_failed", "endpoint_unconfirmed", "request_invalid", "rate_limited",
+                    "request_timeout", "upstream_timeout", "upstream_error", "http_error", "connection_error",
+                    "headers_timeout", "first_byte_timeout", "idle_timeout", "total_timeout",
+                    "cancelled", "interrupted", "internal_error", "model_mapping_unconfirmed"}
+UNSUPPORTED_ERRORS = {"upstream_protocol_unsupported", "local_protocol_unsupported"}
 
 
-def recommendation(profile):
-    source = profile["upstream_type"]
-    confirmed = profile["confirmation_source"] in {"documentation", "supplier"} and bool(profile["confirmed_on"])
-    if source in {"unknown", "custom", "native"} or not confirmed:
-        return "unknown", "需要供应商文档或人工确认，以及确认日期；接口成功不能证明程序类型"
-    if source == "codex" and profile["credential_mode"] != "codex_oauth":
-        return "unknown", "账号池来源不能确定对外接入类型，请确认供应商提供的 API 协议"
-    return source, "依据供应商确认的接入协议；不是通过 HTTP 响应识别出的程序身份"
+def capability(rows):
+    if any(r.get("status") == "passed" for r in rows):
+        state = "supported"
+    elif any(r.get("status") == "running" for r in rows):
+        state = "running"
+    elif not rows or all(r.get("status") == "not_run" for r in rows):
+        state = "not_tested"
+    elif all(r.get("error_class") in UNSUPPORTED_ERRORS for r in rows):
+        state = "unsupported"
+    elif any(r.get("status") in {"not_run", "unconfirmed"} or r.get("error_class") in UNCERTAIN_ERRORS for r in rows):
+        state = "unconfirmed"
+    else:
+        state = "failed"
+    return {"status": state, "label": STATUS_LABELS[state]}
 
 
 def evaluate(report):
-    config = report["config"]
-    profile = config["profile"]
-    recommended, basis = recommendation(profile)
-    groups, warnings = [], []
-    proposed = profile["proposed_type"]
-    if proposed != recommended:
-        warnings.append("拟配置类型与当前推荐不一致，需先复核配置")
-    if config["mode"] == "mock":
-        warnings.append("本报告来自本地 Mock，只用于演示和验证工作台，不能证明渠道能力")
-    for group in config["groups"]:
-        required = group_checks(GroupTarget.model_validate(group))
-        rows = [r for r in report["probes"] if r["check"] in required]
-        reasons = []
-        state = "internal_only"
-        if recommended == "unknown" or proposed in {"unknown", "advanced", "custom", "native"} or proposed != recommended:
-            state = "manual_review"
-            reasons.append("来源或拟配置类型尚待确认；高级自定义需要专项路由评审")
-        if "alpha_search" in required and proposed not in {"newapi", "sub2api", "codex", "advanced", "unknown"}:
-            state = "blocked"
-            reasons.append("RC26 的此渠道类型不允许转发 Alpha Search，降低权重不能解决")
-        bad = [r for r in rows if r.get("error_class") in BLOCKING_ERRORS]
-        if bad:
-            state = "blocked"
-            reasons += list(dict.fromkeys(ERRORS[r["error_class"]] for r in bad))
-        passed = len(rows) == len(required) * len(config["models"]) and all(r.get("status") == "passed" for r in rows)
-        if not passed:
-            reasons.append("必测能力尚未全部确认，不具备生产放行证据")
-        elif report["state"] == "completed":
-            reasons.append("本次直测满足模板；仍需质量、稳定性样本及 NexusAPI 端到端确认")
-        if profile["credential_mode"] == "codex_oauth":
-            state = "manual_review" if state != "blocked" else state
-            reasons.append("第一阶段探测使用供应商 API Key；OAuth 直连需后续网关验证")
-        if config["mode"] == "mock":
-            reasons.append("Mock 结果不用于实际渠道放行")
-        groups.append({"name": group["name"], "template": group["template"], "state": state, "label": LABELS[state],
-                       "required_checks": required, "direct_checks_passed": passed, "reasons": reasons})
-    report["conclusion"] = {"declared_type": profile["upstream_type"], "proposed_type": proposed,
-        "recommended_type": recommended, "recommended_type_id": CHANNEL_TYPE_IDS.get(recommended),
-        "proposed_type_id": CHANNEL_TYPE_IDS.get(proposed), "recommendation_basis": basis, "warnings": warnings, "groups": groups,
-        "production_ready": False, "newapi_version": "v1.0.0-rc.26",
-        "quality_status": "not_evaluated", "stability_status": "not_evaluated", "gateway_status": "not_verified",
-        "checklist": ["核对供应商协议资料、凭据方式和建议渠道类型", "在 NexusAPI 后台人工配置模型映射及 internal_test 分组",
-                      "执行现有质量快测和稳定性测试，核对样本与分组基线", "在测试分组核对实际 channel_id、请求 ID、重试链路和计费",
-                      "证据齐全并完成业务审核后，再人工决定正式分组及灰度权重"]}
+    models = []
+    for model in report["config"]["models"]:
+        rows = {r["check"]: r for r in report["probes"] if r["model"] == model["model"]}
+        protocols = {}
+        for protocol, spec in PROTOCOLS.items():
+            modes = {name: capability([rows[check]] if check in rows else [])
+                     for name, check in spec.items() if name != "name"}
+            protocols[protocol] = {"name": spec["name"],
+                **capability([rows.get(spec[name], {"status": "not_run"}) for name in ("basic", "stream")]),
+                "details": modes}
+        models.append({"model": model["model"], "upstream_model": model.get("upstream_model") or model["model"],
+                       "protocols": protocols, "search": capability([rows["alpha_search"]] if "alpha_search" in rows else []),
+                       "supported_protocols": [key for key, value in protocols.items() if value["status"] == "supported"]})
+    report["capabilities"] = models
+    report["warnings"] = (["本地 Mock 演示结果，不能证明真实上游支持这些模型或协议"] if report["config"]["mode"] == "mock" else [])
     return report
 
 
 def html_report(report):
     e = lambda value: html.escape(str(value))
-    c = report["conclusion"]
-    sections = "".join(f"<section><h2>{e(g['name'])}：{e(g['label'])}</h2><ul>" + "".join(f"<li>{e(r)}</li>" for r in g["reasons"]) + "</ul></section>" for g in c["groups"])
-    rows = "".join(f"<tr><td>{e(p['model'])}</td><td>{e(p['label'])}</td><td>{e(p['status'])}</td><td>{e(p.get('http_status'))}</td><td>{e(ERRORS.get(p.get('error_class'), p.get('error_class', '')))}</td></tr>" for p in report["probes"])
-    return '<!doctype html><html lang="zh-CN"><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>NewAPI 配置准入报告</title><style>body{font:16px system-ui;max-width:1100px;margin:32px auto;padding:16px}table{border-collapse:collapse;width:100%}td,th{padding:10px;border:1px solid #ccc}pre{white-space:pre-wrap;overflow-wrap:anywhere}</style><h1>NewAPI 配置准入报告</h1>' + f"<p>运行 {e(report['id'])} · {e(report['state'])} · {e(report['config']['mode'])}</p><p>声明：{e(UPSTREAM_TYPES[c['declared_type']])}；拟配置：{e(CHANNEL_TYPES[c['proposed_type']])}；推荐：{e(CHANNEL_TYPES[c['recommended_type']])}</p>" + "".join(f"<p>{e(w)}</p>" for w in c["warnings"]) + sections + '<table><tr><th>模型</th><th>探测</th><th>状态</th><th>HTTP</th><th>说明</th></tr>' + rows + '</table><h2>后台检查清单</h2><ol>' + "".join(f"<li>{e(item)}</li>" for item in c["checklist"]) + '</ol><details><summary>完整脱敏证据（与 JSON 下载一致）</summary><pre>' + e(json.dumps(report, ensure_ascii=False, indent=2)) + '</pre></details></html>'
+    rows = "".join("<tr><td>" + e(m["upstream_model"]) + "</td>" +
+                   "".join("<td>" + e(m["protocols"][key]["label"]) + "</td>" for key in PROTOCOLS) + "</tr>"
+                   for m in report["capabilities"])
+    details = "".join(f"<tr><td>{e(p['model'])}</td><td>{e(p['label'])}</td><td>{e(capability([p])['label'])}</td><td>{e(p.get('http_status'))}</td><td>{e(ERRORS.get(p.get('error_class'), p.get('error_class', '')))}</td></tr>" for p in report["probes"])
+    return ('<!doctype html><html lang="zh-CN"><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">'
+            '<title>模型与协议检测报告</title><style>body{font:16px system-ui;max-width:1100px;margin:32px auto;padding:16px}table{border-collapse:collapse;width:100%}td,th{padding:10px;border:1px solid #ccc}pre{white-space:pre-wrap;overflow-wrap:anywhere}</style><h1>模型与协议检测报告</h1>'
+            + f"<p>运行 {e(report['id'])} · {e(report['state'])} · {e(report['config']['mode'])}</p>"
+            + "".join(f"<p>{e(w)}</p>" for w in report["warnings"])
+            + '<p>支持表示本次至少一种普通调用方式通过；流式、工具和搜索分别查看明细。仅覆盖已检测模型。</p><table><tr><th>模型</th>'
+            + "".join(f"<th>{e(v['name'])}</th>" for v in PROTOCOLS.values()) + '</tr>' + rows
+            + '</table><h2>检测明细</h2><table><tr><th>模型</th><th>检测项目</th><th>状态</th><th>HTTP</th><th>说明</th></tr>' + details
+            + '</table><details><summary>完整脱敏证据（与 JSON 下载一致）</summary><pre>'
+            + e(json.dumps(report, ensure_ascii=False, indent=2)) + '</pre></details></html>')

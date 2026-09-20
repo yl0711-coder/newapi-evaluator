@@ -1,70 +1,72 @@
-# 协议识别与 NewAPI 配置准入
+# 模型与协议检测
 
-第一阶段把供应商声明、候选端实测能力、NewAPI 类型建议和分组门禁分开记录。入口为准入页面的“协议识别与 NewAPI 配置准入”，地址 `/admission/protocol/`；公共渠道卡片也可带渠道选择进入。
-
-本规格承接用户的《新渠道协议识别与 NewAPI 配置准入说明.md》，目标 New API 为用户确认的官方 `v1.0.0-rc.26`。Alpha Search 按官方 Codex `rust-v0.154.0` 的请求、响应和兼容测试实现，客户端只作为格式参考，不是运行依赖。原说明中的阶段门禁和类型推断按下述规则统一。
+从公共渠道的“获取上游模型与检测协议”、渠道卡片或单个模型的“检测协议”进入。独立地址保持 `/admission/protocol/`，准入页面也提供入口。此功能回答：上游列出哪些模型，选定模型的哪些接口实测通过。无需供应商、NewAPI 类型、确认日期、分组或模型家族配置，不输出接入类型建议或业务放行结论。
 
 ## 操作流程
 
-1. 在公共渠道新增或编辑上游来源、供应商说明、确认依据/日期、凭据方式及拟配置类型。现有渠道默认“未确认”；旧客户端省略新增字段时保留已有协议资料。临时候选可直接在协议准入页面填写，同样不保存临时密钥。
-2. 填写待售卖模型及精确请求映射，选择目标场景和实际 NexusAPI 分组名称。每批最多 5 个模型、8 个目标分组。多个分组重叠的必测项在同一模型上只执行一次；不同模型分别测试。
-3. 预览清单和请求数量，再执行。默认本地 Mock 演示。真实模式必须主动切换并勾选“确认使用内部测试凭据”；API 对应 `mode=live, confirm_live=true`，确认只授权本批预览清单。该新增页面/API 确认契约为本子功能对 G6 的界面落实；本轮开发验收只使用本地 Mock，不请求供应商。
-4. 查看模板结论及逐项证据，下载 JSON 或 HTML。两个导出共享同一后端报告，HTML 的完整脱敏证据包含全部 JSON 字段。保存最近 30 次协议报告。公共渠道的连接、密钥或资料版本变化后，旧报告提示重新验证并保留原快照。之后继续现有质量快测和稳定性流程。
+1. 选择已保存渠道，或填写临时 Base URL 和 API Key。默认 Mock 演示；真实请求需切换模式并明确勾选确认。临时密钥只用于页面和在途请求，不写入数据库或报告；检测开始后页面清空密钥。
+2. 点击“获取上游模型”。此操作只读取列表，不自动进行模型调用。已有公共渠道会载入上次成功获取的列表，不发送上游请求；缓存与原常用模型覆盖模块共用，连接变化后失效。
+3. 从列表勾选最多5个模型，也可手动输入实际模型 ID。列表支持搜索，每次最多显示200条；未显示的模型可通过搜索选择。列表名称仅是上游声明，不能当作实测支持。
+4. 预览本批请求数量，再开始检测。每模型固定9项，5个模型最多45次请求，逐项串行执行。模型列表获取不计入该检测批次。
+5. 查看“模型 × 协议”结果表，展开工具、搜索和逐请求明细；支持历史、JSON和HTML下载。
 
-## 四套模板
+## 获取模型列表
 
-| 模板 | 每个模型的必测项 |
+复用 `features/model_coverage/discovery.py`，GET `/v1/models`。先用 Bearer；只有401/403时尝试 x-api-key 与 anthropic-version，不依据模型名称推断协议。每种鉴权最多20页、30秒；单页最多2MB，总模型数最多10000。通常一次请求完成，极端分页和鉴权切换不超过40次请求、60秒。跳转、环境代理和自动重试关闭，遵循现有出站地址保护。
+
+解析、分页、错误归类、密钥及模型名校验由同一实现负责。公共渠道获取结果写入现有发现快照；失败保留历史成功快照及错误状态。临时候选的列表只保留在当前页面，不新建渠道、巡检目标或计划。接口不提供列表时可手动输入模型继续测试。列表获取失败不等于该渠道没有模型。
+
+## 检测项目与结果口径
+
+| 协议 / 能力 | 项目 |
 | --- | --- |
-| Codex 标准 | Responses 非流式、流式、强制工具调用格式；检查有效 usage 和正常终态 |
-| Codex 搜索 | Codex 标准的全部项目，再加独立 Alpha Search |
-| OpenAI 通用 | Chat Completions 非流式、流式；usage、结束原因；可追加 Codex 标准的 Responses 项目 |
-| Claude | Messages 非流式、流式、工具格式、约 8 KiB 合成长文本请求；usage 和终态 |
+| OpenAI Chat Completions | 普通 JSON、SSE 流式 |
+| OpenAI Responses | 普通 JSON、SSE 流式、强制工具调用格式 |
+| Anthropic / Claude Messages | 普通 JSON、SSE 流式、强制工具调用格式 |
+| Alpha Search | 独立搜索 JSON 请求，核对已识别来源记录 |
 
-长文本项只验证基础接收能力，不声称验证模型最大上下文。工具项核对实际返回的调用 ID、工具名和参数，不冒充已验证完整工具往返。Compact、最大上下文、图像、Embeddings 等专用模板不在第一阶段，不能借相同模型名复用为通过结果。分组模板与必测项由 `features/protocol_admission/catalog.py` 唯一维护，页面从 API 读取。
+定义唯一维护于 `features/protocol_admission/catalog.py`。协议“支持”表示本次至少一种普通调用方式（非流式或流式）通过；流式、工具和搜索分别列明，不把工具或搜索失败扩大成所有普通调用失败。工具项核对调用ID、名称和参数，不代表完整工具往返。
 
-## 请求与判定
+- 支持：本次对应探测通过。Mock 结果始终标记为演示。
+- 不支持：该协议已执行的普通/流式项目均收到明确不支持的错误，且没有未执行项目。
+- 未通过：格式、有效输出或流式结束等明确校验失败。
+- 待确认：鉴权、路径、参数、限流、网络、超时、返回模型不一致等未能确定能力的情况；普通404/405不直接视为不支持。
+- 未检测 / 检测中：没有完成实测。未选择的模型没有通过结论。
 
-探测每项仅发一次 HTTP 请求，串行执行；不自动重试，不跟随重定向，不采用环境代理，使用现有出站地址白名单。每次最多读取 1 MiB 正文，分别约束响应头/正文首段、空闲和总超时，整批上限 1800 秒。停止会取消在途请求，未执行项保留；进程重启把未结束运行标为 interrupted，不自动恢复发请求。
+只覆盖上述接口与已选择模型，不推断所有原生协议、真实模型身份、回答质量、长期稳定性或生产可用性。未提供usage不会填零；可见有效响应与调用结束信号分别校验。返回模型不同需核对供应商的模型别名。
 
-SSE 接收支持 LF、CRLF、CR 换行及开头 UTF-8 BOM，包括跨块分片。流式请求验证各自的结束信号及事件顺序：Responses 对应 completed/incomplete/failed，Chat 对应 finish_reason 与 `[DONE]`，Messages 对应 block/message 事件。生成截断与传输缺少终态分开分类。usage 缺失不填零。流式 TTFT 为首个可见文本增量的接收耗时，非流式为 null；响应头和总耗时另存毫秒值。
+## 协议与运行边界
 
-Alpha Search 为 `POST /v1/alpha/search` 的非流式 JSON。包含搜索会话 id、实际模型和 `commands.search_query`，`response_length` 位于 commands。每次运行使用独立合成 RFC 9110 查询，不携带用户会话。响应要求 output 字符串；results 可以缺省/null/空数组，encrypted_output 可以缺省/null。明确的搜索失败前缀或结构化错误优先记失败，即使同时含预期来源链接。只对已识别的 text_result（来源 URL 和相关标题/摘要），或标题/URL 紧接搜索引用的格式，核对 RFC 9110 标准页来源。只有名称和链接的普通正文可能是查询回显，仍记“格式通过、结果待确认”；明确无结果前缀同样保留待确认。该内容检查不证明实时联网或搜索真实性，不解密 encrypted_output。仅有 200 或 RC26 工具计费不算通过。
+每项最多一次HTTP尝试，不跟随重定向、不采用环境代理。响应上限1MiB，默认响应头/正文首段及空闲超时各10秒，每项总超时30秒；整批最长1800秒。停止取消在途请求并保留未执行状态；进程重启将未完成报告标为 interrupted，不自动补发。
 
-HTTP 401/403 表示鉴权/访问限制；404/405 默认待核对方法、路径和分组，不直接证明上游缺少端点。上游明确的 unsupported endpoint 错误码或 RC26 本地拒绝可形成确定阻断。400/422 要检查请求及模型。限流、超时、连接错误和 5xx 分别记录，不用于反推供应商程序。
+SSE支持LF、CRLF、CR和开头UTF-8 BOM，包括跨块分片。分别校验Responses completed/incomplete/failed、Chat finish_reason与DONE、Messages事件序列及终态。合法生成截断与传输未完成分别归类。流式TTFT以首个可见文本增量计，非流式为null；耗时单位毫秒。
 
-## 类型与分组规则
+Alpha Search 的请求和可选响应字段依据官方 Codex `rust-v0.154.0`，不依赖安装Codex客户端。固定使用独立合成RFC9110查询。明确搜索错误优先；只有已识别的 text_result 来源记录（URL及相关标题/摘要），或标题/URL紧接搜索引用的格式，才判定结果通过。results缺省/null/空数组合法；仅回显链接、未知正文或无结果保持待确认，不解密encrypted_output，也不证明实时联网真实性。
 
-类型依据供应商文档/人工确认及日期，不能通过一次接口成功认定程序身份。New API、Sub2API 和原生官方来源各自保留声明；Codex 仅在实际接入凭据为 Codex OAuth 时才可给出对应建议。账号池对外提供普通 API Key 而协议未确认时，保持待确认。第一阶段执行器支持供应商 API Key（Bearer 或 Anthropic x-api-key）；OAuth 直连、其他原生协议和高级自定义路由须走后续专项验证，不能声称已经实现相应原生适配。
+## 数据和兼容
 
-RC26 Alpha Search 类型限制与候选端能力分别核对。OpenAI 等不在放行名单的拟配置类型，即使候选端返回有效 Alpha Search 结果，也阻止进入搜索分组。来源未确认、拟配置不一致或高级自定义需要人工确认。鉴权、确定不支持、坏响应、流式结束或必测 usage 错误形成对应模板阻断。超时和未知结果不算协议通过。任意检查尚未通过都保留缺口。
+报告仍位于 `PLATFORM_DATA_DIR/protocol-admission/reports.db`，保留最近30条。新报告version=2，仅保存脱敏连接标识、模型、逐请求指标和协议能力结果，不含供应商/分组配置、URL、临时Key或上游正文。HTML和JSON使用同一后端结果。历史version=1报告保留原快照和已有字段，读取时由原探测证据生成协议表；不删除历史报告或改写原存储快照。
 
-本阶段状态为“禁止进入该分组”“仅允许内部测试”“待人工确认”，不会无条件输出“允许灰度”。质量、稳定性门槛和 NexusAPI 实际 channel_id、模型映射、重试链路及计费证据尚未采集，统一标为未评估/未验证。返回模型与请求模型不一致时需复核映射或版本别名，结果保留待确认；精确匹配也不能证明真实模型身份。网关尝试不可观察时为 null；Eval 一次尝试不等于全链路零重试。Mock 结论始终带演示标识。
-
-## 数据与接口
-
-公共渠道增加 `protocol_profile`，SQLite 在原事务中追加 JSON 字段并为历史渠道使用空声明；资料修改沿用原版本冲突检查，不改变密钥留空保留、替换和加密方式。协议资料不接受凭据模式文本、带查询参数的 URL 或本渠道密钥。
-
-新增报告库为 `PLATFORM_DATA_DIR/protocol-admission/reports.db`，独立于现有质量报告。只保存配置声明、模型/分组、渠道稳定 ID 或脱敏主机指纹、请求数量及逐项白名单指标，不保存上游请求/响应正文、临时 Key、完整连接地址或任意上游错误文本。原报告的题目、回答、技术证据及各导出版本保持原有边界。
+公共渠道旧版 `protocol_profile` 字段及校验仅保留已有数据/API兼容，页面不再编辑它，省略字段继续保留原值。原准入质量、稳定性、非流式和极限测试的报告边界不变。协议探测结果不自动改写常用模型的长期稳定状态，不创建计划、不写NewAPI配置、不发送通知。
 
 | API（相对 `/admission/protocol`） | 行为 |
 | --- | --- |
-| GET `/api/meta` | 模板、错误分类、参考版本 |
-| POST `/api/preview` | 模型/分组/资料/超时生成清单与指纹，不发送上游请求 |
-| POST `/api/runs` | 预览指纹必须仍匹配；开始一批 Mock 或明确确认的真实探测 |
-| GET `/api/runs`、`/api/runs/{id}` | 历史摘要、完整脱敏报告 |
-| POST `/api/runs/{id}/stop` | 停止本次运行，不重试 |
-| GET `/api/runs/{id}/export/{json,html}` | 后端报告导出 |
+| GET `/api/meta` | 协议、每模型项目数量和错误分类 |
+| GET `/api/models?channel_id=…` | 读取已保存渠道的模型列表缓存，不请求上游 |
+| POST `/api/models` | 获取临时或公共渠道模型列表；真实模式需confirm_live |
+| POST `/api/preview` | 选择模型后生成请求清单和指纹，无上游请求 |
+| POST `/api/runs` | 校验预览指纹及本次真实请求确认，执行检测 |
+| GET `/api/runs`、`/api/runs/{id}` | 历史摘要及模型协议结果 |
+| POST `/api/runs/{id}/stop` | 停止本次检测 |
+| GET `/api/runs/{id}/export/{json,html}` | 下载同一脱敏报告 |
 
-公共协议选项为 `/api/registry/protocol-options`；渠道 CRUD 的 `protocol_profile` 为可省略的嵌套字段。协议 API 拒绝未知字段及超过 64 KiB 的请求体，验证失败不回显输入。页面继承工作台鉴权和同源保护。不自动写 NewAPI 数据库、渠道、权重、分组或禁用状态，也不发送外部通知。
+新增模型列表请求与探测请求均拒绝未知字段及超过64KiB的请求体，错误不回显输入；继承工作台鉴权及同源保护。`groups`与`profile`不再属于新探测输入。
 
-## 验证与源码依据
+## 验证和格式依据
 
-只读配置检查：`python -B scripts/inspect_protocol_admission.py`。可选 `--data-dir` 指向已授权的公共渠道目录，只读 channels.db 中安全字段，不解密、不初始化数据库、不发请求。完整检查清单见 [协议准入测试清单](protocol-admission-testing.md)。
+只读入口：`python -B scripts/inspect_protocol_admission.py`。测试清单见 [协议检测测试清单](protocol-admission-testing.md)。本轮开发和独立验收只用合成Mock及localhost，不访问实际供应商。
 
-- [Codex 请求/响应定义](https://github.com/openai/codex/blob/rust-v0.154.0/codex-rs/codex-api/src/search.rs)
-- [Codex 序列化及兼容测试](https://github.com/openai/codex/blob/rust-v0.154.0/codex-rs/codex-api/src/endpoint/search.rs)
-- [RC26 Alpha Search 转发和计费](https://github.com/QuantumNous/new-api/blob/v1.0.0-rc.26/relay/alpha_search_handler.go)
-- [RC26 渠道名称及类型编号](https://github.com/QuantumNous/new-api/blob/v1.0.0-rc.26/constant/channel.go)
-- [RC26 Codex 适配器](https://github.com/QuantumNous/new-api/blob/v1.0.0-rc.26/relay/channel/codex/adaptor.go)
-
-SSE 分行依据：[WHATWG Event Stream 解析规则](https://html.spec.whatwg.org/multipage/server-sent-events.html#parsing-an-event-stream)。
+- [Codex搜索请求及响应](https://github.com/openai/codex/blob/rust-v0.154.0/codex-rs/codex-api/src/search.rs)
+- [Codex兼容测试](https://github.com/openai/codex/blob/rust-v0.154.0/codex-rs/codex-api/src/endpoint/search.rs)
+- [Alpha Search转发格式参考](https://github.com/QuantumNous/new-api/blob/v1.0.0-rc.26/relay/alpha_search_handler.go)
+- [SSE事件流解析](https://html.spec.whatwg.org/multipage/server-sent-events.html#parsing-an-event-stream)

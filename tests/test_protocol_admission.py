@@ -1,7 +1,6 @@
 """Independent synthetic contract fixtures; no supplier credentials or business data."""
 import asyncio
 from contextlib import closing
-from datetime import date
 import json
 import os
 from pathlib import Path
@@ -15,8 +14,8 @@ import httpx
 from features.protocol_admission.api import create_app
 from features.protocol_admission.catalog import probes, request_body
 from features.protocol_admission.engine import analyze_json, endpoint, execute, StreamState
-from features.protocol_admission.models import PlanInput, StartInput
-from features.protocol_admission.report import recommendation
+from features.protocol_admission.models import PlanInput, StartInput, DiscoveryInput
+from features.protocol_admission.report import evaluate, capability
 from features.protocol_admission.service import Manager
 from features.protocol_admission.storage import Store
 from shared.channel_protocol import ProtocolProfile
@@ -24,15 +23,13 @@ from shared.registry import Registry
 
 
 def plan(**changes):
-    value = {"base_url": "https://synthetic.invalid/v1", "models": [{"model": "synthetic-model"}],
-             "groups": [{"name": "search", "template": "codex_search"}],
-             "profile": {"upstream_type": "newapi", "proposed_type": "newapi", "confirmation_source": "supplier", "confirmed_on": "2026-01-01"}}
+    value = {"base_url": "https://synthetic.invalid/v1", "models": [{"model": "synthetic-model"}]}
     value.update(changes)
     return PlanInput.model_validate(value)
 
 
 def probe(check):
-    p = plan(groups=[{"name": name, "template": name} for name in ["codex_search", "openai_common", "claude"]])
+    p = plan()
     return next(v for v in probes(p) if v.check == check)
 
 
@@ -50,11 +47,10 @@ def wire(events):
 
 
 class ProtocolContractTests(unittest.TestCase):
-    def test_template_union_mapping_and_request_counts(self):
-        p = plan(models=[{"model": "public", "upstream_model": "upstream"}, {"model": "second"}],
-                 groups=[{"name": "standard", "template": "codex_standard"}, {"name": "search", "template": "codex_search"}])
+    def test_all_protocols_mapping_and_request_counts(self):
+        p = plan(models=[{"model": "public", "upstream_model": "upstream"}, {"model": "second"}])
         values = probes(p)
-        self.assertEqual(len(values), 8)
+        self.assertEqual(len(values), 18)
         self.assertEqual({v.upstream_model for v in values}, {"upstream", "second"})
         search = request_body(next(v for v in values if v.check == "alpha_search"), "session-fixture")
         self.assertEqual(search["id"], "session-fixture")
@@ -72,9 +68,10 @@ class ProtocolContractTests(unittest.TestCase):
         with self.assertRaises(ValueError):
             ProtocolProfile(description="Authorization: Bearer synthetic-secret")
 
-    def test_group_rejects_credential_shaped_labels(self):
+    def test_model_rejects_credentials_and_accepts_provider_identifiers(self):
         with self.assertRaises(ValueError):
-            plan(groups=[{"name": "sk-synthetic-group-0123456789", "template": "codex_search"}])
+            plan(models=[{"model": "sk-synthetic-model-0123456789"}])
+        self.assertEqual(plan(models=[{"model": "vendor/model@version+variant"}]).models[0].model, "vendor/model@version+variant")
 
     def test_alpha_optional_fields_and_semantics(self):
         p = probe("alpha_search")
@@ -175,13 +172,32 @@ class ProtocolContractTests(unittest.TestCase):
         state = StreamState(probe("messages_stream")); state.feed(wire(events[:3] + events[4:]), 3)
         self.assertEqual(state.analyze()["result_status"], "failed")
 
-    def test_program_identity_not_inferred(self):
-        profile = ProtocolProfile(upstream_type="codex", proposed_type="codex", confirmation_source="supplier", confirmed_on=date(2026, 1, 1)).model_dump(mode="json")
-        self.assertEqual(recommendation(profile)[0], "unknown")
-        profile["credential_mode"] = "codex_oauth"
-        self.assertEqual(recommendation(profile)[0], "codex")
-        profile.update(upstream_type="newapi", confirmation_source="observation")
-        self.assertEqual(recommendation(profile)[0], "unknown")
+    def test_protocol_matrix_separates_auth_tool_stream_and_search_results(self):
+        p = plan()
+        rows = [{**vars(item), "status": "failed", "error_class": "authentication_failed"} for item in probes(p)]
+        by_check = {row["check"]: row for row in rows}
+        by_check["responses_json"].update(status="passed", error_class="")
+        by_check["responses_stream"].update(error_class="stream_incomplete")
+        by_check["responses_tool"].update(error_class="invalid_tool_call")
+        for name in ("messages_json", "messages_stream"):
+            by_check[name].update(error_class="upstream_protocol_unsupported")
+        report = evaluate({"config": {**p.model_dump(), "mode": "live"}, "probes": rows})
+        result = report["capabilities"][0]
+        self.assertEqual(result["supported_protocols"], ["responses"])
+        self.assertEqual(result["protocols"]["openai"]["status"], "unconfirmed")
+        self.assertEqual(result["protocols"]["anthropic"]["status"], "unsupported")
+        self.assertEqual(result["protocols"]["responses"]["details"]["stream"]["status"], "failed")
+        self.assertEqual(result["protocols"]["responses"]["details"]["tool"]["status"], "failed")
+        self.assertEqual(result["search"]["status"], "unconfirmed")
+        self.assertNotIn("conclusion", report)
+
+    def test_pending_and_incomplete_do_not_claim_unsupported(self):
+        self.assertEqual(capability([])["status"], "not_tested")
+        self.assertEqual(capability([{"status": "running"}])["status"], "running")
+        for reason in ("authentication_failed", "endpoint_unconfirmed", "rate_limited", "total_timeout", "request_invalid"):
+            self.assertEqual(capability([{"status": "failed", "error_class": reason}])["status"], "unconfirmed")
+        self.assertEqual(capability([{"status": "failed", "error_class": "invalid_schema"}])["status"], "failed")
+        self.assertEqual(capability([{"status": "not_run"}, {"status": "failed", "error_class": "upstream_protocol_unsupported"}])["status"], "unconfirmed")
 
 
 class ProtocolExecutionTests(unittest.IsolatedAsyncioTestCase):
@@ -213,6 +229,8 @@ class ProtocolExecutionTests(unittest.IsolatedAsyncioTestCase):
                                        httpx.MockTransport(lambda request: httpx.Response(status, json=body)))
                 self.assertEqual(result["error_class"], expected)
                 self.assertNotEqual(result["status"], "passed")
+                expected_state = "unsupported" if expected in {"upstream_protocol_unsupported", "local_protocol_unsupported"} else "failed"
+                self.assertEqual(capability([result])["status"], expected_state)
 
     async def test_channel_changes_mark_saved_report_stale(self):
         channel = self.registry.save({"base_url": "https://synthetic.invalid", "api_key": "synthetic-saved-key", "multiplier": 1})
@@ -225,7 +243,7 @@ class ProtocolExecutionTests(unittest.IsolatedAsyncioTestCase):
         self.registry.save({"base_url": "https://changed.invalid", "api_key": "", "multiplier": 1}, channel["id"], channel["version"])
         stale = manager.report(run["id"])
         self.assertEqual(stale["freshness"], "changed")
-        self.assertTrue(any("重新" in value for value in stale["conclusion"]["warnings"]))
+        self.assertTrue(any("重新" in value for value in stale["warnings"]))
 
     async def test_returned_model_mismatch_needs_confirmation(self):
         body = response_body(); body["model"] = "synthetic-different-model"
@@ -287,28 +305,85 @@ class ProtocolExecutionTests(unittest.IsolatedAsyncioTestCase):
         await execute(probe("alpha_search"), base, "synthetic-key", plan(), "session", httpx.MockTransport(redirect))
         self.assertEqual(len(calls), 1)
 
-    async def test_all_templates_mock_reports_and_no_production_release(self):
+    async def test_all_protocols_mock_report_without_configuration(self):
         manager = Manager(self.store, self.registry)
-        p = plan(groups=[{"name": name, "template": name} for name in ["codex_standard", "codex_search", "openai_common", "claude"]])
+        p = plan()
         preview = manager.preview(p)
-        self.assertEqual(preview["request_count"], 10)
+        self.assertEqual(preview["request_count"], 9)
         async with manager.lifespan():
             run = await manager.start(StartInput(**p.model_dump(), preview_fingerprint=preview["fingerprint"]))
             await manager.task
         report = self.store.get(run["id"])
         self.assertEqual(report["state"], "completed")
         self.assertTrue(all(row["status"] == "passed" for row in report["probes"]))
-        self.assertFalse(report["conclusion"]["production_ready"])
-        self.assertEqual({g["state"] for g in report["conclusion"]["groups"]}, {"internal_only"})
+        self.assertEqual(set(report["capabilities"][0]["supported_protocols"]), {"openai", "responses", "anthropic"})
+        self.assertTrue(report["warnings"])
+        self.assertNotIn("profile", report["config"])
+        self.assertNotIn("groups", report["config"])
         self.assertNotIn("api_key", report["config"])
 
-    async def test_openai_configuration_blocks_search_despite_http_success(self):
-        p = plan(profile={"upstream_type": "openai", "proposed_type": "openai", "confirmation_source": "supplier", "confirmed_on": "2026-01-01"})
-        manager = Manager(self.store, self.registry)
-        async with manager.lifespan():
-            run = await manager.start(StartInput(**p.model_dump(), preview_fingerprint=manager.preview(p)["fingerprint"]))
-            await manager.task
-        self.assertEqual(self.store.get(run["id"])["conclusion"]["groups"][0]["state"], "blocked")
+    async def test_old_report_keeps_snapshot_and_adds_protocol_summary(self):
+        old = {"id": "legacy", "version": 1, "created_at": 1, "state": "completed",
+               "config": {**plan().model_dump(), "mode": "live", "profile": {"upstream_type": "unknown"}, "groups": []},
+               "probes": [{"model": "synthetic-model", "check": "responses_stream", "status": "passed"}],
+               "conclusion": {"legacy_field": "preserved"}}
+        self.store.save(old)
+        report = Manager(self.store, self.registry).report("legacy")
+        self.assertEqual(report["capabilities"][0]["supported_protocols"], ["responses"])
+        self.assertEqual(report["conclusion"], old["conclusion"])
+        self.assertEqual(self.store.get("legacy"), old)
+        old["probes"][0].update(status="unconfirmed", error_class="upstream_protocol_unsupported")
+        self.store.save(old)
+        self.assertEqual(Manager(self.store, self.registry).report("legacy")["capabilities"][0]["protocols"]["responses"]["status"], "unconfirmed")
+
+    async def test_temporary_discovery_requires_confirmation_and_does_not_save_credentials(self):
+        calls = []
+        def respond(request):
+            calls.append(request)
+            return httpx.Response(200, json={"data": [{"id": "model-one"}, {"id": "vendor/model@v2"}]})
+        manager = Manager(self.store, self.registry, lambda: httpx.MockTransport(respond))
+        body = {"base_url": "https://synthetic.invalid/v1", "api_key": "synthetic-discovery-key", "mode": "live"}
+        with self.assertRaises(ValueError):
+            await manager.discover(DiscoveryInput(**body))
+        self.assertEqual(calls, [])
+        result = await manager.discover(DiscoveryInput(**body, confirm_live=True))
+        self.assertEqual(result["models"], ["model-one", "vendor/model@v2"])
+        self.assertEqual(calls[0].url.path, "/v1/models")
+        self.assertEqual(len(calls), 1)
+        self.assertEqual(self.registry.list(), [])
+        self.assertEqual(self.store.list(), [])
+        self.assertNotIn("synthetic-discovery-key", json.dumps(result))
+
+    async def test_saved_discovery_shares_cache_and_connection_changes_invalidate(self):
+        calls = []
+        def respond(request):
+            calls.append(request)
+            return httpx.Response(200, json={"data": [{"id": "listed-model"}]})
+        channel = self.registry.save({"base_url": "https://synthetic.invalid", "api_key": "synthetic-model-key", "multiplier": 1})
+        manager = Manager(self.store, self.registry, lambda: httpx.MockTransport(respond))
+        self.assertFalse(manager.cached_models(channel["id"])["ok"])
+        result = await manager.discover(DiscoveryInput(channel_id=channel["id"], mode="live", confirm_live=True))
+        self.assertTrue(result["ok"])
+        self.assertEqual(manager.cached_models(channel["id"])["models"], ["listed-model"])
+        self.assertEqual(len(calls), 1)
+        self.registry.save({"base_url": "https://other.invalid", "api_key": "", "multiplier": 1}, channel["id"], channel["version"])
+        self.assertEqual(manager.cached_models(channel["id"])["models"], [])
+
+    async def test_discovery_auth_fallback_is_bounded_and_paginates(self):
+        calls = []
+        def respond(request):
+            calls.append(request)
+            if "authorization" in request.headers:
+                return httpx.Response(401, json={"error": "synthetic"})
+            self.assertEqual(request.headers["x-api-key"], "synthetic-pagination-key")
+            if "after_id" not in request.url.params:
+                return httpx.Response(200, json={"data": [{"id": "model-a"}], "has_more": True, "last_id": "model-a"})
+            return httpx.Response(200, json={"data": [{"id": "model-b"}], "has_more": False})
+        manager = Manager(self.store, self.registry, lambda: httpx.MockTransport(respond))
+        result = await manager.discover(DiscoveryInput(base_url="https://synthetic.invalid", api_key="synthetic-pagination-key", mode="live", confirm_live=True))
+        self.assertEqual(result["models"], ["model-a", "model-b"])
+        self.assertEqual(len(calls), 3)
+        self.assertEqual(calls[-1].url.params["after_id"], "model-a")
 
     async def test_preview_change_and_live_confirmation(self):
         p = plan()
@@ -427,8 +502,9 @@ class ProtocolAPITests(unittest.TestCase):
             exported = client.get('/api/runs/' + report["id"] + '/export/json').json()
             html = client.get('/api/runs/' + report["id"] + '/export/html').text
             self.assertEqual(report, exported)
-            self.assertIn('仅允许内部测试', html)
-            self.assertIn('production_ready', html)
+            self.assertIn('模型与协议检测报告', html)
+            self.assertIn('supported_protocols', html)
+            self.assertNotIn('后台检查清单', html)
             self.assertEqual(client.get('/api/runs/' + report["id"] + '/export/xml').status_code, 404)
 
 

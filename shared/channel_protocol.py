@@ -16,8 +16,6 @@ CHANNEL_TYPES = {"unknown": "未确认", "openai": "OpenAI", "newapi": "New API"
                  "codex": "ChatGPT Subscription (Codex)", "anthropic": "Anthropic", "gemini": "Gemini",
                  "deepseek": "DeepSeek", "native": "其他原生类型（待确认）", "custom": "自研接入（待确认）",
                  "advanced": "Advanced Custom（高级自定义）"}
-CHANNEL_TYPE_IDS = {"openai": 1, "anthropic": 14, "gemini": 24, "deepseek": 43,
-                    "codex": 57, "advanced": 58, "sub2api": 59, "newapi": 60}
 SOURCE_TYPES = {"unknown": "未确认", "documentation": "供应商文档", "supplier": "供应商人工确认",
                 "observation": "实际测试", "other": "其他"}
 SECRET_PATTERN = re.compile(r"(?i)(?:\bsk-[a-z0-9_-]{16,}|\bBearer\s+\S+|(?:api[_-]?key|access_token|password|authorization)\s*[:=]\s*\S+|https?://\S*[?@]\S*)")

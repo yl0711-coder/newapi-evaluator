@@ -1,14 +1,18 @@
 <!doctype html>
-<html lang="zh-CN"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>协议准入 | 模型测试工作台</title><link rel="stylesheet" href="/assets/common.css"><link rel="stylesheet" href="./static/style.css"><script src="/assets/common.js" defer></script><script src="/assets/protocol-profile.js" defer></script><script src="./static/app.js" defer></script></head>
-<body><main class="page"><p class="eyebrow">PROTOCOL ADMISSION / NEW API RC26</p><h1>核对接口能力，生成渠道配置建议。</h1><p class="muted">先检查协议，再继续质量和稳定性测试。第一阶段输出内部测试建议，正式灰度还需网关验证。</p><p><a href="../">打开质量准入快测</a> · <a href="/channels/">管理公共渠道</a></p>
-<form id="probe-form" class="panel" autocomplete="off"><fieldset id="setup"><legend>候选渠道与目标能力</legend>
-<div class="two"><label>选择公共渠道<select id="channel"><option value="">临时候选，不保存密钥</option></select></label><label>执行方式<select id="mode"><option value="mock">本地 Mock 演示，不请求上游</option><option value="live">真实候选渠道探测</option></select></label></div>
-<div id="temporary" class="two"><label>Base URL<input id="base-url" type="url" maxlength="1000" placeholder="https://api.example.com/v1"></label><label>临时 API Key<input id="api-key" type="password" maxlength="4096" autocomplete="new-password"></label></div>
-<fieldset id="profile"><legend>上游协议资料</legend></fieldset>
-<label>待售卖模型（每行一个，最多 5 个；映射写作 标准模型=上游模型）<textarea id="models" rows="3" required placeholder="model-name&#10;public-model=upstream-model"></textarea></label>
-<fieldset><legend>目标场景与 NexusAPI 分组</legend><div id="groups" class="two"></div><label class="check"><input id="include-responses" type="checkbox">OpenAI 通用分组同时要求 Responses</label></fieldset>
-<details><summary>超时预算</summary><div class="two"><label>每次请求总超时（秒）<input id="total-timeout" type="number" value="30" min="1" max="120" step="1"></label><label>响应头 / 正文首段超时（秒）<input id="first-timeout" type="number" value="10" min="0.1" max="60" step="0.1"></label><label>正文空闲超时（秒）<input id="idle-timeout" type="number" value="10" min="0.1" max="60" step="0.1"></label></div></details>
-<label id="live-confirm-label" class="check" hidden><input id="confirm-live" type="checkbox">确认使用内部测试凭据，对此候选渠道执行预览中的请求</label>
-</fieldset><div class="actions"><button id="preview" type="button">预览必测请求</button><button id="start" type="submit" disabled>开始探测</button><button id="stop" type="button" class="secondary" hidden>停止</button></div><p id="message" role="status">正在加载配置。</p><p id="error" class="error" role="alert"></p><div id="preview-list"></div></form>
-<section id="report" hidden><div class="actions"><h2>NewAPI 配置结论</h2><a id="export-json">下载 JSON</a><a id="export-html">下载 HTML</a></div><div id="conclusion" class="panel"></div><div id="group-results" class="cards"></div><div class="panel table-wrap"><table><thead><tr><th>模型 / 接口</th><th>状态</th><th>HTTP / 完整结束</th><th>耗时</th><th>结果说明</th></tr></thead><tbody id="results"></tbody></table></div><div class="panel"><h2>后台配置检查清单</h2><ol id="checklist"></ol></div></section>
-<details class="panel"><summary>最近 30 次协议探测</summary><div id="history"></div></details></main></body></html>
+<html lang="zh-CN"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>模型与协议检测 | 模型测试工作台</title><link rel="stylesheet" href="/assets/common.css"><link rel="stylesheet" href="./static/style.css"><script src="/assets/common.js" defer></script><script src="./static/app.js" defer></script></head>
+<body><main class="page"><p class="eyebrow">MODEL & PROTOCOL CHECK</p><h1>上游有哪些模型，能用哪些协议。</h1><p class="muted">获取模型列表，选择模型，再检测接口。无需填写供应商、渠道类型或分组。</p><p><a href="/channels/">公共渠道与常用模型</a> · <a href="../">质量准入快测</a></p>
+<form id="probe-form" class="panel" autocomplete="off"><fieldset id="setup"><legend>上游连接</legend>
+<div class="two"><label>渠道<select id="channel"><option value="">临时渠道，填写 URL 和 Key</option></select></label><label>执行方式<select id="mode"><option value="mock">本地 Mock 演示</option><option value="live">检测真实上游</option></select></label></div>
+<div id="temporary" class="two"><label>Base URL<input id="base-url" type="url" maxlength="1000" placeholder="https://api.example.com/v1"></label><label>API Key<input id="api-key" type="password" maxlength="4096" autocomplete="new-password" spellcheck="false"></label></div>
+<p id="mode-hint" class="hint">演示模式不会请求真实上游，结果仅供体验。</p>
+<label id="live-confirm-label" class="check" hidden><input id="confirm-live" type="checkbox">确认使用此渠道凭据获取模型列表，并执行本次预览中的检测请求</label>
+<div class="actions"><button id="fetch-models" type="button">获取上游模型</button><span id="fetch-status" role="status"></span></div>
+<p class="hint">获取列表不会自动检测模型。真实获取通常请求 1 次；鉴权切换和分页最多 40 次，最长 60 秒。</p>
+<fieldset><legend>选择要检测的模型（每批最多 5 个）</legend><label>搜索模型<input id="model-filter" type="search" placeholder="筛选已获取或手动添加的模型"></label><div id="model-list" class="model-list"></div><p id="model-count" class="hint"></p>
+<div class="actions"><input id="manual-model" maxlength="160" placeholder="也可手动输入模型 ID" aria-label="手动模型 ID"><button id="add-model" type="button" class="secondary">添加并选择</button></div><p id="selection-count" class="hint"></p></fieldset>
+</fieldset><div class="actions"><button id="preview" type="button" class="secondary">预览检测请求</button><button id="start" type="submit" disabled>开始检测</button><button id="stop" type="button" class="secondary" hidden>停止检测</button></div><p id="message" role="status">正在加载。</p><p id="error" class="error" role="alert"></p><div id="preview-list"></div></form>
+<section id="report" hidden><div class="actions"><h2>模型与协议结果</h2><a id="export-json">下载 JSON</a><a id="export-html">下载 HTML</a></div><div id="conclusion" class="panel"></div>
+<div class="panel table-wrap"><table><thead><tr><th>模型</th><th>Chat Completions</th><th>Responses</th><th>Claude Messages</th><th>附加能力</th></tr></thead><tbody id="capabilities"></tbody></table></div>
+<p class="hint">“支持”表示本次至少一种普通调用方式通过。流式、工具和搜索分别看明细；只列出本轮已选择模型的结果。</p>
+<details class="panel"><summary>查看逐项检测明细</summary><div class="table-wrap"><table><thead><tr><th>模型 / 检测项目</th><th>结果</th><th>HTTP</th><th>耗时</th><th>说明</th></tr></thead><tbody id="results"></tbody></table></div></details></section>
+<details class="panel"><summary>最近 30 次检测</summary><div id="history"></div></details></main></body></html>

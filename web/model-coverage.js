@@ -3,7 +3,7 @@ window.ModelCoverage = (() => {
   const api = (path = '', body, method = 'POST') => Workbench.api('/api/model-coverage' + path, body ? {method, body:JSON.stringify(body)} : {});
   const selected = new Map(), expanded = new Set();
   let data = {channels:[], models:[], schedules:[], rules:{}}, channels = [], fetchIds = [], mapping, enrollmentItems = [], verificationItems = [], preview;
-  let previewGeneration = 0, refreshing = false;
+  let previewGeneration = 0, refreshing = false, protocolAvailable = false;
   const availability = {listed:'已列出', not_listed:'未列出', unknown:'尚未获取', fetch_failed:'获取失败', connection_changed:'连接已变更'};
   const enrollment = {scheduled:'已加入计划', missing:'未接入', unscheduled:'待排期', paused:'已暂停'};
   const health = {stable:'稳定', observing:'可用，待观察', unstable:'不稳定', untested:'未测试', stale:'结果已过期', connection_changed:'连接变更，待重测'};
@@ -81,6 +81,7 @@ window.ModelCoverage = (() => {
       for (const [id] of selected) { if (valid.has(id)) selected.set(id, valid.get(id)); else selected.delete(id); }
       counts();
     },
+    setProtocolAvailable(value) { protocolAvailable = value; },
     setChannels(value) { channels = value; $('fetch-all').disabled = !channels.some(c => c.enabled); },
     matchesChannel(id) { return (channelData(id)?.models || []).some(matches) || (!data.models.length); },
     render(channel) {
@@ -120,6 +121,10 @@ window.ModelCoverage = (() => {
           const link = node('a', '查看报告'); link.href = `/stability/?run=${item.measurement.report_id}`; measurement.append(link);
         }
         const actions = node('td'); actions.append(action('映射', () => openMapping(item)));
+        if (protocolAvailable && channel.enabled) {
+          const link = node('a', '检测协议');
+          link.href = '/admission/protocol/?' + new URLSearchParams({channel:channel.id, model:item.upstream_model}); actions.append(link);
+        }
         const verify = action('验证', () => openVerify([item])); verify.disabled = !channel.enabled || !data.stability_available; actions.append(verify);
         row.append(selectCell, label, upstream, plan, measurement, actions); body.append(row);
       }

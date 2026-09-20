@@ -46,3 +46,7 @@ GPT-6 Astra 的定时目标强制 Responses。Responses 测量复用准入 SSE �
 不读取业务库的默认检查：`python -B scripts/inspect_model_coverage.py`。检查已授权的现有数据：追加 `--data-dir /absolute/external/data`，只以 SQLite mode=ro 读取公开配置，不加载主密钥、不初始化表、不发请求。输出稳定渠道别名、脱敏主机、常用模型/协议、渠道实际模型映射、配置指纹、提取时间及 requests_sent=0；映射中的实际模型 ID 或协议变化会改变配置指纹。旧库没有常用模型相关表时展示默认目录和空映射，不创建新表。
 
 注册清单见 [测试清单](../../docs/model-coverage-testing.md)。开发和验收只使用合成 Mock，无真实上游验证。
+
+## 模型与协议检测入口
+
+启用准入模块时，公共渠道及模型行提供“模型与协议检测”入口，进入同一渠道、实际模型的检测页。该页可读取或更新本模块的上游模型列表缓存，也支持临时URL和Key。列表获取与模型请求分开确认；协议结果不替代此处的定时测试、质量与长期稳定性状态。详见 [使用说明](../../docs/protocol-admission.md)。
