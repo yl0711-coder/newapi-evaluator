@@ -46,6 +46,8 @@ def capability(rows):
 
 
 def evaluate(report):
+    for row in report["probes"]:
+        row["capability"] = capability([row])
     models = []
     for model in report["config"]["models"]:
         rows = {r["check"]: r for r in report["probes"] if r["model"] == model["model"]}
@@ -69,7 +71,7 @@ def html_report(report):
     rows = "".join("<tr><td>" + e(m["upstream_model"]) + "</td>" +
                    "".join("<td>" + e(m["protocols"][key]["label"]) + "</td>" for key in PROTOCOLS) + "</tr>"
                    for m in report["capabilities"])
-    details = "".join(f"<tr><td>{e(p['model'])}</td><td>{e(p['label'])}</td><td>{e(capability([p])['label'])}</td><td>{e(p.get('http_status'))}</td><td>{e(ERRORS.get(p.get('error_class'), p.get('error_class', '')))}</td></tr>" for p in report["probes"])
+    details = "".join(f"<tr><td>{e(p['model'])}</td><td>{e(p['label'])}</td><td>{e(p['capability']['label'])}</td><td>{e(p.get('http_status'))}</td><td>{e(ERRORS.get(p.get('error_class'), p.get('error_class', '')))}</td></tr>" for p in report["probes"])
     return ('<!doctype html><html lang="zh-CN"><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">'
             '<title>模型与协议检测报告</title><style>body{font:16px system-ui;max-width:1100px;margin:32px auto;padding:16px}table{border-collapse:collapse;width:100%}td,th{padding:10px;border:1px solid #ccc}pre{white-space:pre-wrap;overflow-wrap:anywhere}</style><h1>模型与协议检测报告</h1>'
             + f"<p>运行 {e(report['id'])} · {e(report['state'])} · {e(report['config']['mode'])}</p>"

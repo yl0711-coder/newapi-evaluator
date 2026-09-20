@@ -150,6 +150,7 @@ class CoverageTests(unittest.IsolatedAsyncioTestCase):
     async def test_bad_lists_redirects_and_partial_pages_are_unknown(self):
         for response in [httpx.Response(200,json=[]),httpx.Response(200,json={'data':[{}]}),
                          httpx.Response(200,json={'data':[{'id':'synthetic-coverage-credential'}]}),
+                         httpx.Response(200,json={'data':[{'id':'vendor/sk-synthetic-model-0123456789'}]}),
                          httpx.Response(200,json={'data':[],'has_more':True}),
                          httpx.Response(302,headers={'location':'https://different.example/v1/models'}),
                          httpx.Response(200,text='malformed')]:
@@ -157,6 +158,7 @@ class CoverageTests(unittest.IsolatedAsyncioTestCase):
                 result=await discovery.fetch_models(self.registry,self.channel['id'],'openai')
                 self.assertFalse(result['ok'])
                 self.assertEqual(self.catalog.discoveries()[self.channel['id']]['models'],[])
+                self.assertNotIn('vendor/sk-synthetic-model-0123456789', json.dumps(result))
 
     async def test_list_size_and_timeout_are_bounded(self):
         def timeout(request): raise httpx.ReadTimeout('synthetic secret',request=request)

@@ -69,8 +69,10 @@ class ProtocolContractTests(unittest.TestCase):
             ProtocolProfile(description="Authorization: Bearer synthetic-secret")
 
     def test_model_rejects_credentials_and_accepts_provider_identifiers(self):
-        with self.assertRaises(ValueError):
-            plan(models=[{"model": "sk-synthetic-model-0123456789"}])
+        for value in ["sk-synthetic-model-0123456789", "vendor/sk-synthetic-model-0123456789"]:
+            for field in ["model", "upstream_model"]:
+                with self.subTest(field=field, value=value), self.assertRaises(ValueError):
+                    plan(models=[{"model": "valid-model", field: value}])
         self.assertEqual(plan(models=[{"model": "vendor/model@version+variant"}]).models[0].model, "vendor/model@version+variant")
 
     def test_alpha_optional_fields_and_semantics(self):

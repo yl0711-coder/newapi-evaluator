@@ -66,6 +66,9 @@ async function freePort(){const server=net.createServer();await new Promise(r=>s
   const dataJson=await(await fetch(base+new URL(await page.locator('#export-json').getAttribute('href'),page.url()).pathname)).json();
   assert.equal(dataJson.capabilities[0].supported_protocols.length,3);assert.deepEqual(dataJson.capabilities[1].supported_protocols,['responses']);
   assert.equal(dataJson.capabilities[1].protocols.openai.status,'unconfirmed');assert.equal(dataJson.capabilities[1].protocols.anthropic.status,'unsupported');
+  const rejected=dataJson.probes.filter(p=>p.model==='synthetic-mixed'&&p.protocol==='anthropic');
+  assert.equal(rejected.length,3);assert.ok(rejected.every(p=>p.capability.label==='不支持'));
+  assert.equal(await page.locator('#results tr').filter({hasText:'synthetic-mixed · Messages'}).locator('td:nth-child(2)').allTextContents().then(values=>values.every(value=>value==='不支持')),true);
   assert.equal(dataJson.capabilities[1].protocols.responses.details.tool.status,'unconfirmed');assert.equal(dataJson.capabilities[1].search.status,'unconfirmed');
   assert.ok(!('profile' in dataJson.config)&&!('groups' in dataJson.config));assert.ok(!JSON.stringify(dataJson).includes('synthetic-saved-key'));
   const downloadPromise=page.waitForEvent('download');await page.locator('#export-html').click();const downloaded=await downloadPromise;

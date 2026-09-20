@@ -7,6 +7,7 @@ import time
 import uuid
 
 from shared.registry import Conflict, RegistryError
+from shared.channel_protocol import SECRET_PATTERN
 from features.admission.main import required_protocol
 
 
@@ -35,6 +36,7 @@ def validate_protocol(protocol: str, *models: str) -> None:
 def model_name(value: str) -> str:
     value = value.strip()
     if (not re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9._:/@+\-]{0,159}", value)
+            or SECRET_PATTERN.search(value)
             or value.lower().startswith(("sk-", "bearer", "http:", "https:"))):
         raise RegistryError("模型 ID 格式无效，请填写模型标识，不要填写密钥或地址")
     return value

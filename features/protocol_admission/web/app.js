@@ -76,7 +76,7 @@ async function show(id) {
   }));
   $('results').replaceChildren(...report.probes.map(probe => {
     const row = node('tr');
-    for (const text of [`${probe.model} · ${probe.label}`, states[probe.status] || probe.status, probe.http_status ?? '—', `${probe.total_ms ?? '—'} ms`, metadata.errors[probe.error_class] || probe.error_class || '本项通过']) row.append(node('td', String(text)));
+    for (const text of [`${probe.model} · ${probe.label}`, probe.capability.label, probe.http_status ?? '—', `${probe.total_ms ?? '—'} ms`, metadata.errors[probe.error_class] || probe.error_class || '本项通过']) row.append(node('td', String(text)));
     return row;
   }));
   for (const format of ['json', 'html']) $(`export-${format}`).href = `./api/runs/${id}/export/${format}`;
