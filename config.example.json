@@ -1,0 +1,20 @@
+{
+  "timezone": "Asia/Shanghai",
+  "rounds": 5,
+  "juice_runs": 5,
+  "reasoning_timeout": 180,
+  "juice_timeout": 240,
+  "timeout": 180,
+  "retention_days": 14,
+  "data_dir": "../中转站极限测试数据/小时渠道诊断独立版",
+  "channels": [
+    {
+      "name": "渠道A",
+      "protocol": "openai",
+      "base_url": "https://example.com",
+      "model": "gpt-5.6-sol",
+      "api_key_env": "CHANNEL_A_API_KEY",
+      "enabled": true
+    }
+  ]
+}
