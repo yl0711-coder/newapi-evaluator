@@ -30,6 +30,9 @@ class HttpTests(DomainTests):
                 calls.append((surface, effort, juice))
                 self.send_response(200); self.end_headers()
                 if len(calls) == 1:
+                    self.wfile.write(b"[" * 10000 + b"0" + b"]" * 10000)
+                    return
+                if len(calls) == 2:
                     response = {"usage": "malformed-synthetic"}
                 elif surface == "responses":
                     response = {"output": [{"type": "message", "content": [{"text": "14"}]}],
@@ -55,7 +58,10 @@ class HttpTests(DomainTests):
                                     ("chat", "medium", False), ("chat", "high", False)])
         self.assertEqual([c[1] for c in calls[30:40]], ["low", "medium", "high", "xhigh", "max", "medium", "high", "xhigh", "max", "low"])
         summaries = d.aggregate(self.root / "wire/diagnostic.sqlite3", True)
-        self.assertEqual(sum(r["successes"] for r in summaries), 54)
+        self.assertEqual(sum(r["successes"] for r in summaries), 53)
+        errors = {key: value for r in summaries for key, value in r["error_distribution"].items()}
+        self.assertEqual(errors.get("RecursionError"), 1)
+        self.assertEqual(errors.get("invalid_response"), 1)
         self.assertTrue((self.root / "wire/report.html").exists())
         for file in (self.root / "wire").iterdir():
             self.assertNotIn(b"synthetic-credential", file.read_bytes())

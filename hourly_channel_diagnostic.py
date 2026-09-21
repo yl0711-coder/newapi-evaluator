@@ -186,7 +186,8 @@ def call_json(url: str, api_key: str, payload: dict[str, Any], timeout: float) -
         exc.close()
         return {"ok": False, "status_code": exc.code, "error": f"http_{exc.code}",
                 "latency_ms": round((time.monotonic() - started) * 1000)}
-    except (urllib.error.URLError, TimeoutError, OSError, ValueError, http.client.HTTPException) as exc:
+    except (urllib.error.URLError, TimeoutError, OSError, ValueError,
+            RecursionError, http.client.HTTPException) as exc:
         return {"ok": False, "status_code": None, "error": type(exc).__name__,
                 "latency_ms": round((time.monotonic() - started) * 1000)}
 
