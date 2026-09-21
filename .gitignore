@@ -1,0 +1,11 @@
+__pycache__/
+*.py[cod]
+.DS_Store
+.env
+.env.*
+config.json
+data/
+*.sqlite3*
+*.lock
+report.html
+
