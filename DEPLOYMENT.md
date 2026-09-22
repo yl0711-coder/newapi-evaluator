@@ -10,6 +10,34 @@
 - 代码、配置状态、凭据、SQLite 数据和 HTML 报告必须分开保存；状态目录必须位于源码目录之外。
 - `inspect`、`init`、`import`、`enable`、`disable`、`report` 不发送渠道请求。只有 `run-once` 和 `daemon` 在显式带 `--confirm-live` 时才允许真实请求。
 
+## 运行环境
+
+按运行方式准备环境：
+
+| 方式 | 必需环境 | 说明 |
+| --- | --- | --- |
+| 直接运行 Python | macOS 或 Linux；Python 3.10+；标准库；系统时区数据 | 不需要 `pip install`。源码使用文件锁，Windows 不在支持范围内。 |
+| Docker Compose | Docker Engine 和 Compose v2；可构建本地镜像并拉取固定摘要的基础镜像 | 主机不需要安装 Python；容器仍需要访问渠道的 HTTPS 地址。 |
+| 离线验收 | Python 3.10+、Node.js、Playwright、Edge | 只用于 `scripts/test_all.py` 的 browser 组，不是线上运行依赖。 |
+
+部署主机还必须满足：
+
+- 能解析并访问目标渠道的 HTTPS 主机；程序主动禁用代理和 HTTP 重定向。
+- 状态目录位于源码目录外，`config.json`、`credentials.json` 可读，`data/` 和 `reports/` 可写。
+- `credentials.json` 权限为 `0600` 或 `0400`；Docker Compose 下，运行用户的 UID/GID 要能读 secret 并写入数据和报告目录。
+- 默认报告服务只监听 `127.0.0.1:8097`；需要外部访问时由部署方另行配置反向代理和访问控制。
+- 默认每个渠道每小时最多执行 110 次请求（两个模型各 55 次）；按渠道数量、超时和保留天数预留磁盘，SQLite 数据会按 `retention_days` 清理。
+
+Docker 部署前可先准备目录和权限：
+
+```bash
+mkdir -p "$STATE/data" "$STATE/reports"
+chmod 700 "$STATE" "$STATE/data" "$STATE/reports"
+chmod 600 "$STATE/config.json" "$STATE/credentials.json"
+```
+
+如果 Compose 使用非默认用户，设置 `DIAGNOSTIC_UID` 和 `DIAGNOSTIC_GID`，并让该用户对 `data/`、`reports/` 有写权限。不要通过扩大目录权限来绕过启动失败。
+
 ## 资源包和状态包
 
 代码资源包应包含这些文件：
