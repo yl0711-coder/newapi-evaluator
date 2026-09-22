@@ -4,7 +4,7 @@
 
 ## 环境与入口
 
-运行时需要 Python 3.11+ 标准库；测试额外需要 Node.js、Playwright 与已安装的 Chrome、Edge 或 Chromium。依赖位置由 `PLAYWRIGHT_MODULE` 和 `PLAYWRIGHT_CHANNEL` 显式提供。缺少浏览器能力必须记为 incomplete，不能跳过后宣称全量通过。
+直接运行诊断引擎仅需 Python 3.11+ 标准库；Docker 报告控制服务需要 `requirements.txt` 中的 FastAPI/Uvicorn。测试额外需要 `requirements-dev.txt`、Node.js、Playwright 与已安装的 Chrome、Edge 或 Chromium。依赖位置由 `PLAYWRIGHT_MODULE` 和 `PLAYWRIGHT_CHANNEL` 显式提供。缺少浏览器能力必须记为 incomplete，不能跳过后宣称全量通过。
 
 本机所有测试环境、临时文件和结果位于 `/Users/lmurder/Desktop/api中转站/中转站极限测试数据`。其他机器应指定源码目录外的隔离根。统一入口：
 
@@ -21,7 +21,8 @@ python3 -B scripts/test_all.py --output /绝对路径/全新验收目录
 | domain | `tests/test_domain.py` | 数值/空值、分母、Juice 阈值、异常响应、后续渠道、锁、中断、旧库、HTML 转义、时区、验收失败聚合 | 必跑 | 60 秒 |
 | http | `tests/test_http.py` | 实际回环 HTTP → CLI → 解析 → SQLite → HTML；双模型矩阵、顺序、代理、重定向、超时、闸门和受控时钟调度 | 必跑 | 90 秒 |
 | catalog | `tests/test_catalog.py` | 合成文档导入、凭据隔离、渠道管理、无请求报告和模型配置 | 必跑 | 60 秒 |
-| browser | `tests/browser_check.cjs` | 完整报告 22 行双模型细分结果、折叠交互、单点图、桌面与 390px 窄屏、横向表格与截图 | 必跑 | 90 秒 |
+| control | `tests/test_control.py` | 控制 API 的令牌校验、启动/停止/启用路由和脱敏状态 | 必跑；需安装 `requirements-dev.txt` | 60 秒 |
+| browser | `tests/browser_check.cjs` | 完整报告 22 行双模型细分结果、运行控制按钮、折叠交互、单点图、桌面与 390px 窄屏、横向表格与截图 | 必跑 | 90 秒 |
 
 测试文件注册在统一入口中；新增 `test_*.py` 必须更新清单与发现规则。夹具只允许独立编写于 `tests/`，不读取真实配置、密钥、业务库或渠道响应。HTTP 服务只绑定 `127.0.0.1`，子进程凭据为合成值；浏览器外部 HTTP(S) 请求被阻断。
 

@@ -10,7 +10,7 @@ Ubuntu-Monitor 的正式部署使用 [deploy/README.md](deploy/README.md) 和独
 - 每个模型执行 55 次请求，所以每个启用渠道每轮执行 110 次：Reasoning 30 次、Juice 25 次，两个模型各一套。
 - 只支持 OpenAI 兼容的非流式 Responses 和 Chat Completions 接口。
 - 代码、配置状态、凭据、SQLite 数据和 HTML 报告必须分开保存；状态目录必须位于源码目录之外。
-- `inspect`、`init`、`import`、`enable`、`disable`、`report` 不发送渠道请求。只有 `run-once` 和 `daemon` 在显式带 `--confirm-live` 时才允许真实请求。
+- `inspect`、`init`、`import`、`enable`、`disable`、`report` 不发送渠道请求。只有 `run-once` 和 `daemon` 在显式带 `--confirm-live` 时才允许真实请求。报告页的“启用全部渠道并启动”按钮也会启动带有 `--confirm-live` 的 daemon。
 
 ## 运行环境
 
@@ -28,6 +28,7 @@ Ubuntu-Monitor 的正式部署使用 [deploy/README.md](deploy/README.md) 和独
 - 状态目录位于源码目录外，`config.json`、`credentials.json` 可读，`data/` 和 `reports/` 可写。
 - `credentials.json` 权限为 `0600` 或 `0400`；Docker Compose 下，运行用户的 UID/GID 要能读 secret 并写入数据和报告目录。
 - 默认报告服务只监听 `127.0.0.1:8097`；需要外部访问时由部署方另行配置反向代理和访问控制。
+- Docker 的报告控制区需要设置 `DIAGNOSTIC_CONTROL_TOKEN`。报告页输入同一令牌后，才能启用渠道、启动或停止检测；不要把令牌写入 Git、报告或截图。
 - 默认每个渠道每小时最多执行 110 次请求（两个模型各 55 次）；按渠道数量、超时和保留天数预留磁盘，SQLite 数据会按 `retention_days` 清理。
 
 Docker 部署前可先准备目录和权限：
@@ -56,6 +57,8 @@ hourly-channel-diagnostic/
 ├── Dockerfile
 ├── compose.yaml
 ├── nginx.conf
+├── control_server.py          # 报告页控制 API
+├── requirements.txt           # 控制 API 的 FastAPI/Uvicorn 依赖
 ├── scripts/test_all.py
 └── tests/
 ```
@@ -161,9 +164,10 @@ docker compose --profile monitor up -d
 docker compose ps
 ```
 
-- `worker` 使用 `/state/config.json`、私有 Compose secret 中的凭据、`/state/data` 和 `/state/reports`。
-- `report` 默认只绑定 `127.0.0.1:8097`，访问 `/` 或 `/report.html` 查看报告；容器健康检查直接读取 `/report.html`，报告缺失或因目录权限不可读时不会误报健康。
-- `report`、`worker` 和 `toolbox` 使用同一组 `DIAGNOSTIC_UID`/`DIAGNOSTIC_GID`。保持状态目录为 `0700` 时，该 UID/GID 必须与目录属主一致。
+- `control` 提供报告页的启动/停止 API；它使用 `/state/config.json`、私有 Compose secret 中的凭据、`/state/data` 和 `/state/reports`。
+- `worker` 使用 `/state/config.json`、私有 Compose secret 中的凭据、`/state/data` 和 `/state/reports`；使用 `docker compose --profile worker up -d` 可绕过网页控制直接等待下一个整点。
+- `report` 默认只绑定 `127.0.0.1:8097`，访问 `/` 或 `/report.html` 查看报告；`/healthz` 提供存活检查，容器健康检查直接读取 `/report.html`，报告缺失或因目录权限不可读时不会误报健康。
+- `report`、`control`、`worker` 和 `toolbox` 使用同一组 `DIAGNOSTIC_UID`/`DIAGNOSTIC_GID`。保持状态目录为 `0700` 时，该 UID/GID 必须与目录属主一致。
 - 管理操作通过 tools profile 执行，例如：
 
 ```bash
@@ -172,6 +176,15 @@ docker compose --profile tools run --rm toolbox enable --state-dir /state --all
 ```
 
 凭据文件由 Compose secret 挂载为 `/run/secrets/channel_credentials`，不要把它写入镜像层、环境变量、日志或报告。
+
+启动网页控制服务时：
+
+```bash
+export DIAGNOSTIC_CONTROL_TOKEN='部署方生成的长随机令牌'
+docker compose --profile monitor up -d
+```
+
+打开报告页，在“运行控制”区域输入同一令牌。点击“启用全部渠道并启动”会先把 16 个渠道设为启用，再启动持续检测；点击“启动检测”只启动已经启用的渠道；“立即执行一轮”会立刻执行完整矩阵，每个启用渠道最多发送 110 次真实请求。持续 daemon 首次执行会等待配置时区的下一个整点。
 
 ## 离线验证和报告
 

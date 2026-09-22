@@ -9,13 +9,14 @@ import subprocess
 import zipfile
 
 ROOT = Path(__file__).resolve().parents[1]
-FILES = ("hourly_channel_diagnostic.py", "channel_catalog.py", "manage.py", "Dockerfile", "compose.yaml",
+FILES = ("hourly_channel_diagnostic.py", "channel_catalog.py", "manage.py", "control_server.py", "requirements.txt", "Dockerfile", "compose.yaml",
          "nginx.conf", ".dockerignore", ".gitignore", "README.md", "DEPLOYMENT.md", "TESTING.md", "config.example.json",
          "scripts/test_all.py", "scripts/build_release.py", "tests/test_domain.py", "tests/test_http.py",
          "tests/test_catalog.py", "tests/browser_check.cjs", "AGENTS.md", "PLAN.md",
          "deploy/compose.prod.yaml", "deploy/README.md", "docs/ai-rules/CODING.md",
          "docs/ai-rules/TESTING.md", "docs/ai-rules/REVIEW.md", "docs/ai-rules/REPORTING.md",
          "docs/ai-rules/HANDOFF.md", "docs/ai-rules/PROJECTS.md", "docs/ai-rules/reporting-baseline.json")
+         "requirements-dev.txt", "tests/test_control.py")
 
 
 def build(output: Path) -> Path:
@@ -31,7 +32,7 @@ def build(output: Path) -> Path:
             raise ValueError("资源文件命中凭据模式")
         contents[name] = data
     manifest = {"source_commit": head, "files": {name: hashlib.sha256(data).hexdigest() for name, data in contents.items()},
-                "contains_credentials": False, "initial_behavior": "report_only"}
+                "contains_credentials": False, "initial_behavior": "report_and_control_requires_token"}
     output.mkdir(parents=True, exist_ok=True)
     archive = output / f"hourly-channel-diagnostic-{head[:7]}.zip"
     with zipfile.ZipFile(archive, "x", zipfile.ZIP_DEFLATED) as bundle:

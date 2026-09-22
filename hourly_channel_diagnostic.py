@@ -699,6 +699,79 @@ def report_table(headers: list[str], rows: list[list[str]], table_id: str) -> st
     return f"<div class='scroll'><table id='{table_id}'><thead><tr>{head}</tr></thead><tbody>{body}</tbody></table></div>"
 
 
+def control_panel() -> str:
+    """报告页的控制面板；写操作必须经过控制服务令牌。"""
+    return """<style>#control-panel input{max-width:320px;padding:7px;border:1px solid #cbd5e1;border-radius:6px}#control-panel button{margin:4px;padding:7px 12px;border:1px solid #94a3b8;border-radius:6px;background:#f8fafc;cursor:pointer}#control-panel button:disabled{cursor:not-allowed;opacity:.5}@media(max-width:600px){#control-panel input{width:100%;box-sizing:border-box}#control-panel button{margin-left:0}}</style>
+<section id='control-panel'><h2>运行控制</h2>
+<p>检测进程：<strong id='control-state'>连接中…</strong>；已启用渠道：<span id='control-enabled'>—</span>/<span id='control-total'>—</span>；最近运行：<span id='control-last-run'>—</span></p>
+<p><label for='control-token'>控制令牌：</label><input id='control-token' type='password' autocomplete='off' placeholder='部署时设置的 DIAGNOSTIC_CONTROL_TOKEN'>
+<button type='button' id='control-start'>启动检测</button>
+<button type='button' id='control-enable-start'>启用全部渠道并启动</button>
+<button type='button' id='control-run-once'>立即执行一轮</button>
+<button type='button' id='control-stop'>停止检测</button>
+<button type='button' id='control-refresh'>刷新状态</button></p>
+<p id='control-message' role='status'>报告页只读加载中；控制服务连接后可执行操作。</p></section>
+<script>(function(){
+  const token = document.getElementById('control-token');
+  const state = document.getElementById('control-state');
+  const enabled = document.getElementById('control-enabled');
+  const total = document.getElementById('control-total');
+  const lastRun = document.getElementById('control-last-run');
+  const message = document.getElementById('control-message');
+  const start = document.getElementById('control-start');
+  const enableStart = document.getElementById('control-enable-start');
+  const runOnce = document.getElementById('control-run-once');
+  const stop = document.getElementById('control-stop');
+  const refreshButton = document.getElementById('control-refresh');
+  const labels = {running:'运行中', stopped:'未启动', failed:'上次启动失败'};
+  function setMessage(text, error){ message.textContent = text; message.style.color = error ? '#b91c1c' : '#475569'; }
+  async function request(path, method){
+    const headers = {};
+    if (token.value.trim()) headers['X-Control-Token'] = token.value.trim();
+    const response = await fetch(path, {method: method || 'GET', headers: headers, cache: 'no-store'});
+    let body = {};
+    try { body = await response.json(); } catch (_) {}
+    if (!response.ok) throw new Error(body.detail || '控制请求失败');
+    return body;
+  }
+  function render(data){
+    state.textContent = labels[data.state] || data.state || '未知';
+    enabled.textContent = String(data.enabled_channels == null ? '—' : data.enabled_channels);
+    total.textContent = String(data.total_channels == null ? '—' : data.total_channels);
+    const run = data.last_run;
+    lastRun.textContent = run ? (run.status + ' / ' + (run.started_at || '')) : '暂无运行记录';
+    start.disabled = data.state === 'running';
+    enableStart.disabled = data.state === 'running';
+    runOnce.disabled = data.state === 'running';
+    stop.disabled = data.state !== 'running';
+  }
+  async function refresh(){
+    try { render(await request('/api/status')); }
+    catch (error) { state.textContent = '控制服务未连接'; setMessage(error.message, true); }
+  }
+  async function runAction(action, success, reload){
+    start.disabled = true; enableStart.disabled = true; runOnce.disabled = true; stop.disabled = true;
+    try { render(await request(action, 'POST')); setMessage(success, false); if (reload !== false) setTimeout(function(){ location.reload(); }, 500); return true; }
+    catch (error) { setMessage(error.message, true); await refresh(); return false; }
+  }
+  start.addEventListener('click', function(){ runAction('/api/start', '检测进程已启动；首次执行将在下一个整点。'); });
+  enableStart.addEventListener('click', function(){
+    if (!window.confirm('这会启用全部渠道，并启动真实检测。确定继续吗？')) return;
+    runAction('/api/enable-all', '渠道已启用，正在启动检测…', false).then(function(ok){
+      if (ok) runAction('/api/start', '检测进程已启动；首次执行将在下一个整点。');
+    });
+  });
+  runOnce.addEventListener('click', function(){
+    if (!window.confirm('这会立即执行完整矩阵；每个启用渠道最多发送 110 次真实请求。确定继续吗？')) return;
+    runAction('/api/run-once', '完整矩阵已启动；完成后报告会刷新。');
+  });
+  stop.addEventListener('click', function(){ runAction('/api/stop', '检测进程已停止。'); });
+  refreshButton.addEventListener('click', refresh);
+  setInterval(refresh, 5000);
+  refresh();
+})();</script>"""
+
+
 def build_report(db_path: Path, output: Path, timezone_name: str,
                  channels: list[dict[str, Any]] | None = None,
                  test_models: list[str] | None = None) -> None:
@@ -716,6 +789,7 @@ def build_report(db_path: Path, output: Path, timezone_name: str,
              "<p>倍率为你配置的渠道计费倍率，不是推理档位，也不是本程序计算的实际账单。历史指标使用请求当时保存的渠道、倍率与模型。</p>",
              "<p>成功率 = 有效响应 / 全部请求；正确率 = 答对 / 有效答题样本；回显匹配率仅统计 Responses 返回档位的样本，Chat 为不适用。Juice 验证率 = 期望值精确匹配 / 全部请求（包括失败和无法解析），每档达到 60% 标为 verified。该结果仅说明模型自报值与原脚本预设值一致。</p>",
              "<p>Tokens 仅累计 usage.total_tokens；覆盖数不足时为部分小计，缺失显示 —，真实零显示 0。推理 Tokens 区分缺字段、空值和数值 0。旧版记录缺少可靠元数据，不参与总 Tokens 和回显匹配统计。运行 completed 表示矩阵执行完毕，不代表渠道全部通过。</p>"]
+    parts.append(control_panel())
     if channels is not None:
         catalog = [[display(c.get("id")), display(c.get("provider", c["name"])), display(c["name"]),
                     display(c.get("multiplier")) + ("×" if c.get("multiplier") is not None else ""),

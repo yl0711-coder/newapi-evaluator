@@ -31,10 +31,33 @@ services:
     tmpfs: [/tmp]
     cap_drop: [ALL]
     security_opt: [no-new-privileges:true]
-  worker:
+  control:
     image: ${DIAGNOSTIC_IMAGE:-hourly-channel-diagnostic:local}
     build: .
     profiles: [monitor]
+    user: "${DIAGNOSTIC_UID:-1000}:${DIAGNOSTIC_GID:-1000}"
+    restart: unless-stopped
+    command: ["control_server.py", "--state-dir", "/state", "--credentials", "/run/secrets/channel_credentials", "--port", "8098"]
+    volumes:
+      - ${DIAGNOSTIC_STATE_DIR:-../hourly-diagnostic-state}/config.json:/state/config.json
+      - ${DIAGNOSTIC_STATE_DIR:-../hourly-diagnostic-state}/data:/state/data
+      - ${DIAGNOSTIC_STATE_DIR:-../hourly-diagnostic-state}/reports:/state/reports
+    environment:
+      DIAGNOSTIC_CONTROL_TOKEN: ${DIAGNOSTIC_CONTROL_TOKEN:-}
+    secrets:
+      - source: channel_credentials
+        target: channel_credentials
+        uid: "${DIAGNOSTIC_UID:-1000}"
+        gid: "${DIAGNOSTIC_GID:-1000}"
+        mode: 0400
+    read_only: true
+    tmpfs: [/tmp]
+    cap_drop: [ALL]
+    security_opt: [no-new-privileges:true]
+  worker:
+    image: ${DIAGNOSTIC_IMAGE:-hourly-channel-diagnostic:local}
+    build: .
+    profiles: [worker]
     user: "${DIAGNOSTIC_UID:-1000}:${DIAGNOSTIC_GID:-1000}"
     restart: unless-stopped
     command: ["hourly_channel_diagnostic.py", "daemon", "--config", "/state/config.json", "--credentials", "/run/secrets/channel_credentials", "--data-dir", "/state/data", "--output", "/state/reports/report.html", "--confirm-live"]
@@ -42,7 +65,12 @@ services:
       - ${DIAGNOSTIC_STATE_DIR:-../hourly-diagnostic-state}/config.json:/state/config.json:ro
       - ${DIAGNOSTIC_STATE_DIR:-../hourly-diagnostic-state}/data:/state/data
       - ${DIAGNOSTIC_STATE_DIR:-../hourly-diagnostic-state}/reports:/state/reports
-    secrets: [channel_credentials]
+    secrets:
+      - source: channel_credentials
+        target: channel_credentials
+        uid: "${DIAGNOSTIC_UID:-1000}"
+        gid: "${DIAGNOSTIC_GID:-1000}"
+        mode: 0400
     read_only: true
     tmpfs: [/tmp]
     cap_drop: [ALL]

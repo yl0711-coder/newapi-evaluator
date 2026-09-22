@@ -19,6 +19,10 @@ async function main() {
     await page.setViewportSize({width: 1440, height: 1000});
     await page.goto(pathToFileURL(path.join(root, 'report.html')).href);
     assert.equal(await page.title(), '小时渠道诊断'); checks++;
+    assert.equal(await page.locator('#control-start').count(), 1); checks++;
+    assert.equal(await page.locator('#control-enable-start').count(), 1); checks++;
+    assert.equal(await page.locator('#control-run-once').count(), 1); checks++;
+    assert.equal(await page.locator('#control-stop').count(), 1); checks++;
     assert.equal(await page.locator('#details tbody tr').count(), 22); checks++;
     assert.equal(await page.locator('#overview tbody tr').count(), 4); checks++;
     assert.equal(await page.locator('#overview tbody tr td:nth-child(3)').first().innerText(), '0.4'); checks++;

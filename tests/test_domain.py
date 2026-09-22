@@ -248,7 +248,7 @@ class DomainTests(unittest.TestCase):
         report = self.root / "report.html"
         d.build_report(self.db, report, "Asia/Shanghai")
         text = report.read_text()
-        self.assertNotIn("<script>", text)
+        self.assertNotIn("Mock/<script>synthetic", text)
         self.assertIn("&lt;script&gt;", text)
         self.assertIn("id='details'", text)
         self.assertIn("<td>0</td>", text)

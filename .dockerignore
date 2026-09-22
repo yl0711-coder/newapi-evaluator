@@ -3,3 +3,5 @@
 !hourly_channel_diagnostic.py
 !channel_catalog.py
 !manage.py
+!control_server.py
+!requirements.txt
