@@ -1,8 +1,8 @@
 services:
   report:
-    image: nginx@sha256:d0d674272be3be36f9a13d79194fa0db5aa630ab3ede9bec459d12f67370aaef
+    image: nginx@sha256:62ff2089abf5a9ed33bd232895bef5e22f7bb4b200675cec49a5ebc48e3d4ac8
     entrypoint: ["nginx", "-g", "daemon off;"]
-    user: "101:101"
+    user: "${DIAGNOSTIC_UID:-1000}:${DIAGNOSTIC_GID:-1000}"
     restart: unless-stopped
     ports:
       - "${REPORT_BIND:-127.0.0.1}:${REPORT_PORT:-8097}:8080"
@@ -14,7 +14,7 @@ services:
     cap_drop: [ALL]
     security_opt: [no-new-privileges:true]
     healthcheck:
-      test: ["CMD", "curl", "--fail", "--silent", "http://127.0.0.1:8080/healthz"]
+      test: ["CMD", "wget", "-q", "-O", "/dev/null", "http://127.0.0.1:8080/report.html"]
       interval: 30s
       timeout: 5s
       retries: 3

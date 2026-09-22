@@ -8,6 +8,7 @@ import socket
 import subprocess
 import sys
 import threading
+import time
 import unittest
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from unittest.mock import patch
@@ -108,6 +109,26 @@ class HttpTests(DomainTests):
             result = d.call_json(url + "/encoding", "synthetic-credential", {}, 2)
             self.assertFalse(result["ok"])
             self.assertEqual(result["error"], "UnicodeDecodeError")
+
+    def test_http_timeout_is_total_deadline_even_when_body_trickles(self):
+        class Handler(BaseHTTPRequestHandler):
+            def log_message(self, *_):
+                pass
+            def do_POST(self):
+                self.rfile.read(int(self.headers["Content-Length"]))
+                self.send_response(200); self.end_headers()
+                try:
+                    for _ in range(50):
+                        self.wfile.write(b" "); self.wfile.flush(); time.sleep(.03)
+                except OSError:
+                    pass
+        with local_server(Handler) as url:
+            started = time.monotonic()
+            result = d.call_json(url + "/trickle", "synthetic-credential", {}, .08)
+            elapsed = time.monotonic() - started
+        self.assertFalse(result["ok"])
+        self.assertEqual(result["error"], "TimeoutError")
+        self.assertLess(elapsed, .4)
 
     def test_live_gate_and_inspect_never_send_request(self):
         path = self.root / "config.json"

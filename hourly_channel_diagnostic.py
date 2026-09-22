@@ -17,6 +17,7 @@ import json
 import math
 import os
 import re
+import signal
 import sqlite3
 import statistics
 import sys
@@ -173,6 +174,36 @@ class NoRedirect(urllib.request.HTTPRedirectHandler):
         return None
 
 
+class RequestDeadlineExceeded(TimeoutError):
+    """请求超过配置的总墙钟时间。"""
+
+
+@contextmanager
+def request_deadline(seconds: float):
+    """在受支持的运行环境中为一次完整请求设置总墙钟截止时间。"""
+    if not hasattr(signal, "setitimer"):
+        raise RuntimeError("当前平台不支持请求总墙钟超时")
+    previous_handler = signal.getsignal(signal.SIGALRM)
+    previous_timer = signal.getitimer(signal.ITIMER_REAL)
+    started = time.monotonic()
+
+    def expired(_signum, _frame):
+        raise RequestDeadlineExceeded("request deadline exceeded")
+
+    signal.signal(signal.SIGALRM, expired)
+    deadline = min(seconds, previous_timer[0]) if previous_timer[0] > 0 else seconds
+    signal.setitimer(signal.ITIMER_REAL, deadline)
+    try:
+        yield
+    finally:
+        signal.setitimer(signal.ITIMER_REAL, 0)
+        signal.signal(signal.SIGALRM, previous_handler)
+        if previous_timer[0] > 0:
+            elapsed = time.monotonic() - started
+            remaining = max(0.000001, previous_timer[0] - elapsed)
+            signal.setitimer(signal.ITIMER_REAL, remaining, previous_timer[1])
+
+
 def call_json(url: str, api_key: str, payload: dict[str, Any], timeout: float,
               extra_headers: dict[str, str] | None = None) -> dict[str, Any]:
     started = time.monotonic()
@@ -182,20 +213,24 @@ def call_json(url: str, api_key: str, payload: dict[str, Any], timeout: float,
             headers={**(extra_headers or {}), "Authorization": "Bearer " + api_key, "Content-Type": "application/json",
                      "User-Agent": "hourly-channel-diagnostic/1.1"}, method="POST")
         opener = urllib.request.build_opener(urllib.request.ProxyHandler({}), NoRedirect)
-        with opener.open(request, timeout=timeout) as response:
-            status_code = int(response.status)
-            if status_code != 200:
-                return {"ok": False, "status_code": status_code, "error": f"http_{status_code}",
-                        "latency_ms": round((time.monotonic() - started) * 1000)}
-            raw = response.read(MAX_RESPONSE_BYTES + 1)
-            if len(raw) > MAX_RESPONSE_BYTES:
-                return {"ok": False, "status_code": status_code, "error": "response_too_large",
-                        "latency_ms": round((time.monotonic() - started) * 1000)}
-            body = json.loads(raw.decode("utf-8"))
+        with request_deadline(timeout):
+            with opener.open(request, timeout=timeout) as response:
+                status_code = int(response.status)
+                if status_code != 200:
+                    return {"ok": False, "status_code": status_code, "error": f"http_{status_code}",
+                            "latency_ms": round((time.monotonic() - started) * 1000)}
+                raw = response.read(MAX_RESPONSE_BYTES + 1)
+                if len(raw) > MAX_RESPONSE_BYTES:
+                    return {"ok": False, "status_code": status_code, "error": "response_too_large",
+                            "latency_ms": round((time.monotonic() - started) * 1000)}
+                body = json.loads(raw.decode("utf-8"))
         if not isinstance(body, dict):
             return {"ok": False, "status_code": status_code, "error": "invalid_response",
                     "latency_ms": round((time.monotonic() - started) * 1000)}
         return {"ok": True, "status_code": status_code, "body": body,
+                "latency_ms": round((time.monotonic() - started) * 1000)}
+    except RequestDeadlineExceeded:
+        return {"ok": False, "status_code": None, "error": "TimeoutError",
                 "latency_ms": round((time.monotonic() - started) * 1000)}
     except urllib.error.HTTPError as exc:
         exc.close()
