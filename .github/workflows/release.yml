@@ -1,9 +1,11 @@
-name: Verify channel diagnostic release
+name: Verify and publish channel diagnostic
 
 on:
   push:
+    branches: ["feature/**", "fix/**", "main"]
     tags:
       - "v*.*.*"
+  pull_request:
 
 concurrency:
   group: channel-diagnostic-${{ github.ref }}
@@ -53,7 +55,36 @@ jobs:
           python -B scripts/test_all.py --output "$RUNNER_TEMP/acceptance"
 
       - name: Build candidate image
-        run: docker build --tag hourly-channel-diagnostic:ci .
+        run: >-
+          docker build
+          --label org.opencontainers.image.source=https://github.com/yl0711-coder/nexusapi-channel-diagnostic
+          --label org.opencontainers.image.revision=${{ github.sha }}
+          --label org.opencontainers.image.version=${{ github.ref_name }}
+          --tag hourly-channel-diagnostic:ci .
+
+      - name: Scan candidate OS vulnerabilities
+        uses: aquasecurity/trivy-action@57a97c7e7821a5776cebc9bb87c984fa69cba8f1 # v0.35.0
+        with:
+          version: v0.74.0
+          image-ref: hourly-channel-diagnostic:ci
+          scanners: vuln
+          vuln-type: os
+          severity: HIGH,CRITICAL
+          ignore-unfixed: false
+          exit-code: "1"
+          timeout: 10m
+
+      - name: Scan report image OS vulnerabilities
+        uses: aquasecurity/trivy-action@57a97c7e7821a5776cebc9bb87c984fa69cba8f1 # v0.35.0
+        with:
+          version: v0.74.0
+          image-ref: nginx@sha256:62ff2089abf5a9ed33bd232895bef5e22f7bb4b200675cec49a5ebc48e3d4ac8
+          scanners: vuln
+          vuln-type: os
+          severity: HIGH,CRITICAL
+          ignore-unfixed: false
+          exit-code: "1"
+          timeout: 10m
 
       - name: Verify candidate image CLI
         run: docker run --rm --entrypoint python hourly-channel-diagnostic:ci -B manage.py --help
@@ -63,12 +94,22 @@ jobs:
         run: |
           set -Eeuo pipefail
           state_dir="$RUNNER_TEMP/state"
-          container_name="channel-diagnostic-report-ci"
+          export DIAGNOSTIC_STATE_DIR="$state_dir"
+          export DIAGNOSTIC_INBOX_DIR="$RUNNER_TEMP/inbox"
+          export DIAGNOSTIC_IMAGE=hourly-channel-diagnostic:ci
+          export DIAGNOSTIC_UID="$(id -u)" DIAGNOSTIC_GID="$(id -g)"
+          compose=(docker compose -p channel-diagnostic-report-ci -f deploy/compose.prod.yaml)
           mkdir -p "$state_dir/data" "$state_dir/reports"
           chmod 700 "$state_dir" "$state_dir/data" "$state_dir/reports"
           cp config.example.json "$state_dir/config.json"
           chmod 600 "$state_dir/config.json"
-          trap 'docker rm --force "$container_name" >/dev/null 2>&1 || true' EXIT
+          cleanup() {
+            status=$?
+            "${compose[@]}" rm --stop --force report || status=1
+            exit "$status"
+          }
+          trap cleanup EXIT
+          "${compose[@]}" config --quiet
 
           docker run --rm \
             --user "$(id -u):$(id -g)" \
@@ -81,26 +122,19 @@ jobs:
             --output /state/reports/report.html \
             --mock
 
-          docker run --detach \
-            --name "$container_name" \
-            --user "$(id -u):$(id -g)" \
-            --read-only \
-            --tmpfs /tmp \
-            --cap-drop ALL \
-            --security-opt no-new-privileges:true \
-            --publish 127.0.0.1:18097:8080 \
-            --volume "$PWD/nginx.conf:/etc/nginx/nginx.conf:ro" \
-            --volume "$state_dir/reports:/srv/reports:ro" \
-            nginx@sha256:62ff2089abf5a9ed33bd232895bef5e22f7bb4b200675cec49a5ebc48e3d4ac8 \
-            nginx -g 'daemon off;'
+          "${compose[@]}" up --detach --no-deps --no-build report
 
           for _ in $(seq 1 20); do
             if curl --fail --silent --output /dev/null http://127.0.0.1:18097/report.html; then
+              test "$("${compose[@]}" ps --status running --services)" = report
+              for path in config.json credentials.json data/diagnostic.sqlite3; do
+                test "$(curl --silent --output /dev/null --write-out '%{http_code}' "http://127.0.0.1:18097/$path")" = 404
+              done
               exit 0
             fi
             sleep 1
           done
-          docker logs "$container_name"
+          "${compose[@]}" logs report
           exit 1
 
       - name: Verify release archive
@@ -113,3 +147,49 @@ jobs:
           unzip -t "$archive"
           cd "$RUNNER_TEMP/release"
           sha256sum --check "$(basename "$archive").sha256"
+
+      - name: Save verified image
+        if: startsWith(github.ref, 'refs/tags/v')
+        run: docker save hourly-channel-diagnostic:ci -o "$RUNNER_TEMP/release/diagnostic-image.tar"
+
+      - name: Retain acceptance evidence and release assets
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: diagnostic-${{ github.sha }}
+          path: |
+            ${{ runner.temp }}/acceptance
+            ${{ runner.temp }}/release
+          retention-days: 7
+          if-no-files-found: error
+
+  publish:
+    if: startsWith(github.ref, 'refs/tags/v')
+    needs: verify
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    permissions:
+      contents: read
+      packages: write
+    steps:
+      - name: Download exact verified image
+        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
+        with:
+          name: diagnostic-${{ github.sha }}
+          path: ${{ runner.temp }}/verified
+      - name: Publish versioned image without rebuilding
+        env:
+          GHCR_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          RELEASE_VERSION: ${{ github.ref_name }}
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          [[ "$RELEASE_VERSION" =~ ^v[0-9]+\.[0-9]+\.[0-9]+$ ]]
+          image="ghcr.io/yl0711-coder/nexusapi-channel-diagnostic"
+          docker load -i "$RUNNER_TEMP/verified/release/diagnostic-image.tar"
+          test "$(docker image inspect --format '{{ index .Config.Labels "org.opencontainers.image.revision" }}' hourly-channel-diagnostic:ci)" = "$GITHUB_SHA"
+          printf '%s' "$GHCR_TOKEN" | docker login ghcr.io -u "$GITHUB_ACTOR" --password-stdin
+          trap 'docker logout ghcr.io >/dev/null 2>&1 || true' EXIT
+          docker tag hourly-channel-diagnostic:ci "$image:$RELEASE_VERSION"
+          docker push "$image:$RELEASE_VERSION"
+          docker inspect --format '{{json .RepoDigests}}' "$image:$RELEASE_VERSION"

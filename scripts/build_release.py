@@ -12,7 +12,10 @@ ROOT = Path(__file__).resolve().parents[1]
 FILES = ("hourly_channel_diagnostic.py", "channel_catalog.py", "manage.py", "Dockerfile", "compose.yaml",
          "nginx.conf", ".dockerignore", ".gitignore", "README.md", "DEPLOYMENT.md", "TESTING.md", "config.example.json",
          "scripts/test_all.py", "scripts/build_release.py", "tests/test_domain.py", "tests/test_http.py",
-         "tests/test_catalog.py", "tests/browser_check.cjs")
+         "tests/test_catalog.py", "tests/browser_check.cjs", "AGENTS.md", "PLAN.md",
+         "deploy/compose.prod.yaml", "deploy/README.md", "docs/ai-rules/CODING.md",
+         "docs/ai-rules/TESTING.md", "docs/ai-rules/REVIEW.md", "docs/ai-rules/REPORTING.md",
+         "docs/ai-rules/HANDOFF.md", "docs/ai-rules/PROJECTS.md", "docs/ai-rules/reporting-baseline.json")
 
 
 def build(output: Path) -> Path:

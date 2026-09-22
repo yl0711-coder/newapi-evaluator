@@ -1,5 +1,7 @@
 # 资源包使用与 AI 交接手册
 
+Ubuntu-Monitor 的正式部署使用 [deploy/README.md](deploy/README.md) 和独立生产 Compose。下文是通用工具使用方法，真实检测章节不是本次报告部署的自动步骤。当前全部渠道停用，仅启动 report，不启动 worker。
+
 这份手册给第一次接手本资源包的 AI 或部署人员使用。先读本文件，再读 `README.md`；不要从源码中的默认值推测部署状态，部署状态以外置状态目录里的 `config.json` 为准。
 
 ## 交接结论
@@ -16,9 +18,9 @@
 
 | 方式 | 必需环境 | 说明 |
 | --- | --- | --- |
-| 直接运行 Python | macOS 或 Linux；Python 3.10+；标准库；系统时区数据 | 不需要 `pip install`。源码使用文件锁，Windows 不在支持范围内。 |
+| 直接运行 Python | macOS 或 Linux；Python 3.11+；标准库；系统时区数据 | 不需要 `pip install`。源码使用文件锁，Windows 不在支持范围内。 |
 | Docker Compose | Docker Engine 和 Compose v2；可构建本地镜像并拉取固定摘要的基础镜像 | 主机不需要安装 Python；容器仍需要访问渠道的 HTTPS 地址。 |
-| 离线验收 | Python 3.10+、Node.js、Playwright、Edge | 只用于 `scripts/test_all.py` 的 browser 组，不是线上运行依赖。 |
+| 离线验收 | Python 3.11+、Node.js、Playwright、Edge | 只用于 `scripts/test_all.py` 的 browser 组，不是线上运行依赖。 |
 
 部署主机还必须满足：
 
@@ -146,7 +148,7 @@ mkdir -p "$STATE"
   --confirm-live
 ```
 
-调度器首次等待配置时区的下一个整点；错过的小时不补跑。每个渠道每个模型的 110 次请求串行执行、不重试。请求失败、空响应、畸形 JSON 和截断响应会保留为失败观测，并继续后续请求；`completed` 只表示矩阵执行结束，不表示渠道通过。
+调度器首次等待配置时区的下一个整点；错过的小时不补跑。每个渠道每轮共 110 次请求（每模型 55 次）串行执行、不重试。请求失败、空响应、畸形 JSON 和截断响应会保留为失败观测，并继续后续请求；`completed` 只表示矩阵执行结束，不表示渠道通过。
 
 ## Docker Compose 部署
 

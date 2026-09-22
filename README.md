@@ -1,6 +1,8 @@
 # 小时渠道诊断独立版
 
-一个可脱离工作台运行的 Python 脚本，合并 `reasoning_effort_diagnostic.py` 与 `juice_effort_probe.py` 的诊断矩阵。运行环境为 macOS 或 Linux、Python 3.10+，运行时仅使用标准库。HTML 报告不依赖网络资源。
+维护仓库：`yl0711-coder/nexusapi-channel-diagnostic`。独立于 Eval 工作台，版本从 v1.0.0 开始；拆分基线为原独立工具 v1.6.4。生产部署说明见 [独立部署](deploy/README.md)，不替换已有 Eval 服务。
+
+一个可脱离工作台运行的 Python 脚本，合并 `reasoning_effort_diagnostic.py` 与 `juice_effort_probe.py` 的诊断矩阵。运行环境为 macOS 或 Linux、Python 3.11+，运行时仅使用标准库。HTML 报告不依赖网络资源。
 
 给部署脚本或另一个 AI 的完整使用、导入、启停、Docker 和安全交接步骤见 [DEPLOYMENT.md](DEPLOYMENT.md)。
 

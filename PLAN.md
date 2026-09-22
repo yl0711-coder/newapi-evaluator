@@ -1,15 +1,18 @@
-# 独立诊断修复
+# 独立渠道诊断部署
 
-目标：修复两个附件脚本整合后的错误统计与异常处理，补齐逐接口、逐档位诊断，交付可复核的离线候选版。
+目标：将已有独立诊断工具迁入 nexusapi-channel-diagnostic，独立版本、镜像、容器和域名；不替换 Eval。
 
-工作目录：`/Users/lmurder/Desktop/api中转站/小时渠道诊断独立版`。这是原先无 Git 的独立目录，已在本地建立 `fix/standalone-diagnostics` 分支；未配置远端。原始三文件基线为 `2f9e8ea`。适用规范为父目录 AGENTS.md 引用的 AI_RULES v1.0。
+工作目录：脚本/nexusapi-channel-diagnostic；分支 feature/standalone-release。
+基线：原独立工具 0d273a26981c7d6afb7eae81bd74005bc44d4e43（原仓库 v1.6.4），不是线上工作台 v1.6.3 的后续版本。
+规范：根 AGENTS.md 和仓库内 docs/ai-rules，按 AGENTS 的独立工具适用范围执行。
 
-范围：独立脚本、使用说明、回归夹具和完整验收入口。保留原始诊断矩阵与默认请求量；元数据补列保留旧记录。无工作台集成、真实渠道调用、凭据导入、GitHub 推送或部署。
+范围：代码库身份、构建发布、独立生产 Compose、资源限制、日志轮转、部署文档及离线验收。
+不改诊断矩阵/协议/业务计算，不动现有 Monitor/Eval/API/NewAPI，不启动真实检测。
+16 个渠道保持停用，配置和凭据只在私有目录；报告服务默认回环监听。
 
-状态入口：最终交付状态、候选完整 SHA、审查发现及复核结论统一记于证据根的 HANDOFF.md；本文件只维护任务范围和交接入口。
+验收入口：TESTING.md；生产流程：deploy/README.md。
+本机证据：/private/tmp/channel-diagnostic-release.ECXbpt；首次 Python3.14 HTTP 夹具失败记录保留，
+根因是解析器对深层数组的处理不同和测试归并同类错误时覆盖计数；仅修测试断言与计数，不改业务。
 
-证据根：`/Users/lmurder/Desktop/api中转站/中转站极限测试数据/hourly-diagnostic-fix-zu5uem8m`。`check-1` 为首次沙箱受限记录；`check-2` 为中间版本通过记录，不能替代最终候选。
-
-验收入口：独立任务从候选提交检出，按 TESTING.md 执行完整离线清单与源代码审查。交付以外置 HANDOFF.md 中对应实际 SHA 的记录为准。
-
-未决事项：真实渠道质量、密钥持久化方案、部署目标与长期整点运行尚未验证，留给部署阶段。没有请求合并、推送或上线许可。
+当前待办：最终独立复核、候选提交绑定、确认仓库公开/私有后推送、CI 安全门禁、按固定摘要部署、独立域名 DNS/TLS/鉴权验收。
+未验证：真实渠道质量、收费请求和长期检测容量。本次只做报告部署，不能把 Mock 结论当成渠道可用。

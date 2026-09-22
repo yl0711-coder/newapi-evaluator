@@ -16,6 +16,7 @@ import unittest
 
 ROOT = Path(__file__).resolve().parents[1]
 SUITES = {"syntax": 30, "security": 30, "domain": 60, "http": 90, "catalog": 60, "browser": 90}
+TOTAL_BUDGET_SECONDS = 420
 
 
 def checked_status(exit_code, result):
@@ -113,6 +114,12 @@ def main():
     environment["TMPDIR"] = str(temporary)
     started = time.monotonic()
     for name, limit in SUITES.items():
+        remaining = TOTAL_BUDGET_SECONDS - (time.monotonic() - started)
+        if remaining <= 0:
+            results.append({"suite": name, "status": "not_run", "reason": "total_budget_exhausted"})
+            print(f"{name}: not_run (total budget exhausted)", flush=True)
+            continue
+        limit = min(limit, remaining)
         directory = output / name; directory.mkdir()
         command = [sys.executable, "-B", str(Path(__file__).resolve()), "--suite", name, "--output", str(directory)]
         try:

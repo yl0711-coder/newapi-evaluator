@@ -1,5 +1,6 @@
 """只绑定回环地址，使用合成凭据验证实际 HTTP、CLI、落库和报告。"""
 import contextlib
+from collections import Counter
 import io
 import json
 import os
@@ -60,9 +61,13 @@ class HttpTests(DomainTests):
         self.assertEqual([c[1] for c in calls[30:40]], ["low", "medium", "high", "xhigh", "max", "medium", "high", "xhigh", "max", "low"])
         summaries = d.aggregate(self.root / "wire/diagnostic.sqlite3", True)
         self.assertEqual(sum(r["successes"] for r in summaries), 108)
-        errors = {key: value for r in summaries for key, value in r["error_distribution"].items()}
-        self.assertEqual(errors.get("RecursionError"), 1)
-        self.assertEqual(errors.get("invalid_response"), 1)
+        errors = Counter()
+        for row in summaries:
+            errors.update(row["error_distribution"])
+        # Python 3.14 can parse this deep array; earlier parsers raise RecursionError.
+        # Either path must reject it, retain the malformed-usage failure, and continue.
+        self.assertIn(errors.get("invalid_response"), (1, 2))
+        self.assertEqual(errors.get("RecursionError", 0) + errors.get("invalid_response", 0), 2)
         self.assertTrue((self.root / "wire/report.html").exists())
         for file in (self.root / "wire").iterdir():
             self.assertNotIn(b"synthetic-credential", file.read_bytes())

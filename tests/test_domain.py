@@ -34,6 +34,20 @@ def observation(value=None, package="reasoning", surface="chat", effort="low", r
 
 
 class DomainTests(unittest.TestCase):
+    def test_acceptance_total_budget_records_unrun_suites(self):
+        from scripts import test_all
+        destination = self.root / "budget-result"
+        with patch.object(sys, "argv", ["test_all.py", "--output", str(destination)]), \
+             patch.object(test_all, "SUITES", {"syntax": 30, "security": 30}), \
+             patch.object(test_all.time, "monotonic", side_effect=[0, 421, 422, 423]), \
+             patch.object(test_all, "run_child") as child, \
+             contextlib.redirect_stdout(io.StringIO()):
+            self.assertEqual(test_all.main(), 1)
+        child.assert_not_called()
+        summary = json.loads((destination / "summary.json").read_text())
+        self.assertEqual(summary["status"], "incomplete")
+        self.assertEqual([r["status"] for r in summary["suites"]], ["not_run", "not_run"])
+
     def setUp(self):
         self.directory = tempfile.TemporaryDirectory(dir=os.environ["DIAGNOSTIC_TEST_ROOT"])
         self.root = Path(self.directory.name)

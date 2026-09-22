@@ -1,0 +1,67 @@
+name: nexusapi-channel-diagnostic
+
+x-runtime: &runtime
+  mem_limit: 512m
+  cpus: 0.5
+  pids_limit: 128
+  logging:
+    driver: json-file
+    options:
+      max-size: 10m
+      max-file: "3"
+
+services:
+  report:
+    <<: *runtime
+    mem_limit: 128m
+    cpus: 0.25
+    image: nginx@sha256:62ff2089abf5a9ed33bd232895bef5e22f7bb4b200675cec49a5ebc48e3d4ac8
+    entrypoint: ["nginx", "-g", "daemon off;"]
+    user: "${DIAGNOSTIC_UID:-1000}:${DIAGNOSTIC_GID:-1000}"
+    restart: unless-stopped
+    ports:
+      - "127.0.0.1:${REPORT_PORT:-18097}:8080"
+    volumes:
+      - ../nginx.conf:/etc/nginx/nginx.conf:ro
+      - ${DIAGNOSTIC_STATE_DIR:?set external state directory}/reports:/srv/reports:ro
+    read_only: true
+    tmpfs: [/tmp]
+    cap_drop: [ALL]
+    security_opt: [no-new-privileges:true]
+    healthcheck:
+      test: ["CMD", "wget", "-q", "-O", "/dev/null", "http://127.0.0.1:8080/report.html"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+  toolbox:
+    <<: *runtime
+    image: ${DIAGNOSTIC_IMAGE:?set versioned image with digest}
+    profiles: [tools]
+    user: "${DIAGNOSTIC_UID:-1000}:${DIAGNOSTIC_GID:-1000}"
+    entrypoint: ["python", "-B", "manage.py"]
+    volumes:
+      - ${DIAGNOSTIC_STATE_DIR:?set external state directory}:/state
+      - ${DIAGNOSTIC_INBOX_DIR:?set external inbox directory}:/inbox:ro
+    read_only: true
+    tmpfs: [/tmp]
+    cap_drop: [ALL]
+    security_opt: [no-new-privileges:true]
+  worker:
+    <<: *runtime
+    image: ${DIAGNOSTIC_IMAGE:?set versioned image with digest}
+    profiles: [monitor]
+    user: "${DIAGNOSTIC_UID:-1000}:${DIAGNOSTIC_GID:-1000}"
+    restart: unless-stopped
+    command: ["hourly_channel_diagnostic.py", "daemon", "--config", "/state/config.json", "--credentials", "/run/secrets/channel_credentials", "--data-dir", "/state/data", "--output", "/state/reports/report.html", "--confirm-live"]
+    volumes:
+      - ${DIAGNOSTIC_STATE_DIR:?set external state directory}/config.json:/state/config.json:ro
+      - ${DIAGNOSTIC_STATE_DIR:?set external state directory}/data:/state/data
+      - ${DIAGNOSTIC_STATE_DIR:?set external state directory}/reports:/state/reports
+    secrets: [channel_credentials]
+    read_only: true
+    tmpfs: [/tmp]
+    cap_drop: [ALL]
+    security_opt: [no-new-privileges:true]
+secrets:
+  channel_credentials:
+    file: ${DIAGNOSTIC_STATE_DIR:?set external state directory}/credentials.json

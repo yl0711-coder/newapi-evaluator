@@ -11,3 +11,6 @@ report.html
 credentials.json
 *.zip
 MANIFEST.json
+private-channels/
+local-data/
+backups/
