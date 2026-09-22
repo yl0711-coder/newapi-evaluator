@@ -1,0 +1,115 @@
+name: Verify channel diagnostic release
+
+on:
+  push:
+    tags:
+      - "v*.*.*"
+
+concurrency:
+  group: channel-diagnostic-${{ github.ref }}
+  cancel-in-progress: false
+
+permissions:
+  contents: read
+
+jobs:
+  verify:
+    name: Test package and container
+    runs-on: ubuntu-latest
+    timeout-minutes: 25
+    steps:
+      - name: Check out tagged source
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      - name: Set up Python
+        uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
+        with:
+          python-version: "3.13"
+
+      - name: Set up Node.js
+        uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        with:
+          node-version: "24"
+
+      - name: Install isolated browser dependency
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          npm install \
+            --prefix "$RUNNER_TEMP/playwright" \
+            --ignore-scripts \
+            --no-audit \
+            --no-fund \
+            playwright@1.63.0
+          "$RUNNER_TEMP/playwright/node_modules/.bin/playwright" install --with-deps chromium
+
+      - name: Run complete offline acceptance suite
+        shell: bash
+        env:
+          PLAYWRIGHT_CHANNEL: chromium
+        run: |
+          set -Eeuo pipefail
+          export PLAYWRIGHT_MODULE="$RUNNER_TEMP/playwright/node_modules/playwright"
+          python -B scripts/test_all.py --output "$RUNNER_TEMP/acceptance"
+
+      - name: Build candidate image
+        run: docker build --tag hourly-channel-diagnostic:ci .
+
+      - name: Verify candidate image CLI
+        run: docker run --rm --entrypoint python hourly-channel-diagnostic:ci -B manage.py --help
+
+      - name: Verify private report permissions and health
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          state_dir="$RUNNER_TEMP/state"
+          container_name="channel-diagnostic-report-ci"
+          mkdir -p "$state_dir/data" "$state_dir/reports"
+          chmod 700 "$state_dir" "$state_dir/data" "$state_dir/reports"
+          cp config.example.json "$state_dir/config.json"
+          chmod 600 "$state_dir/config.json"
+          trap 'docker rm --force "$container_name" >/dev/null 2>&1 || true' EXIT
+
+          docker run --rm \
+            --user "$(id -u):$(id -g)" \
+            --volume "$PWD:/source:ro" \
+            --volume "$state_dir:/state" \
+            hourly-channel-diagnostic:ci \
+            /source/hourly_channel_diagnostic.py run-once \
+            --config /state/config.json \
+            --data-dir /state/data \
+            --output /state/reports/report.html \
+            --mock
+
+          docker run --detach \
+            --name "$container_name" \
+            --user "$(id -u):$(id -g)" \
+            --read-only \
+            --tmpfs /tmp \
+            --cap-drop ALL \
+            --security-opt no-new-privileges:true \
+            --publish 127.0.0.1:18097:8080 \
+            --volume "$PWD/nginx.conf:/etc/nginx/nginx.conf:ro" \
+            --volume "$state_dir/reports:/srv/reports:ro" \
+            nginx@sha256:62ff2089abf5a9ed33bd232895bef5e22f7bb4b200675cec49a5ebc48e3d4ac8 \
+            nginx -g 'daemon off;'
+
+          for _ in $(seq 1 20); do
+            if curl --fail --silent --output /dev/null http://127.0.0.1:18097/report.html; then
+              exit 0
+            fi
+            sleep 1
+          done
+          docker logs "$container_name"
+          exit 1
+
+      - name: Verify release archive
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          python -B scripts/build_release.py --output "$RUNNER_TEMP/release"
+          archive="$(find "$RUNNER_TEMP/release" -maxdepth 1 -name '*.zip' -type f -print -quit)"
+          test -n "$archive"
+          unzip -t "$archive"
+          cd "$RUNNER_TEMP/release"
+          sha256sum --check "$(basename "$archive").sha256"
