@@ -15,7 +15,7 @@ FILES = ("hourly_channel_diagnostic.py", "channel_catalog.py", "manage.py", "con
          "tests/test_catalog.py", "tests/browser_check.cjs", "AGENTS.md", "PLAN.md",
          "deploy/compose.prod.yaml", "deploy/README.md", "docs/ai-rules/CODING.md",
          "docs/ai-rules/TESTING.md", "docs/ai-rules/REVIEW.md", "docs/ai-rules/REPORTING.md",
-         "docs/ai-rules/HANDOFF.md", "docs/ai-rules/PROJECTS.md", "docs/ai-rules/reporting-baseline.json")
+         "docs/ai-rules/HANDOFF.md", "docs/ai-rules/PROJECTS.md", "docs/ai-rules/reporting-baseline.json",
          "requirements-dev.txt", "tests/test_control.py")
 
 
