@@ -79,7 +79,7 @@ jobs:
         uses: aquasecurity/trivy-action@57a97c7e7821a5776cebc9bb87c984fa69cba8f1 # v0.35.0
         with:
           version: v0.74.0
-          image-ref: nginx@sha256:62ff2089abf5a9ed33bd232895bef5e22f7bb4b200675cec49a5ebc48e3d4ac8
+          image-ref: nginx:stable-alpine@sha256:ef8676b33d681f272ba429b27658bdd7e640963279714c96bddf1dc76307f7b6
           cache-dir: ${{ runner.temp }}/trivy-cache
           scanners: vuln
           vuln-type: os
@@ -90,6 +90,19 @@ jobs:
 
       - name: Verify candidate image CLI
         run: docker run --rm --entrypoint python hourly-channel-diagnostic:ci -B manage.py --help
+
+      - name: Verify behavior inside production Python runtime
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          mkdir -p "$RUNNER_TEMP/runtime-tests"
+          docker run --rm --network none --read-only --tmpfs /tmp --cap-drop ALL --security-opt no-new-privileges:true \
+            --user "$(id -u):$(id -g)" \
+            --volume "$PWD:/source:ro" --volume "$RUNNER_TEMP/runtime-tests:/checks" \
+            --env DIAGNOSTIC_TEST_ROOT=/checks --workdir /source \
+            hourly-channel-diagnostic:ci -m unittest discover -s tests -p 'test_*.py' -v
+          docker run --rm --network none hourly-channel-diagnostic:ci -c \
+            'import ssl; from zoneinfo import ZoneInfo; assert ssl.create_default_context().cert_store_stats()["x509_ca"] > 0; assert str(ZoneInfo("Asia/Shanghai")) == "Asia/Shanghai"'
 
       - name: Verify private report permissions and health
         shell: bash

@@ -1,6 +1,6 @@
 services:
   report:
-    image: nginx@sha256:62ff2089abf5a9ed33bd232895bef5e22f7bb4b200675cec49a5ebc48e3d4ac8
+    image: nginx:stable-alpine@sha256:ef8676b33d681f272ba429b27658bdd7e640963279714c96bddf1dc76307f7b6
     entrypoint: ["nginx", "-g", "daemon off;"]
     user: "${DIAGNOSTIC_UID:-1000}:${DIAGNOSTIC_GID:-1000}"
     restart: unless-stopped
