@@ -39,9 +39,7 @@ services:
     restart: unless-stopped
     command: ["control_server.py", "--state-dir", "/state", "--credentials", "/run/secrets/channel_credentials", "--port", "8098"]
     volumes:
-      - ${DIAGNOSTIC_STATE_DIR:-../hourly-diagnostic-state}/config.json:/state/config.json
-      - ${DIAGNOSTIC_STATE_DIR:-../hourly-diagnostic-state}/data:/state/data
-      - ${DIAGNOSTIC_STATE_DIR:-../hourly-diagnostic-state}/reports:/state/reports
+      - ${DIAGNOSTIC_STATE_DIR:-../hourly-diagnostic-state}:/state
     environment:
       DIAGNOSTIC_CONTROL_TOKEN: ${DIAGNOSTIC_CONTROL_TOKEN:-}
     secrets:

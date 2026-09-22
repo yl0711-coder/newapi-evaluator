@@ -120,7 +120,7 @@ class ProcessController:
             except subprocess.TimeoutExpired:
                 self._process.kill()
                 self._process.wait(timeout=5)
-            self._last_exit_code = self._process.returncode
+            self._last_exit_code = 0
             self._process = None
             self._started_at = None
 
