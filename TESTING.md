@@ -19,8 +19,8 @@ python3 -B scripts/test_all.py --output /绝对路径/全新验收目录
 | syntax | `scripts/test_all.py --suite syntax` | 全部 Python AST、浏览器脚本 JS 语法 | 必跑 | 30 秒 |
 | security | `scripts/test_all.py --suite security` | 仓库凭据模式、禁止的本地配置与数据库文件 | 必跑；模式扫描不替代人工审查 | 30 秒 |
 | domain | `tests/test_domain.py` | 数值/空值、分母、Juice 阈值、异常响应、后续渠道、锁、中断、旧库、HTML 转义、时区、验收失败聚合 | 必跑 | 60 秒 |
-| http | `tests/test_http.py` | 实际回环 HTTP → CLI → 解析 → SQLite → HTML；顺序、代理、重定向、超时、闸门和受控时钟调度 | 必跑 | 90 秒 |
-| browser | `tests/browser_check.cjs` | 完整报告 11 行细分结果、折叠交互、单点图、桌面与 390px 窄屏、横向表格与截图 | 必跑 | 90 秒 |
+| http | `tests/test_http.py` | 实际回环 HTTP → CLI → 解析 → SQLite → HTML；双模型矩阵、顺序、代理、重定向、超时、闸门和受控时钟调度 | 必跑 | 90 秒 |
+| browser | `tests/browser_check.cjs` | 完整报告 22 行双模型细分结果、折叠交互、单点图、桌面与 390px 窄屏、横向表格与截图 | 必跑 | 90 秒 |
 
 测试文件注册在统一入口中；新增 `test_*.py` 必须更新清单与发现规则。夹具只允许独立编写于 `tests/`，不读取真实配置、密钥、业务库或渠道响应。HTTP 服务只绑定 `127.0.0.1`，子进程凭据为合成值；浏览器外部 HTTP(S) 请求被阻断。
 

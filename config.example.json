@@ -2,6 +2,7 @@
   "timezone": "Asia/Shanghai",
   "rounds": 5,
   "juice_runs": 5,
+  "test_models": ["gpt-5.6-sol", "gpt-6-astra"],
   "reasoning_timeout": 180,
   "juice_timeout": 240,
   "timeout": 180,
@@ -10,6 +11,9 @@
   "channels": [
     {
       "name": "渠道A",
+      "id": "example_a",
+      "provider": "示例服务商",
+      "multiplier": 0.4,
       "protocol": "openai",
       "base_url": "https://example.com",
       "model": "gpt-5.6-sol",

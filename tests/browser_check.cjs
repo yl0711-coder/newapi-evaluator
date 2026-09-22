@@ -19,10 +19,12 @@ async function main() {
     await page.setViewportSize({width: 1440, height: 1000});
     await page.goto(pathToFileURL(path.join(root, 'report.html')).href);
     assert.equal(await page.title(), '小时渠道诊断'); checks++;
-    assert.equal(await page.locator('#details tbody tr').count(), 11); checks++;
-    assert.equal(await page.locator('#overview tbody tr').count(), 2); checks++;
-    assert.equal(await page.locator('#details tbody tr').filter({hasText:'verified'}).count(), 5); checks++;
-    assert.equal(await page.locator('#details tbody tr').filter({hasText:'不适用 / 未返回'}).count(), 3); checks++;
+    assert.equal(await page.locator('#details tbody tr').count(), 22); checks++;
+    assert.equal(await page.locator('#overview tbody tr').count(), 4); checks++;
+    assert.equal(await page.locator('#overview tbody tr td:nth-child(3)').first().innerText(), '0.4'); checks++;
+    assert.ok(await page.locator('#details tbody').innerText().then(text => text.includes('0.4×'))); checks++;
+    assert.equal(await page.locator('#details tbody tr').filter({hasText:'verified'}).count(), 10); checks++;
+    assert.equal(await page.locator('#details tbody tr').filter({hasText:'不适用 / 未返回'}).count(), 6); checks++;
     assert.ok(await page.locator('svg circle').count() > 0); checks++;
     const detail = page.locator('details').first();
     await detail.locator('summary').click();

@@ -55,10 +55,11 @@ class DomainTests(unittest.TestCase):
         with contextlib.redirect_stdout(io.StringIO()):
             d.run_once(self.config, self.db, True)
         details = d.aggregate(self.db, True)
-        self.assertEqual(len(details), 11)
-        self.assertEqual(sum(r["requests"] for r in details), 55)
+        self.assertEqual(len(details), 22)
+        self.assertEqual(sum(r["requests"] for r in details), 110)
+        self.assertEqual({r["model"] for r in details}, {"gpt-5.6-sol", "gpt-6-astra"})
         self.assertTrue(all(r["accuracy"] == 100 for r in details))
-        self.assertEqual([r["match_rate"] for r in details if r["surface"] == "chat" and r["package"] == "reasoning"], [None]*3)
+        self.assertEqual([r["match_rate"] for r in details if r["surface"] == "chat" and r["package"] == "reasoning"], [None]*6)
         self.assertTrue(all(r["verification_status"] == "verified" for r in details if r["package"] == "juice"))
 
     def test_missing_echo_is_unknown_and_chat_not_applicable(self):
@@ -173,8 +174,8 @@ class DomainTests(unittest.TestCase):
         with patch.object(d, "mock_call", call), contextlib.redirect_stdout(io.StringIO()):
             d.run_once(self.config, self.db, True)
         summary = d.aggregate(self.db)
-        self.assertEqual(sum(r["requests"] for r in summary), 110)
-        self.assertEqual(sum(r["successes"] for r in summary), 109)
+        self.assertEqual(sum(r["requests"] for r in summary), 220)
+        self.assertEqual(sum(r["successes"] for r in summary), 219)
 
     def test_mock_live_data_separation(self):
         self.store([observation()])

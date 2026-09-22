@@ -37,6 +37,7 @@ ROOT = Path(__file__).resolve().parent
 DEFAULT_CONFIG = ROOT / "config.json"
 DEFAULT_DATA = ROOT.parent / "中转站极限测试数据" / "小时渠道诊断独立版"
 DEFAULT_TIMEZONE = "Asia/Shanghai"
+DEFAULT_TEST_MODELS = ("gpt-5.6-sol", "gpt-6-astra")
 REASONING_LEVELS = ("low", "medium", "high")
 JUICE_EFFORTS = ("low", "medium", "high", "xhigh", "max")
 EXPECTED_JUICE = {"low": 8, "medium": 16, "high": 40, "xhigh": 128, "max": 960}
@@ -86,6 +87,7 @@ def load_config(path: Path) -> dict[str, Any]:
     config.setdefault("juice_timeout", 240)
     config.setdefault("timezone", DEFAULT_TIMEZONE)
     config.setdefault("retention_days", 14)
+    config.setdefault("test_models", list(DEFAULT_TEST_MODELS))
     config.setdefault("data_dir", str(DEFAULT_DATA))
     config.setdefault("channels", [])
     try:
@@ -95,6 +97,11 @@ def load_config(path: Path) -> dict[str, Any]:
     for field in ("rounds", "juice_runs", "retention_days"):
         if type(config[field]) is not int or config[field] < 1:
             raise ValueError(f"{field} 必须是大于 0 的整数")
+    if (not isinstance(config["test_models"], list) or not config["test_models"] or
+            any(not isinstance(model, str) or not model.strip() for model in config["test_models"]) or
+            len(set(config["test_models"])) != len(config["test_models"])):
+        raise ValueError("test_models 必须是非空且不重复的模型名称数组")
+    config["test_models"] = [model.strip() for model in config["test_models"]]
     if not isinstance(config["channels"], list):
         raise SystemExit("channels 必须是数组")
     for field in ("timeout", "reasoning_timeout", "juice_timeout"):
@@ -117,6 +124,13 @@ def load_config(path: Path) -> dict[str, Any]:
         if channel["name"] in names:
             raise ValueError("渠道名称必须唯一")
         names.add(channel["name"])
+        multiplier = channel.get("multiplier")
+        if multiplier is not None and (isinstance(multiplier, bool) or not isinstance(multiplier, (int, float))
+                                       or not math.isfinite(multiplier) or multiplier <= 0):
+            raise ValueError("multiplier 必须是大于 0 的有限数值")
+        for field in ("id", "provider"):
+            if field in channel and (not isinstance(channel[field], str) or not channel[field].strip()):
+                raise ValueError(f"渠道 {field} 必须是非空字符串")
         if type(channel.get("enabled", True)) is not bool:
             raise ValueError("enabled 必须是布尔值")
         if channel.get("protocol", "openai") != "openai":
@@ -159,12 +173,13 @@ class NoRedirect(urllib.request.HTTPRedirectHandler):
         return None
 
 
-def call_json(url: str, api_key: str, payload: dict[str, Any], timeout: float) -> dict[str, Any]:
+def call_json(url: str, api_key: str, payload: dict[str, Any], timeout: float,
+              extra_headers: dict[str, str] | None = None) -> dict[str, Any]:
     started = time.monotonic()
     try:
         request = urllib.request.Request(
             url, data=json.dumps(payload).encode("utf-8"),
-            headers={"Authorization": "Bearer " + api_key, "Content-Type": "application/json",
+            headers={**(extra_headers or {}), "Authorization": "Bearer " + api_key, "Content-Type": "application/json",
                      "User-Agent": "hourly-channel-diagnostic/1.1"}, method="POST")
         opener = urllib.request.build_opener(urllib.request.ProxyHandler({}), NoRedirect)
         with opener.open(request, timeout=timeout) as response:
@@ -302,7 +317,8 @@ def mock_call(surface: str, effort: str, package: str = "reasoning") -> dict[str
 
 def make_observation(channel: str, package: str, surface: str, effort: str,
                      round_no: int, outcome: dict[str, Any], timestamp: str,
-                     timezone_name: str) -> dict[str, Any]:
+                     timezone_name: str, metadata: dict[str, Any] | None = None) -> dict[str, Any]:
+    metadata = metadata or {}
     row = {"channel": channel, "package": package, "surface": surface, "effort": effort,
            "round_no": round_no, "timestamp": timestamp,
            "hour_key": hour_key(parse_iso(timestamp), timezone_name),
@@ -310,7 +326,9 @@ def make_observation(channel: str, package: str, surface: str, effort: str,
            "status_code": outcome.get("status_code"), "latency_ms": outcome.get("latency_ms"),
            "reasoning_tokens": None, "observed_juice": None, "total_tokens": None,
            "echoed_effort": None, "reasoning_tokens_present": None, "record_version": 2,
-           "error": outcome.get("error")}
+           "error": outcome.get("error"), "channel_id": metadata.get("id", channel),
+           "provider": metadata.get("provider", channel), "multiplier": metadata.get("multiplier"),
+           "model": metadata.get("model")}
     if not outcome.get("ok"):
         return row
     try:
@@ -358,7 +376,9 @@ def connect(db_path: Path) -> sqlite3.Connection:
     columns = {row[1] for row in conn.execute("PRAGMA table_info(observations)")}
     for name, declaration in (("echoed_effort", "TEXT"),
                               ("reasoning_tokens_present", "INTEGER"),
-                              ("record_version", "INTEGER NOT NULL DEFAULT 1")):
+                              ("record_version", "INTEGER NOT NULL DEFAULT 1"),
+                              ("channel_id", "TEXT"), ("provider", "TEXT"),
+                              ("multiplier", "REAL"), ("model", "TEXT")):
         if name not in columns:
             conn.execute(f"ALTER TABLE observations ADD COLUMN {name} {declaration}")
     conn.commit()
@@ -369,7 +389,8 @@ def save_observation(conn: sqlite3.Connection, run_id: int, row: dict[str, Any])
     fields = ["run_id", "channel", "package", "surface", "effort", "round_no", "timestamp",
               "hour_key", "ok", "correct", "matched", "status_code", "latency_ms",
               "reasoning_tokens", "observed_juice", "total_tokens", "error",
-              "echoed_effort", "reasoning_tokens_present", "record_version"]
+              "echoed_effort", "reasoning_tokens_present", "record_version",
+              "channel_id", "provider", "multiplier", "model"]
     conn.execute("INSERT INTO observations (" + ",".join(fields) + ") VALUES (" + ",".join("?" * len(fields)) + ")",
                  [run_id] + [row.get(field) for field in fields[1:]])
     conn.commit()
@@ -389,18 +410,47 @@ def run_lock(db_path: Path):
             fcntl.flock(handle.fileno(), fcntl.LOCK_UN)
 
 
-def run_once(config: dict[str, Any], db_path: Path, mock: bool = False) -> int:
+def load_credentials(path: Path | None) -> dict[str, Any]:
+    if path is None:
+        return {}
+    if path.stat().st_mode & 0o077:
+        raise ValueError("凭据文件须限制为当前用户读取（0600 或 0400）")
+    try:
+        values = json.loads(path.read_text(encoding="utf-8"))["credentials"]
+        if not isinstance(values, dict):
+            raise ValueError
+        for entry in values.values():
+            if not isinstance(entry, dict) or not isinstance(entry.get("api_key"), str) or not entry["api_key"]:
+                raise ValueError
+            headers = entry.get("headers", {})
+            if not isinstance(headers, dict) or set(headers) - {"x-openai-actor-authorization"}:
+                raise ValueError
+            if any(not isinstance(v, str) or any(c in v for c in "\r\n")
+                   for v in [entry["api_key"], *headers.values()]):
+                raise ValueError
+        return values
+    except (ValueError, KeyError, TypeError) as exc:
+        raise ValueError("凭据文件格式无效") from exc
+
+
+def channel_credentials(channel: dict[str, Any], credentials: dict[str, Any]) -> tuple[str, dict[str, str]]:
+    entry = credentials.get(channel["api_key_env"], {})
+    return entry.get("api_key") or os.environ.get(channel["api_key_env"], ""), entry.get("headers", {})
+
+
+def run_once(config: dict[str, Any], db_path: Path, mock: bool = False,
+             credentials: dict[str, Any] | None = None) -> int:
     with run_lock(db_path):
-        return execute_run(config, db_path, mock)
+        return execute_run(config, db_path, mock, credentials or {})
 
 
-def execute_run(config: dict[str, Any], db_path: Path, mock: bool) -> int:
+def execute_run(config: dict[str, Any], db_path: Path, mock: bool, credentials: dict[str, Any]) -> int:
     channels = [item for item in config.get("channels", []) if item.get("enabled", True)]
     if not channels:
         raise SystemExit("config.json 没有 enabled 渠道")
     if not mock:
         for channel in channels:
-            if not os.environ.get(channel["api_key_env"]):
+            if not channel_credentials(channel, credentials)[0]:
                 raise RuntimeError("启用渠道所需的密钥环境变量未设置")
             validate_endpoint(channel["base_url"])
     conn = connect(db_path)
@@ -417,40 +467,39 @@ def execute_run(config: dict[str, Any], db_path: Path, mock: bool) -> int:
     try:
         for channel in channels:
             name = str(channel.get("name", "unnamed"))
-            key_env = str(channel.get("api_key_env", "OPENAI_API_KEY"))
-            key = "" if mock else os.environ.get(key_env, "")
+            key, headers = ("", {}) if mock else channel_credentials(channel, credentials)
             base_url = str(channel.get("base_url", ""))
-            model = str(channel.get("model", config.get("model", "gpt-5.6-sol")))
             responses_url = endpoint(base_url, "/responses")
             chat_url = endpoint(base_url, "/chat/completions")
             if not mock:
                 if not key:
-                    raise RuntimeError(f"{name} 的环境变量 {key_env} 未设置")
+                    raise RuntimeError("渠道密钥未设置")
                 validate_endpoint(base_url)
                 validate_endpoint(responses_url)
                 validate_endpoint(chat_url)
-            for round_no in range(1, int(config["rounds"]) + 1):
-                for surface in ("responses", "chat"):
-                    for effort in REASONING_LEVELS:
-                        payload = ({"model": model, "input": QUESTION, "reasoning": {"effort": effort},
-                                    "max_output_tokens": 2000} if surface == "responses" else
-                                   {"model": model, "messages": [{"role": "user", "content": QUESTION}],
-                                    "reasoning_effort": effort, "max_completion_tokens": 2000})
-                        url = responses_url if surface == "responses" else chat_url
-                        request_timeout = config["reasoning_timeout"]
-                        outcome = mock_call(surface, effort, "reasoning") if mock else call_json(url, key, payload, request_timeout)
+            for model in config["test_models"]:
+                for round_no in range(1, int(config["rounds"]) + 1):
+                    for surface in ("responses", "chat"):
+                        for effort in REASONING_LEVELS:
+                            payload = ({"model": model, "input": QUESTION, "reasoning": {"effort": effort},
+                                        "max_output_tokens": 2000} if surface == "responses" else
+                                       {"model": model, "messages": [{"role": "user", "content": QUESTION}],
+                                        "reasoning_effort": effort, "max_completion_tokens": 2000})
+                            url = responses_url if surface == "responses" else chat_url
+                            request_timeout = config["reasoning_timeout"]
+                            outcome = mock_call(surface, effort, "reasoning") if mock else call_json(url, key, payload, request_timeout, headers)
+                            timestamp = now_utc().isoformat()
+                            save_observation(conn, run_id, make_observation(name, "reasoning", surface, effort, round_no, outcome, timestamp, timezone_name, {**channel, "model": model}))
+                for juice_round in range(1, int(config["juice_runs"]) + 1):
+                    offset = (juice_round - 1) % len(JUICE_EFFORTS)
+                    round_efforts = JUICE_EFFORTS[offset:] + JUICE_EFFORTS[:offset]
+                    for effort in round_efforts:
+                        prompt = JUICE_PROMPTS[(juice_round - 1) % len(JUICE_PROMPTS)]
+                        payload = {"model": model, "messages": [{"role": "user", "content": prompt}],
+                                   "stream": False, "reasoning_effort": effort}
+                        outcome = mock_call("chat", effort, "juice") if mock else call_json(chat_url, key, payload, config["juice_timeout"], headers)
                         timestamp = now_utc().isoformat()
-                        save_observation(conn, run_id, make_observation(name, "reasoning", surface, effort, round_no, outcome, timestamp, timezone_name))
-            for juice_round in range(1, int(config["juice_runs"]) + 1):
-                offset = (juice_round - 1) % len(JUICE_EFFORTS)
-                round_efforts = JUICE_EFFORTS[offset:] + JUICE_EFFORTS[:offset]
-                for effort in round_efforts:
-                    prompt = JUICE_PROMPTS[(juice_round - 1) % len(JUICE_PROMPTS)]
-                    payload = {"model": model, "messages": [{"role": "user", "content": prompt}],
-                               "stream": False, "reasoning_effort": effort}
-                    outcome = mock_call("chat", effort, "juice") if mock else call_json(chat_url, key, payload, config["juice_timeout"])
-                    timestamp = now_utc().isoformat()
-                    save_observation(conn, run_id, make_observation(name, "juice", "chat", effort, juice_round, outcome, timestamp, timezone_name))
+                        save_observation(conn, run_id, make_observation(name, "juice", "chat", effort, juice_round, outcome, timestamp, timezone_name, {**channel, "model": model}))
             conn.commit()
             print("完成渠道：" + str(channels.index(channel) + 1), flush=True)
         conn.execute("UPDATE runs SET finished_at=?, status='completed' WHERE id=?", (now_utc().isoformat(), run_id))
@@ -478,7 +527,8 @@ def aggregate(db_path: Path, detailed: bool = False) -> list[dict[str, Any]]:
     conn.close()
     groups = defaultdict(list)
     for row in rows:
-        key = (row["hour_key"], row["channel"], row["package"], bool(row["mock"]))
+        key = (row["hour_key"], row["channel"], row["package"], bool(row["mock"]),
+               row["channel_id"], row["provider"], row["multiplier"], row["model"])
         if detailed:
             key += (row["surface"], row["effort"])
         groups[key].append(row)
@@ -495,6 +545,7 @@ def aggregate(db_path: Path, detailed: bool = False) -> list[dict[str, Any]]:
         matches = sum(r["matched"] for r in matched)
         required = math.ceil(len(values) * MIN_VERIFICATION_RATE)
         summary = {"hour": hour, "channel": channel, "package": package, "mock": mock,
+                       "channel_id": key[4], "provider": key[5], "multiplier": key[6], "model": key[7],
                        "requests": len(values), "successes": len(ok),
                        "success_rate": round(100 * len(ok) / len(values), 2),
                        "correct_count": sum(r["correct"] for r in correct), "correct_samples": len(correct),
@@ -514,7 +565,7 @@ def aggregate(db_path: Path, detailed: bool = False) -> list[dict[str, Any]]:
                        "error_distribution": dict(Counter(r["error"] or "unknown_error" for r in values if not r["ok"])),
                        "legacy_samples": sum(r["record_version"] < 2 for r in values)}
         if detailed:
-            summary.update(surface=key[4], effort=key[5], expected=EXPECTED_JUICE.get(key[5]) if package == "juice" else None,
+            summary.update(surface=key[8], effort=key[9], expected=EXPECTED_JUICE.get(key[9]) if package == "juice" else None,
                            required_matches=required if package == "juice" else None,
                            verification_status=("verified" if matches >= required else "inconclusive") if package == "juice" else None)
         result.append(summary)
@@ -523,7 +574,8 @@ def aggregate(db_path: Path, detailed: bool = False) -> list[dict[str, Any]]:
 
 def series_name(row: dict[str, Any]) -> str:
     mode = "Mock" if row["mock"] else "真实"
-    parts = [mode, row["channel"], row["package"]]
+    multiplier = f"{row['multiplier']:g}×" if row.get("multiplier") is not None else "倍率未记录"
+    parts = [mode, row["channel"], multiplier, row.get("model") or "模型未记录", row["package"]]
     if "surface" in row:
         parts.extend((row["surface"], row["effort"]))
     return "/".join(parts)
@@ -612,7 +664,9 @@ def report_table(headers: list[str], rows: list[list[str]], table_id: str) -> st
     return f"<div class='scroll'><table id='{table_id}'><thead><tr>{head}</tr></thead><tbody>{body}</tbody></table></div>"
 
 
-def build_report(db_path: Path, output: Path, timezone_name: str) -> None:
+def build_report(db_path: Path, output: Path, timezone_name: str,
+                 channels: list[dict[str, Any]] | None = None,
+                 test_models: list[str] | None = None) -> None:
     if output.suffix.lower() not in (".html", ".htm") or output.resolve() == db_path.resolve():
         raise ValueError("报告必须使用独立的 HTML 文件路径")
     data = aggregate(db_path)
@@ -623,18 +677,27 @@ def build_report(db_path: Path, output: Path, timezone_name: str) -> None:
     parts = ["<!doctype html><html lang='zh-CN'><head><meta charset='utf-8'><meta name='viewport' content='width=device-width,initial-scale=1'>",
              "<title>小时渠道诊断</title><style>body{font:14px/1.6 system-ui;margin:0;background:#f1f5f9;color:#1e293b}main{max-width:1400px;margin:auto;padding:24px}section{margin:20px 0;padding:20px;background:white;border:1px solid #e2e8f0;border-radius:10px}h1,h2,h3{line-height:1.35}.scroll{overflow-x:auto}table{border-collapse:collapse;width:100%}th,td{border-bottom:1px solid #e2e8f0;padding:8px;text-align:left;white-space:nowrap}th{background:#f8fafc}svg{display:block;width:100%;max-width:900px;background:#f8fafc}svg text{font:12px system-ui}.legend{display:flex;gap:8px 20px;flex-wrap:wrap;overflow-wrap:anywhere}p{color:#475569}.heatmap td{min-width:24px;text-align:center}details{margin:16px 0}summary{cursor:pointer;font-weight:600}@media(max-width:600px){main{padding:12px}section{padding:12px}h1{font-size:24px}}</style></head><body><main>",
              "<h1>小时渠道诊断</h1><p>生成时间：" + html.escape(now_utc().isoformat()) + "</p>",
+             "<p>本次检测模型：" + html.escape("、".join(test_models or DEFAULT_TEST_MODELS)) + "。所有启用渠道只使用这些模型。</p>",
+             "<p>倍率为你配置的渠道计费倍率，不是推理档位，也不是本程序计算的实际账单。历史指标使用请求当时保存的渠道、倍率与模型。</p>",
              "<p>成功率 = 有效响应 / 全部请求；正确率 = 答对 / 有效答题样本；回显匹配率仅统计 Responses 返回档位的样本，Chat 为不适用。Juice 验证率 = 期望值精确匹配 / 全部请求（包括失败和无法解析），每档达到 60% 标为 verified。该结果仅说明模型自报值与原脚本预设值一致。</p>",
              "<p>Tokens 仅累计 usage.total_tokens；覆盖数不足时为部分小计，缺失显示 —，真实零显示 0。推理 Tokens 区分缺字段、空值和数值 0。旧版记录缺少可靠元数据，不参与总 Tokens 和回显匹配统计。运行 completed 表示矩阵执行完毕，不代表渠道全部通过。</p>"]
+    if channels is not None:
+        catalog = [[display(c.get("id")), display(c.get("provider", c["name"])), display(c["name"]),
+                    display(c.get("multiplier")) + ("×" if c.get("multiplier") is not None else ""),
+                    display(c.get("model")), display("、".join(test_models or DEFAULT_TEST_MODELS)),
+                    "已启用" if c.get("enabled", True) else "未启用"]
+                   for c in channels]
+        parts.append("<section><h2>渠道清单</h2>" + report_table(["渠道 ID", "服务商", "渠道", "倍率", "源文档模型", "实际检测模型", "配置状态"], catalog, "channels") + "</section>")
     parts.append("<section><h2>运行记录</h2>" + report_table(
         ["运行", "模式", "开始 UTC", "结束 UTC", "执行状态"],
         [[display(r[k]) for k in ("id",)] + ["Mock" if r["mock"] else "真实"] + [display(r[k]) for k in ("started_at", "finished_at", "status")] for r in runs], "runs") + "</section>")
     parts.append("<section><h2>小时概览</h2>" + svg_heatmap(data, timezone_name))
     overview = []
     for r in reversed(data):
-        overview.append([display(r["hour"]), html.escape(series_name(r)), display(r["requests"]), display(r["success_rate"]),
+        overview.append([display(r["hour"]), html.escape(series_name(r)), display(r["multiplier"]), display(r["model"]), display(r["requests"]), display(r["success_rate"]),
                          display(r["accuracy"]), display(r["match_rate"]), display(r["verification_rate"]),
                          display(r["median_latency_ms"]), display(r["tokens"]), f"{r['token_samples']}/{r['requests']}"])
-    parts.append(report_table(["小时", "模式 / 渠道 / 包", "请求", "成功 %", "正确 %", "回显/值匹配 %", "Juice 验证 %", "延迟中位 ms", "已报告 Tokens", "Tokens 覆盖"], overview, "overview") + "</section>")
+    parts.append(report_table(["小时", "模式 / 渠道 / 包", "倍率 ×", "模型", "请求", "成功 %", "正确 %", "回显/值匹配 %", "Juice 验证 %", "延迟中位 ms", "已报告 Tokens", "Tokens 覆盖"], overview, "overview") + "</section>")
     issues = []
     for r in reversed(details):
         reasons = []
@@ -668,9 +731,9 @@ def build_report(db_path: Path, output: Path, timezone_name: str) -> None:
         ["小时", "模式 / 渠道 / 包 / 接口 / 档位", "成功/请求", "答对/有效", "匹配/可判定", "回显分布", "推理 Tokens 中位", "推理数值/请求", "字段返回数", "空值数", "Juice 期望", "Juice 观测分布", "可解析/请求", "Juice 匹配/请求", "Juice 结论", "已报告 Tokens", "Tokens 覆盖"], detail_rows, "details") + "</section>")
     chart_groups = defaultdict(list)
     for r in details:
-        chart_groups[(r["mock"], r["channel"], r["package"], r["surface"])].append(r)
-    for (mock, channel, package, surface), group in sorted(chart_groups.items()):
-        title = html.escape(f"{'Mock' if mock else '真实'} / {channel} / {package} / {surface}")
+        chart_groups[(r["mock"], r["channel"], str(r["multiplier"]), r["model"] or "", r["package"], r["surface"])].append(r)
+    for (mock, channel, multiplier, model, package, surface), group in sorted(chart_groups.items()):
+        title = html.escape(f"{'Mock' if mock else '真实'} / {channel} / {multiplier}× / {model} / {package} / {surface}")
         parts.append(f"<section><details open><summary>档位趋势：{title}</summary>")
         for metric, title in (("success_rate", "成功率 %"), ("accuracy", "正确率 %"), ("match_rate", "匹配率 %"),
                               ("verification_rate", "Juice 验证率 %"), ("median_reasoning_tokens", "推理 Tokens 中位数"), ("median_latency_ms", "延迟中位数 ms")):
@@ -688,6 +751,7 @@ def build_report(db_path: Path, output: Path, timezone_name: str) -> None:
         try:
             handle.write("".join(parts))
             handle.close()
+            temporary.chmod(0o644)
             temporary.replace(output)
         finally:
             temporary.unlink(missing_ok=True)
@@ -719,12 +783,15 @@ def inspect_config(config: dict[str, Any]) -> None:
                 "host_fingerprint": hashlib.sha256((urllib.parse.urlsplit(item["base_url"]).hostname or "").encode()).hexdigest()[:12],
                 "model": str(item.get("model", config.get("model", "gpt-5.6-sol"))),
                 "api_key_env": str(item.get("api_key_env", "OPENAI_API_KEY")),
+                "id": item.get("id"), "provider": item.get("provider"),
+                "multiplier": item.get("multiplier"), "model_confirmed": item.get("model_confirmed", True),
             }
             for item in channels
         ],
         "rounds": config["rounds"],
         "juice_runs": config["juice_runs"],
-        "requests_per_channel": config["rounds"] * 6 + config["juice_runs"] * 5,
+        "test_models": config["test_models"],
+        "requests_per_channel": (config["rounds"] * 6 + config["juice_runs"] * 5) * len(config["test_models"]),
         "reasoning_timeout_seconds": config["reasoning_timeout"],
         "juice_timeout_seconds": config["juice_timeout"],
         "timezone": config["timezone"],
@@ -742,6 +809,7 @@ def command_main() -> int:
     parser.add_argument("--mock", action="store_true", help="只使用本地确定性 Mock，不访问真实渠道")
     parser.add_argument("--confirm-live", action="store_true", help="确认允许向配置中的真实渠道发起请求")
     parser.add_argument("--output", type=Path)
+    parser.add_argument("--credentials", type=Path, help="仓库外权限受限的私有凭据 JSON")
     args = parser.parse_args()
     config = load_config(args.config)
     data_dir = args.data_dir or Path(config["data_dir"])
@@ -754,25 +822,27 @@ def command_main() -> int:
         if path.resolve().is_relative_to(ROOT):
             raise ValueError("运行数据与报告必须写入源码目录以外的位置")
     if args.command == "report":
-        build_report(db_path, report_path, str(config["timezone"]))
+        build_report(db_path, report_path, str(config["timezone"]), config["channels"], config["test_models"])
         print(f"报告：{report_path}")
         return 0
     if args.command == "run-once":
         if not args.mock and not args.confirm_live:
             raise SystemExit("真实渠道运行需要显式添加 --confirm-live；本地验收请添加 --mock")
-        run_once(config, db_path, args.mock)
-        build_report(db_path, report_path, str(config["timezone"]))
+        credentials = {} if args.mock else load_credentials(args.credentials)
+        run_once(config, db_path, args.mock, credentials)
+        build_report(db_path, report_path, str(config["timezone"]), config["channels"], config["test_models"])
         print(f"报告：{report_path}")
         return 0
     if not args.mock and not args.confirm_live:
         raise SystemExit("真实渠道运行需要显式添加 --confirm-live；本地验收请添加 --mock")
     print("小时调度已启动；首次执行将在下一个整点。Ctrl-C 停止。", flush=True)
+    credentials = {} if args.mock else load_credentials(args.credentials)
     with run_lock(db_path.with_name("scheduler.sqlite3")):
         while True:
             time.sleep(next_hour_sleep(str(config["timezone"])))
             try:
-                run_once(config, db_path, args.mock)
-                build_report(db_path, report_path, str(config["timezone"]))
+                run_once(config, db_path, args.mock, credentials)
+                build_report(db_path, report_path, str(config["timezone"]), config["channels"], config["test_models"])
             except Exception as exc:
                 print(f"本轮失败类别：{type(exc).__name__}", file=sys.stderr, flush=True)
 

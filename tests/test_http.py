@@ -52,13 +52,13 @@ class HttpTests(DomainTests):
                                      "run-once", "--config", str(path), "--confirm-live"],
                                     env=environment, capture_output=True, text=True, timeout=20)
         self.assertEqual(result.returncode, 0)
-        self.assertEqual(len(calls), 55)
+        self.assertEqual(len(calls), 110)
         self.assertEqual(calls[:6], [("responses", "low", False), ("responses", "medium", False),
                                     ("responses", "high", False), ("chat", "low", False),
                                     ("chat", "medium", False), ("chat", "high", False)])
         self.assertEqual([c[1] for c in calls[30:40]], ["low", "medium", "high", "xhigh", "max", "medium", "high", "xhigh", "max", "low"])
         summaries = d.aggregate(self.root / "wire/diagnostic.sqlite3", True)
-        self.assertEqual(sum(r["successes"] for r in summaries), 53)
+        self.assertEqual(sum(r["successes"] for r in summaries), 108)
         errors = {key: value for r in summaries for key, value in r["error_distribution"].items()}
         self.assertEqual(errors.get("RecursionError"), 1)
         self.assertEqual(errors.get("invalid_response"), 1)
@@ -119,7 +119,7 @@ class HttpTests(DomainTests):
         inspected = subprocess.run(base + ["inspect", "--config", str(path)], capture_output=True, timeout=10)
         self.assertEqual(inspected.returncode, 0)
         summary = json.loads(inspected.stdout)
-        self.assertEqual(summary["requests_per_channel"], 55)
+        self.assertEqual(summary["requests_per_channel"], 110)
         self.assertEqual(len(summary["config_fingerprint"]), 64)
         self.assertNotIn(b"https://example.com", inspected.stdout)
 
@@ -138,7 +138,7 @@ class HttpTests(DomainTests):
                 contextlib.redirect_stderr(io.StringIO()):
             self.assertEqual(d.main(), 130)
         summaries = d.aggregate(self.root / "scheduled/diagnostic.sqlite3")
-        self.assertEqual(sum(r["requests"] for r in summaries), 22)
+        self.assertEqual(sum(r["requests"] for r in summaries), 44)
 
 
 @contextlib.contextmanager

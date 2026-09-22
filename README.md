@@ -2,28 +2,30 @@
 
 一个可脱离工作台运行的 Python 脚本，合并 `reasoning_effort_diagnostic.py` 与 `juice_effort_probe.py` 的诊断矩阵。运行环境为 macOS 或 Linux、Python 3.10+，运行时仅使用标准库。HTML 报告不依赖网络资源。
 
+给部署脚本或另一个 AI 的完整使用、导入、启停、Docker 和安全交接步骤见 [DEPLOYMENT.md](DEPLOYMENT.md)。
+
 ## 测试范围
 
-每个启用渠道默认执行 55 次请求：
+每个启用渠道对每个配置模型执行 55 次请求；当前默认模型为 `gpt-5.6-sol` 和 `gpt-6-astra`，因此每渠道每轮共 110 次请求：
 
-| 测试包 | 接口 | 档位 | 默认请求数 |
+| 测试包 | 接口 | 档位 | 每个模型默认请求数 |
 | --- | --- | --- | --- |
 | Reasoning | Responses、Chat Completions | low / medium / high，各 5 轮 | 30 |
 | Juice | Chat Completions | low / medium / high / xhigh / max，各 5 轮 | 25 |
 
-Reasoning 每轮执行 Responses 三档，再执行 Chat 三档；Juice 每轮轮换起始档位，并轮换原脚本的三种题目。请求串行执行、不重试。`rounds`、`juice_runs` 控制轮数，档位固定。Reasoning 使用严格数字答案判断，避免把包含正确数字的错误答案算成正确。
+Reasoning 每个模型每轮执行 Responses 三档，再执行 Chat 三档；Juice 每个模型每轮轮换起始档位，并轮换原脚本的三种题目。请求串行执行、不重试。`test_models` 控制实际请求的模型列表，`rounds`、`juice_runs` 控制每个模型的轮数，档位固定。渠道文档中记录的原始模型仅作为来源元数据，不会改变检测模型列表。Reasoning 使用严格数字答案判断，避免把包含正确数字的错误答案算成正确。
 
 Juice 的预设值沿用来源脚本，为 `8 / 16 / 40 / 128 / 960`，只用于与模型自报值比较，不是通用模型标准，也不能证明服务端实际推理预算。
 
 ## 配置与运行
 
-在本目录复制 `config.example.json` 为 `config.json`，填写渠道别名、Base URL、模型和密钥环境变量名。配置不接受直接填入密钥；真实密钥应在启动前由部署端注入相应环境变量。不要把实际配置、密钥或数据加入 Git。
+在本目录复制 `config.example.json` 为 `config.json`，填写 `test_models`、渠道别名、Base URL、来源模型和密钥环境变量名。`test_models` 是唯一实际请求的模型列表；上线配置保持为 `gpt-5.6-sol`、`gpt-6-astra`。配置不接受直接填入密钥；真实密钥应在启动前由部署端注入相应环境变量。不要把实际配置、密钥或数据加入 Git。
 
 ```bash
 python3 -B hourly_channel_diagnostic.py inspect --config config.json
 ```
 
-`inspect` 不读取密钥、不发送请求，输出渠道别名、协议、模型、主机指纹、配置指纹、时间与请求量。主机指纹不暴露原始 URL。仅支持 OpenAI 兼容的非流式接口；Responses 和 Chat 会分别测试。
+`inspect` 不读取密钥、不发送请求，输出渠道别名、检测模型列表、协议、来源模型、主机指纹、配置指纹、时间与请求量。主机指纹不暴露原始 URL。仅支持 OpenAI 兼容的非流式接口；每个检测模型的 Responses 和 Chat 会分别测试。
 
 完全离线试运行（使用全新的外置数据目录）：
 

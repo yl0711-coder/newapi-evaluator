@@ -8,4 +8,6 @@ data/
 *.sqlite3*
 *.lock
 report.html
-
+credentials.json
+*.zip
+MANIFEST.json

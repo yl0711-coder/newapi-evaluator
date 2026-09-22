@@ -1,0 +1,52 @@
+services:
+  report:
+    image: nginx@sha256:d0d674272be3be36f9a13d79194fa0db5aa630ab3ede9bec459d12f67370aaef
+    entrypoint: ["nginx", "-g", "daemon off;"]
+    user: "101:101"
+    restart: unless-stopped
+    ports:
+      - "${REPORT_BIND:-127.0.0.1}:${REPORT_PORT:-8097}:8080"
+    volumes:
+      - ./nginx.conf:/etc/nginx/nginx.conf:ro
+      - ${DIAGNOSTIC_STATE_DIR:-../hourly-diagnostic-state}/reports:/srv/reports:ro
+    read_only: true
+    tmpfs: [/tmp]
+    cap_drop: [ALL]
+    security_opt: [no-new-privileges:true]
+    healthcheck:
+      test: ["CMD", "curl", "--fail", "--silent", "http://127.0.0.1:8080/healthz"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+  toolbox:
+    image: ${DIAGNOSTIC_IMAGE:-hourly-channel-diagnostic:local}
+    build: .
+    profiles: [tools]
+    user: "${DIAGNOSTIC_UID:-1000}:${DIAGNOSTIC_GID:-1000}"
+    entrypoint: ["python", "-B", "manage.py"]
+    volumes:
+      - ${DIAGNOSTIC_STATE_DIR:-../hourly-diagnostic-state}:/state
+      - ${DIAGNOSTIC_INBOX_DIR:-../hourly-diagnostic-inbox}:/inbox:ro
+    read_only: true
+    tmpfs: [/tmp]
+    cap_drop: [ALL]
+    security_opt: [no-new-privileges:true]
+  worker:
+    image: ${DIAGNOSTIC_IMAGE:-hourly-channel-diagnostic:local}
+    build: .
+    profiles: [monitor]
+    user: "${DIAGNOSTIC_UID:-1000}:${DIAGNOSTIC_GID:-1000}"
+    restart: unless-stopped
+    command: ["hourly_channel_diagnostic.py", "daemon", "--config", "/state/config.json", "--credentials", "/run/secrets/channel_credentials", "--data-dir", "/state/data", "--output", "/state/reports/report.html", "--confirm-live"]
+    volumes:
+      - ${DIAGNOSTIC_STATE_DIR:-../hourly-diagnostic-state}/config.json:/state/config.json:ro
+      - ${DIAGNOSTIC_STATE_DIR:-../hourly-diagnostic-state}/data:/state/data
+      - ${DIAGNOSTIC_STATE_DIR:-../hourly-diagnostic-state}/reports:/state/reports
+    secrets: [channel_credentials]
+    read_only: true
+    tmpfs: [/tmp]
+    cap_drop: [ALL]
+    security_opt: [no-new-privileges:true]
+secrets:
+  channel_credentials:
+    file: ${DIAGNOSTIC_STATE_DIR:-../hourly-diagnostic-state}/credentials.json

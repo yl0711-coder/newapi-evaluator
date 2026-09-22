@@ -15,7 +15,7 @@ import time
 import unittest
 
 ROOT = Path(__file__).resolve().parents[1]
-SUITES = {"syntax": 30, "security": 30, "domain": 60, "http": 90, "browser": 90}
+SUITES = {"syntax": 30, "security": 30, "domain": 60, "http": 90, "catalog": 60, "browser": 90}
 
 
 def checked_status(exit_code, result):
@@ -46,9 +46,10 @@ def run_child(command, environment, timeout):
 
 def execute_suite(name, directory):
     result = {"suite": name, "status": "passed", "tests": 0, "failures": 0, "errors": 0, "skipped": 0}
-    if name in ("domain", "http"):
+    if name in ("domain", "http", "catalog"):
+        sys.path.insert(0, str(ROOT))
         discovered = {p.name for p in (ROOT / "tests").glob("test_*.py")}
-        if discovered != {"test_domain.py", "test_http.py"}:
+        if discovered != {"test_domain.py", "test_http.py", "test_catalog.py"}:
             raise RuntimeError("测试文件与注册清单不一致")
         sys.path.insert(0, str(ROOT / "tests"))
         os.environ["DIAGNOSTIC_TEST_ROOT"] = str(directory)
