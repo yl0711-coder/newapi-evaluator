@@ -78,7 +78,9 @@ class VerificationTests(unittest.TestCase):
         self.assertNotEqual(code, 0)
 
     def check_cancellation(self, number, full_entrypoint=False):
-        with tempfile.TemporaryDirectory(prefix="image-cancel-") as folder:
+        artifact_root = ROOT.parent / "中转站极限测试数据"
+        temp_dir = str(artifact_root) if sys.platform == "darwin" and artifact_root.is_dir() else None
+        with tempfile.TemporaryDirectory(prefix="image-cancel-", dir=temp_dir) as folder:
             root = Path(folder)
             ledger = root / "child.json"
             child = '''import json, os, time
@@ -95,6 +97,7 @@ time.sleep(30)
                 node.write_text("#!" + sys.executable + "\n" + child)
                 node.chmod(0o755)
                 env["PATH"] = str(root) + os.pathsep + env.get("PATH", "")
+                env["VERIFY_IMAGE_QUALITY_EARLY_CANCEL"] = "1"
                 command = [sys.executable, str(ROOT / "scripts/verify_image_quality.py"), "--output", str(root / "verification")]
             else:
                 wrapper = "import os, sys\nfrom scripts.verify_image_quality import run_process\nrun_process([sys.executable, '-c', " + repr(child) + "], os.environ, 30)"
