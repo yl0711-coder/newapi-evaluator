@@ -10,14 +10,14 @@
 - 导入目录：/var/lib/channel-diagnostic-inbox；不存入代码、镜像或 Git。
 - Compose 项目：nexusapi-channel-diagnostic；报告监听 127.0.0.1:18097。
 - 目标域名：diagnostic.nexusapi.link；独立 Caddy 站点及 Basic Auth，指向回环报告端口。
-- 版本：新仓库 v1.0.0 起步，与 Eval 版本无关。使用标签加实际 digest，不使用 latest。
+- 版本：新仓库 v1.0.0 起步，与 Eval 版本无关。默认从 GHCR 拉取 `latest`；生产环境建议将 `DIAGNOSTIC_IMAGE` 固定为版本 tag 或实际 digest。
 - 不创建 S3、Redis、数据库服务或新的 AWS 实例。
 
 ## 首次部署
 
 1. CI 完整离线验收、构建、安全扫描成功后发布镜像。
-2. 固定源码 SHA、镜像 digest；在新目录保存生产环境文件（0600，不提交）。
-   环境变量为 DIAGNOSTIC_IMAGE、DIAGNOSTIC_STATE_DIR、DIAGNOSTIC_INBOX_DIR、
+2. 固定源码 SHA、镜像版本或 digest；在新目录保存生产环境文件（0600，不提交）。
+   环境变量为 DIAGNOSTIC_IMAGE（可省略，默认 GHCR latest）、DIAGNOSTIC_STATE_DIR、DIAGNOSTIC_INBOX_DIR、
    DIAGNOSTIC_UID、DIAGNOSTIC_GID。IMAGE 指向本仓库 ghcr.io 镜像及不可变 digest。
 3. 安全复制 config.json、credentials.json 和 diagnostic.sqlite3。
    先核对数据库是否仍为空、是否正在使用；非空且在写入时用 SQLite 在线备份，不直接复制活跃文件。
@@ -32,7 +32,7 @@ docker compose --env-file /opt/channel-diagnostic/production.env -f deploy/compo
 docker compose --env-file /opt/channel-diagnostic/production.env -f deploy/compose.prod.yaml up -d --no-deps --no-build --pull never report
 ```
 
-命令须在固定版本源码根执行，镜像提前按 digest 拉取。检查 report 健康、配置/数据库路径
+   命令须在固定版本源码根执行，首次使用可由 Compose 自动拉取默认 GHCR 镜像；生产环境仍建议提前按 digest 拉取。检查 report 健康、配置/数据库路径
 返回 404、Compose 没有 worker；确认既有 Eval、Monitor、API 容器未被重建。
 
 ## 独立域名

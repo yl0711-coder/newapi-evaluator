@@ -1,0 +1,44 @@
+name: nexusapi-channel-diagnostic-quickstart
+
+services:
+  mock-report:
+    image: ${DIAGNOSTIC_IMAGE:-ghcr.io/yl0711-coder/nexusapi-channel-diagnostic:latest}
+    pull_policy: always
+    user: "0:0"
+    command:
+      - hourly_channel_diagnostic.py
+      - run-once
+      - --config
+      - /app/config.example.json
+      - --data-dir
+      - /state/data
+      - --output
+      - /state/reports/report.html
+      - --mock
+    volumes:
+      - quickstart-state:/state
+    restart: "no"
+
+  report:
+    image: nginx:stable-alpine@sha256:ef8676b33d681f272ba429b27658bdd7e640963279714c96bddf1dc76307f7b6
+    entrypoint: ["nginx", "-g", "daemon off;"]
+    depends_on:
+      mock-report:
+        condition: service_completed_successfully
+    ports:
+      - "127.0.0.1:${REPORT_PORT:-8097}:8080"
+    volumes:
+      - ./nginx.conf:/etc/nginx/nginx.conf:ro
+      - quickstart-state:/srv/reports:ro
+    read_only: true
+    tmpfs: [/tmp]
+    cap_drop: [ALL]
+    security_opt: [no-new-privileges:true]
+    healthcheck:
+      test: ["CMD", "wget", "-q", "-O", "/dev/null", "http://127.0.0.1:8080/report.html"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+volumes:
+  quickstart-state:

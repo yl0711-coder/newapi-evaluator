@@ -35,7 +35,8 @@ services:
       retries: 3
   toolbox:
     <<: *runtime
-    image: ${DIAGNOSTIC_IMAGE:?set versioned image with digest}
+    image: ${DIAGNOSTIC_IMAGE:-ghcr.io/yl0711-coder/nexusapi-channel-diagnostic:latest}
+    pull_policy: always
     profiles: [tools]
     user: "${DIAGNOSTIC_UID:-1000}:${DIAGNOSTIC_GID:-1000}"
     entrypoint: ["python", "-B", "manage.py"]
@@ -48,7 +49,8 @@ services:
     security_opt: [no-new-privileges:true]
   worker:
     <<: *runtime
-    image: ${DIAGNOSTIC_IMAGE:?set versioned image with digest}
+    image: ${DIAGNOSTIC_IMAGE:-ghcr.io/yl0711-coder/nexusapi-channel-diagnostic:latest}
+    pull_policy: always
     profiles: [monitor]
     user: "${DIAGNOSTIC_UID:-1000}:${DIAGNOSTIC_GID:-1000}"
     restart: unless-stopped

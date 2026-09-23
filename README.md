@@ -8,6 +8,25 @@
 
 Docker 部署后，报告页的“运行控制”区域可以启用全部渠道、启动或停止小时检测。控制服务必须通过 `DIAGNOSTIC_CONTROL_TOKEN` 配置令牌；报告页只读打开时不会拥有启动权限。
 
+## Docker 快速体验（只读 Mock）
+
+已经发布的镜像可以直接从 GHCR 拉取。下面的入口不会读取真实凭据，也不会访问外部渠道；它只生成一份合成 Mock 报告并启动前端：
+
+```bash
+docker compose -f compose.quickstart.yaml up -d
+open http://127.0.0.1:8097/report.html
+```
+
+首次启动会先运行一次 Mock 诊断，随后启动 Nginx 报告页。停止并清理演示容器和数据：
+
+```bash
+docker compose -f compose.quickstart.yaml down -v
+```
+
+生产部署请使用 [deploy/README.md](deploy/README.md)。生产 Compose 默认使用
+`ghcr.io/yl0711-coder/nexusapi-channel-diagnostic:latest`，也可以通过
+`DIAGNOSTIC_IMAGE` 覆盖为经过核对的版本 tag 或 digest。真实监控仍必须把配置、凭据和控制令牌放在镜像及 Git 之外，并明确启用授权。
+
 ## 测试范围
 
 每个启用渠道对每个配置模型执行 55 次请求；当前默认模型为 `gpt-5.6-sol` 和 `gpt-6-astra`，因此每渠道每轮共 110 次请求：
