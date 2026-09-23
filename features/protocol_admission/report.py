@@ -47,6 +47,12 @@ def capability(rows):
 
 def evaluate(report):
     for row in report["probes"]:
+        if report["config"].get("all_channels") and row.get("channel_id") is None:
+            # Reports written before channel_id was persisted encoded it in c<id>-... IDs.
+            probe_id = row.get("probe_id") or row.get("id") or ""
+            prefix = probe_id.split("-", 1)[0]
+            if prefix.startswith("c") and prefix[1:].isdigit():
+                row["channel_id"] = int(prefix[1:])
         row["capability"] = capability([row])
     models = []
     groups = [(None, model) for model in report["config"]["models"]]
