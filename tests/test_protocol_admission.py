@@ -324,6 +324,23 @@ class ProtocolExecutionTests(unittest.IsolatedAsyncioTestCase):
         self.assertNotIn("groups", report["config"])
         self.assertNotIn("api_key", report["config"])
 
+    async def test_all_channels_mock_report_keeps_channel_identity(self):
+        first = self.registry.save({"base_url": "https://first.synthetic.invalid", "api_key": "synthetic-first-key", "multiplier": 1})
+        second = self.registry.save({"base_url": "https://second.synthetic.invalid", "api_key": "synthetic-second-key", "multiplier": 1})
+        manager = Manager(self.store, self.registry)
+        p = plan(all_channels=True)
+        preview = manager.preview(p)
+        self.assertEqual(preview["request_count"], 18)
+        async with manager.lifespan():
+            run = await manager.start(StartInput(**p.model_dump(), preview_fingerprint=preview["fingerprint"]))
+            await manager.task
+        report = self.store.get(run["id"])
+        self.assertEqual(report["state"], "completed")
+        self.assertEqual({item["channel_id"] for item in report["capabilities"]}, {first["id"], second["id"]})
+        self.assertEqual(len(report["capabilities"]), 2)
+        self.assertTrue(all(row["status"] == "passed" for row in report["probes"]))
+        self.assertTrue(all(item["protocols"]["responses"]["status"] == "supported" for item in report["capabilities"]))
+
     async def test_old_report_keeps_snapshot_and_adds_protocol_summary(self):
         old = {"id": "legacy", "version": 1, "created_at": 1, "state": "completed",
                "config": {**plan().model_dump(), "mode": "live", "profile": {"upstream_type": "unknown"}, "groups": []},
