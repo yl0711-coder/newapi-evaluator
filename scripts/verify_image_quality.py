@@ -248,6 +248,10 @@ def main():
         ("workbench-browser", ["node", "scripts/ui_smoke.cjs"], 600, "browser"),
         ("build-container", [sys.executable, "scripts/image_quality_container.py", "--output", str(output / "container")], 900, "container"),
     ]
+    if os.getenv("VERIFY_IMAGE_QUALITY_EARLY_CANCEL") == "1":
+        # The cancellation fixture owns a fake node process; run it first so the
+        # harness tests cancellation without recursively entering the full suite.
+        commands = [commands[3], *commands[:3], *commands[4:]]
     results = []
     began = time.monotonic()
     revision = subprocess.check_output(["git", "rev-parse", "HEAD"], cwd=ROOT, text=True).strip()
