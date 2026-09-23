@@ -47,10 +47,21 @@ def capability(rows):
 
 def evaluate(report):
     for row in report["probes"]:
+        if report["config"].get("all_channels") and row.get("channel_id") is None:
+            # Reports written before channel_id was persisted encoded it in c<id>-... IDs.
+            probe_id = row.get("probe_id") or row.get("id") or ""
+            prefix = probe_id.split("-", 1)[0]
+            if prefix.startswith("c") and prefix[1:].isdigit():
+                row["channel_id"] = int(prefix[1:])
         row["capability"] = capability([row])
     models = []
-    for model in report["config"]["models"]:
-        rows = {r["check"]: r for r in report["probes"] if r["model"] == model["model"]}
+    groups = [(None, model) for model in report["config"]["models"]]
+    if report["config"].get("all_channels"):
+        groups = [(channel_id, model) for channel_id in report["config"].get("channel_ids", [])
+                  for model in report["config"]["models"]]
+    for channel_id, model in groups:
+        rows = {r["check"]: r for r in report["probes"]
+                if r["model"] == model["model"] and r.get("channel_id") == channel_id}
         protocols = {}
         for protocol, spec in PROTOCOLS.items():
             modes = {name: capability([rows[check]] if check in rows else [])
@@ -58,7 +69,9 @@ def evaluate(report):
             protocols[protocol] = {"name": spec["name"],
                 **capability([rows.get(spec[name], {"status": "not_run"}) for name in ("basic", "stream")]),
                 "details": modes}
-        models.append({"model": model["model"], "upstream_model": model.get("upstream_model") or model["model"],
+        models.append({"model": model["model"], "channel_id": channel_id,
+                       "channel_name": report["config"].get("channel_names", {}).get(str(channel_id), "") if channel_id else "",
+                       "upstream_model": model.get("upstream_model") or model["model"],
                        "protocols": protocols, "search": capability([rows["alpha_search"]] if "alpha_search" in rows else []),
                        "supported_protocols": [key for key, value in protocols.items() if value["status"] == "supported"]})
     report["capabilities"] = models

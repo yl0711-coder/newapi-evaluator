@@ -193,6 +193,18 @@ class ProtocolContractTests(unittest.TestCase):
         self.assertEqual(result["search"]["status"], "unconfirmed")
         self.assertNotIn("conclusion", report)
 
+    def test_legacy_all_channel_probe_ids_restore_channel_identity(self):
+        p = plan()
+        rows = [{**vars(item), "status": "passed", "error_class": ""}
+                for channel_id in (2, 1) for item in probes(p, channel_id)]
+        report = evaluate({"config": {**p.model_dump(), "all_channels": True, "channel_ids": [2, 1],
+                                       "channel_names": {"2": "first", "1": "second"}, "mode": "mock"},
+                           "probes": rows})
+        self.assertEqual([item["channel_id"] for item in report["capabilities"]], [2, 1])
+        self.assertTrue(all(item["protocols"]["responses"]["status"] == "supported"
+                            for item in report["capabilities"]))
+        self.assertTrue(all(row["channel_id"] in {1, 2} for row in report["probes"]))
+
     def test_pending_and_incomplete_do_not_claim_unsupported(self):
         self.assertEqual(capability([])["status"], "not_tested")
         self.assertEqual(capability([{"status": "running"}])["status"], "running")
@@ -323,6 +335,23 @@ class ProtocolExecutionTests(unittest.IsolatedAsyncioTestCase):
         self.assertNotIn("profile", report["config"])
         self.assertNotIn("groups", report["config"])
         self.assertNotIn("api_key", report["config"])
+
+    async def test_all_channels_mock_report_keeps_channel_identity(self):
+        first = self.registry.save({"base_url": "https://first.synthetic.invalid", "api_key": "synthetic-first-key", "multiplier": 1})
+        second = self.registry.save({"base_url": "https://second.synthetic.invalid", "api_key": "synthetic-second-key", "multiplier": 1})
+        manager = Manager(self.store, self.registry)
+        p = plan(all_channels=True)
+        preview = manager.preview(p)
+        self.assertEqual(preview["request_count"], 18)
+        async with manager.lifespan():
+            run = await manager.start(StartInput(**p.model_dump(), preview_fingerprint=preview["fingerprint"]))
+            await manager.task
+        report = self.store.get(run["id"])
+        self.assertEqual(report["state"], "completed")
+        self.assertEqual({item["channel_id"] for item in report["capabilities"]}, {first["id"], second["id"]})
+        self.assertEqual(len(report["capabilities"]), 2)
+        self.assertTrue(all(row["status"] == "passed" for row in report["probes"]))
+        self.assertTrue(all(item["protocols"]["responses"]["status"] == "supported" for item in report["capabilities"]))
 
     async def test_old_report_keeps_snapshot_and_adds_protocol_summary(self):
         old = {"id": "legacy", "version": 1, "created_at": 1, "state": "completed",

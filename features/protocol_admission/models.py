@@ -29,6 +29,7 @@ class DiscoveryInput(ConnectionInput):
 
 
 class PlanInput(ConnectionInput):
+    all_channels: bool = False
     models: list[ModelTarget] = Field(min_length=1, max_length=5)
     total_timeout: float = Field(default=30, ge=1, le=120, allow_inf_nan=False)
     first_byte_timeout: float = Field(default=10, ge=0.1, le=60, allow_inf_nan=False)

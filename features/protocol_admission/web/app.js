@@ -6,7 +6,7 @@ let metadata, channels = [], preview = null, active = null, poll = null, generat
 const available = new Set(), selected = new Set();
 
 function connection() {
-  return {channel_id:Number($('channel').value) || null, base_url:$('base-url').value.trim()};
+  return {channel_id:Number($('channel').value) || null, all_channels:$('channel').value === '__all__', base_url:$('base-url').value.trim()};
 }
 function plan() {
   if (!selected.size) throw new Error('请选择至少一个模型。');
@@ -45,6 +45,7 @@ async function resetConnection() {
   $('report').hidden = true; $('fetch-status').textContent = ''; $('confirm-live').checked = false;
   if (!$('channel').value) return;
   try {
+    if ($('channel').value === '__all__') { $('fetch-status').textContent = '将使用所有启用渠道；请手动填写本次新模型。'; return; }
     const value = await api('models?channel_id=' + $('channel').value);
     if (ticket !== generation) return;
     value.models.forEach(model => available.add(model)); renderModels();
@@ -64,7 +65,10 @@ async function show(id) {
   $('conclusion').replaceChildren(node('p', `${states[report.state] || report.state} · ${report.config.mode === 'mock' ? '本地 Mock 演示' : '真实上游检测'}`),
     ...report.warnings.map(value => node('p', value, 'error')));
   $('capabilities').replaceChildren(...report.capabilities.map(model => {
-    const row = node('tr'); row.append(node('td', model.upstream_model));
+    const supported = Object.entries(model.protocols).filter(([, value]) => value.status === 'supported').map(([key]) => metadata.protocols[key].name);
+    if (model.search.status === 'supported') supported.push('Alpha Search');
+    const overall = supported.length ? `可用 · 支持：${supported.join('、')}` : '未确认支持任何协议';
+    const row = node('tr'); row.append(node('td', `${model.channel_name ? model.channel_name + ' · ' : (model.channel_id ? '渠道 #' + model.channel_id + ' · ' : '')}${model.upstream_model} · ${overall}`));
     for (const protocol of Object.keys(metadata.protocols)) {
       const value = model.protocols[protocol], cell = node('td', value.label, value.status);
       cell.append(node('small', `普通：${value.details.basic.label} · 流式：${value.details.stream.label}`, 'hint'));
@@ -77,7 +81,7 @@ async function show(id) {
   $('results').replaceChildren(...report.probes.map(probe => {
     const row = node('tr');
     const explanation = metadata.errors[probe.error_class] || probe.error_class || (probe.capability.status === 'supported' ? '本项通过' : probe.capability.label);
-    for (const text of [`${probe.model} · ${probe.label}`, probe.capability.label, probe.http_status ?? '—', `${probe.total_ms ?? '—'} ms`, explanation]) row.append(node('td', String(text)));
+    for (const text of [`${probe.channel_id ? '渠道 #' + probe.channel_id + ' · ' : ''}${probe.model} · ${probe.label}`, probe.capability.label, probe.http_status ?? '—', `${probe.total_ms ?? '—'} ms`, explanation]) row.append(node('td', String(text)));
     return row;
   }));
   for (const format of ['json', 'html']) $(`export-${format}`).href = `./api/runs/${id}/export/${format}`;
@@ -105,6 +109,10 @@ $('add-model').addEventListener('click', () => {
 });
 $('fetch-models').addEventListener('click', async () => {
   error(); const ticket = ++generation;
+  if ($('channel').value === '__all__') {
+    $('fetch-status').textContent = '全渠道模式不读取单一渠道模型列表，请在下方手动添加本次新模型。';
+    return;
+  }
   const body = {...connection(), api_key:$('api-key').value, mode:$('mode').value, confirm_live:$('confirm-live').checked};
   busy(true); $('fetch-status').textContent = '正在获取模型列表…';
   try {
