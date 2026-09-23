@@ -160,6 +160,7 @@ class Manager:
                         channel = self.registry.resolve(probe.channel_id)
                         probe_base, probe_key = channel["base_url"], channel["api_key"]
                     value = await execute(probe, probe_base or "https://mock.invalid/v1", probe_key or "synthetic-mock", plan, report["search_session_id"], transport)
+                    value["channel_id"] = probe.channel_id
                     report["probes"][index] = value
                     self.store.save(evaluate(report))
                     current = None
