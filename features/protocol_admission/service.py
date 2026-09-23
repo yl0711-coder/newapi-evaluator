@@ -1,7 +1,6 @@
 import asyncio
 from contextlib import asynccontextmanager
 from dataclasses import asdict
-import json
 import time
 from urllib.parse import urlsplit
 from uuid import uuid4
@@ -10,7 +9,7 @@ import httpx
 
 from features.model_coverage.catalog import Catalog
 from features.model_coverage.discovery import fetch_models, request_models
-from .catalog import fingerprint, probes
+from .catalog import Probe, fingerprint, probes
 from .engine import endpoint, execute
 from .mock import response as mock_response
 from .report import evaluate
@@ -119,53 +118,79 @@ class Manager:
         if plan.preview_fingerprint != preview["fingerprint"]:
             raise ValueError("配置或渠道已变化，请重新预览请求清单")
         base, key = self.connection(plan)
+        channel_targets = {}
+        if plan.all_channels:
+            for selected in preview["channels"]:
+                try:
+                    channel = self.registry.resolve(selected["id"])
+                except (KeyError, ValueError):
+                    raise ValueError("渠道已变化，请重新预览请求清单") from None
+                if channel["version"] != selected["version"]:
+                    raise ValueError("渠道已变化，请重新预览请求清单")
+                channel_targets[channel["id"]] = {field: channel[field] for field in ("base_url", "api_key", "version")}
         if plan.channel_id:
             channel = self.registry.resolve(plan.channel_id)
             if channel["version"] != preview["channel_version"]:
                 raise ValueError("渠道已变化，请重新预览")
             base, key = channel["base_url"], channel["api_key"]
         config = plan.model_dump(mode="json", exclude={"api_key", "base_url", "confirm_live", "preview_fingerprint"})
-        if key and key in json.dumps(config, ensure_ascii=False):
-            raise ValueError("模型名称不能包含渠道密钥")
         config.update(channel_version=preview["channel_version"], masked_host="host-" + fingerprint(urlsplit(base).hostname or "mock")[:12],
                       preview_fingerprint=preview["fingerprint"])
         if getattr(plan, "all_channels", False):
             config["channel_ids"] = [c["id"] for c in preview["channels"]]
             config["channel_names"] = {str(c["id"]): c["name"] for c in preview["channels"]}
+            config["channel_versions"] = {str(c["id"]): c["version"] for c in preview["channels"]}
+        report_strings = [value for model in config["models"] for value in (model["model"], model.get("upstream_model", ""))]
+        report_strings.extend(config.get("channel_names", {}).values())
+        secrets = [key, plan.api_key.get_secret_value(), *(c["api_key"] for c in channel_targets.values())]
+        if any(secret and secret in value for secret in secrets for value in report_strings):
+            raise ValueError("模型名称或渠道名称不能包含渠道密钥")
         identifier = uuid4().hex
         report = {"version": 2, "id": identifier, "created_at": time.time(), "state": "running", "config": config,
                   "request_count": preview["request_count"], "search_session_id": "eval-" + uuid4().hex,
                   "probes": [{**row, "status": "not_run", "attempts": 0, "error_class": "not_run"} for row in preview["probes"]]}
         self.store.save(evaluate(report))
         self.active_id = identifier
-        self.task = asyncio.create_task(self.run(report, plan, base, key))
+        run_probes = tuple(Probe(**row) for row in preview["probes"])
+        self.task = asyncio.create_task(self.run(report, plan, base, key, run_probes, channel_targets))
         return {"id": identifier, "state": "running"}
 
-    async def run(self, report, plan, base, key):
+    async def run(self, report, plan, base, key, run_probes, channel_targets):
         current = None
+        changed_channels = set()
         try:
             async def sequence():
                 nonlocal current
-                run_probes = probes(plan) if not plan.all_channels else [
-                    probe for channel in self.registry.list() if channel["enabled"]
-                    for probe in probes(plan, channel["id"])
-                ]
                 for index, probe in enumerate(run_probes):
+                    if probe.channel_id:
+                        target = channel_targets[probe.channel_id]
+                        if probe.channel_id not in changed_channels:
+                            try:
+                                channel = self.registry.get(probe.channel_id)
+                                unchanged = channel["enabled"] and channel["version"] == target["version"]
+                            except KeyError:
+                                unchanged = False
+                            if not unchanged:
+                                changed_channels.add(probe.channel_id)
+                        if probe.channel_id in changed_channels:
+                            report["probes"][index].update(status="unconfirmed", error_class="channel_changed", attempts=0)
+                            self.store.save(evaluate(report))
+                            continue
                     current = index
                     report["probes"][index].update(status="running", error_class="", attempts=1)
                     self.store.save(evaluate(report))
                     transport = httpx.MockTransport(mock_response) if plan.mode == "mock" else self.transport_factory() if self.transport_factory else None
                     probe_base, probe_key = base, key
                     if probe.channel_id:
-                        channel = self.registry.resolve(probe.channel_id)
-                        probe_base, probe_key = channel["base_url"], channel["api_key"]
+                        target = channel_targets[probe.channel_id]
+                        probe_base, probe_key = target["base_url"], target["api_key"]
                     value = await execute(probe, probe_base or "https://mock.invalid/v1", probe_key or "synthetic-mock", plan, report["search_session_id"], transport)
                     value["channel_id"] = probe.channel_id
                     report["probes"][index] = value
                     self.store.save(evaluate(report))
                     current = None
             await asyncio.wait_for(sequence(), 1800)
-            report["state"] = "completed"
+            report["state"] = "interrupted" if changed_channels else "completed"
         except asyncio.CancelledError:
             report["state"] = "cancelled"
             if current is not None:
@@ -176,11 +201,14 @@ class Manager:
                 report["probes"][current].update(status="unconfirmed", error_class="total_timeout")
         except Exception:
             report["state"] = "failed"
-            if current is not None:
+            if current is not None and current < len(report["probes"]):
                 report["probes"][current].update(status="failed", error_class="internal_error")
         finally:
-            self.store.save(evaluate(report))
-            self.active_id = None
+            try:
+                self.store.save(evaluate(report))
+            finally:
+                self.active_id = None
+                channel_targets.clear()
 
     def report(self, identifier):
         report = evaluate(self.store.get(identifier))

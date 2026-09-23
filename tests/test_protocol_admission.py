@@ -353,6 +353,98 @@ class ProtocolExecutionTests(unittest.IsolatedAsyncioTestCase):
         self.assertTrue(all(row["status"] == "passed" for row in report["probes"]))
         self.assertTrue(all(item["protocols"]["responses"]["status"] == "supported" for item in report["capabilities"]))
 
+    async def test_all_channels_reject_saved_key_in_model_before_persisting(self):
+        key = "syntheticCredentialValue123"
+        self.registry.save({"name": "other fixture", "base_url": "https://other.invalid/v1", "api_key": "otherSyntheticKey123"})
+        self.registry.save({"name": "fixture", "base_url": "https://fixture.invalid/v1", "api_key": key})
+        manager = Manager(self.store, self.registry)
+        for target in ({"model": key}, {"model": "safe-model", "upstream_model": key}):
+            p = plan(all_channels=True, models=[target])
+            with self.subTest(target=target), self.assertRaisesRegex(ValueError, "密钥"):
+                await manager.start(StartInput(**p.model_dump(), preview_fingerprint=manager.preview(p)["fingerprint"]))
+        p = plan(all_channels=True, models=[{"model": "temporarySyntheticKey123"}])
+        with self.assertRaisesRegex(ValueError, "密钥"):
+            await manager.start(StartInput(**p.model_dump(), api_key="temporarySyntheticKey123",
+                                           preview_fingerprint=manager.preview(p)["fingerprint"]))
+        self.assertEqual(self.store.list(), [])
+        self.assertNotIn(key.encode(), self.store.path.read_bytes())
+
+    async def test_all_channels_reject_short_saved_key_inside_model(self):
+        key = "test123"
+        self.registry.save({"name": "fixture", "base_url": "https://fixture.invalid/v1", "api_key": key})
+        manager = Manager(self.store, self.registry)
+        p = plan(all_channels=True, models=[{"model": "prefix-test123"}])
+        with self.assertRaisesRegex(ValueError, "密钥"):
+            await manager.start(StartInput(**p.model_dump(), preview_fingerprint=manager.preview(p)["fingerprint"]))
+        self.assertEqual(self.store.list(), [])
+        self.assertNotIn(key.encode(), self.store.path.read_bytes())
+
+    async def test_all_channels_addition_after_start_does_not_expand_run(self):
+        first = self.registry.save({"name": "first", "base_url": "https://first.invalid/v1", "api_key": "synthetic-first-key"})
+        manager = Manager(self.store, self.registry)
+        p = plan(all_channels=True)
+        run = await manager.start(StartInput(**p.model_dump(), preview_fingerprint=manager.preview(p)["fingerprint"]))
+        self.registry.save({"name": "second", "base_url": "https://second.invalid/v1", "api_key": "synthetic-second-key"})
+        await manager.task
+        report = self.store.get(run["id"])
+        self.assertEqual(report["state"], "completed")
+        self.assertEqual((report["request_count"], len(report["probes"])), (9, 9))
+        self.assertEqual({row["channel_id"] for row in report["probes"]}, {first["id"]})
+        self.assertTrue(all(row["attempts"] == 1 for row in report["probes"]))
+
+    async def test_all_channels_disabled_after_start_is_incomplete_without_requests(self):
+        first = self.registry.save({"name": "first", "base_url": "https://first.invalid/v1", "api_key": "synthetic-first-key"})
+        requests = []
+        manager = Manager(self.store, self.registry, lambda: httpx.MockTransport(
+            lambda request: (requests.append(request), httpx.Response(500))[1]))
+        p = plan(all_channels=True)
+        run = await manager.start(StartInput(**p.model_dump(), mode="live", confirm_live=True,
+                                             preview_fingerprint=manager.preview(p)["fingerprint"]))
+        self.registry.save({"name": "first", "base_url": "https://first.invalid/v1", "api_key": "", "enabled": False},
+                           first["id"], first["version"])
+        await manager.task
+        report = self.store.get(run["id"])
+        self.assertEqual(report["state"], "interrupted")
+        self.assertEqual(requests, [])
+        self.assertEqual({(row["status"], row["error_class"], row["attempts"]) for row in report["probes"]},
+                         {("unconfirmed", "channel_changed", 0)})
+
+    async def test_all_channels_change_does_not_stop_unchanged_channels(self):
+        changed = self.registry.save({"name": "first", "base_url": "https://first.invalid/v1", "api_key": "synthetic-first-key"})
+        unchanged = self.registry.save({"name": "second", "base_url": "https://second.invalid/v1", "api_key": "synthetic-second-key"})
+        manager = Manager(self.store, self.registry)
+        p = plan(all_channels=True)
+        run = await manager.start(StartInput(**p.model_dump(), preview_fingerprint=manager.preview(p)["fingerprint"]))
+        self.registry.save({"name": "first", "base_url": "https://first.invalid/v1", "api_key": "", "enabled": False},
+                           changed["id"], changed["version"])
+        await manager.task
+        report = self.store.get(run["id"])
+        self.assertEqual(report["state"], "interrupted")
+        by_channel = {channel_id: [row for row in report["probes"] if row["channel_id"] == channel_id]
+                      for channel_id in (changed["id"], unchanged["id"])}
+        self.assertTrue(all(row["error_class"] == "channel_changed" for row in by_channel[changed["id"]]))
+        self.assertTrue(all(row["status"] == "passed" for row in by_channel[unchanged["id"]]))
+
+    async def test_all_channels_change_during_run_never_switches_endpoint(self):
+        first = self.registry.save({"name": "first", "base_url": "https://first.invalid/v1", "api_key": "synthetic-first-key"})
+        hosts = []
+        def respond(request):
+            hosts.append(request.url.host)
+            if len(hosts) == 1:
+                self.registry.save({"name": "first", "base_url": "https://second.invalid/v1", "api_key": ""},
+                                   first["id"], first["version"])
+            return httpx.Response(500, json={"error": {"message": "synthetic failure"}})
+        manager = Manager(self.store, self.registry, lambda: httpx.MockTransport(respond))
+        p = plan(all_channels=True)
+        run = await manager.start(StartInput(**p.model_dump(), mode="live", confirm_live=True,
+                                             preview_fingerprint=manager.preview(p)["fingerprint"]))
+        await manager.task
+        report = self.store.get(run["id"])
+        self.assertEqual(hosts, ["first.invalid"])
+        self.assertEqual(report["state"], "interrupted")
+        self.assertEqual(sum(row["attempts"] for row in report["probes"]), 1)
+        self.assertEqual(sum(row["error_class"] == "channel_changed" for row in report["probes"]), 8)
+
     async def test_old_report_keeps_snapshot_and_adds_protocol_summary(self):
         old = {"id": "legacy", "version": 1, "created_at": 1, "state": "completed",
                "config": {**plan().model_dump(), "mode": "live", "profile": {"upstream_type": "unknown"}, "groups": []},

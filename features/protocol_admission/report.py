@@ -18,6 +18,7 @@ ERRORS = {
     "connection_error": "连接失败", "headers_timeout": "等待响应头超时", "first_byte_timeout": "等待正文首段超时",
     "idle_timeout": "正文读取空闲超时", "total_timeout": "请求总超时", "search_result_unconfirmed": "搜索正文格式正确，尚未识别到预期来源",
     "cancelled": "已停止", "not_run": "未执行", "interrupted": "服务中断，本次结果未完成", "internal_error": "探测执行异常",
+    "channel_changed": "渠道在检测期间变化，本项未执行",
 }
 
 STATUS_LABELS = {"supported": "支持", "unsupported": "不支持", "failed": "未通过",
@@ -25,7 +26,7 @@ STATUS_LABELS = {"supported": "支持", "unsupported": "不支持", "failed": "�
 UNCERTAIN_ERRORS = {"authentication_failed", "endpoint_unconfirmed", "request_invalid", "rate_limited",
                     "request_timeout", "upstream_timeout", "upstream_error", "http_error", "connection_error",
                     "headers_timeout", "first_byte_timeout", "idle_timeout", "total_timeout",
-                    "cancelled", "interrupted", "internal_error", "model_mapping_unconfirmed"}
+                    "cancelled", "interrupted", "internal_error", "model_mapping_unconfirmed", "channel_changed"}
 UNSUPPORTED_ERRORS = {"upstream_protocol_unsupported", "local_protocol_unsupported"}
 
 
