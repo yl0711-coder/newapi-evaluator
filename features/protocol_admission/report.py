@@ -64,6 +64,7 @@ def evaluate(report):
                 **capability([rows.get(spec[name], {"status": "not_run"}) for name in ("basic", "stream")]),
                 "details": modes}
         models.append({"model": model["model"], "channel_id": channel_id,
+                       "channel_name": report["config"].get("channel_names", {}).get(str(channel_id), "") if channel_id else "",
                        "upstream_model": model.get("upstream_model") or model["model"],
                        "protocols": protocols, "search": capability([rows["alpha_search"]] if "alpha_search" in rows else []),
                        "supported_protocols": [key for key, value in protocols.items() if value["status"] == "supported"]})

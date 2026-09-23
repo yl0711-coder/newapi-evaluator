@@ -50,6 +50,7 @@ class Manager:
             checks = [asdict(p) for c in selected_channels for p in probes(plan, c["id"])]
             config["channel_ids"] = [c["id"] for c in selected_channels]
             config["channel_versions"] = {str(c["id"]): c["version"] for c in selected_channels}
+            config["channel_names"] = {str(c["id"]): c["name"] for c in selected_channels}
             return {"fingerprint": fingerprint(config), "request_count": len(checks), "probes": checks,
                     "maximum_seconds": min(1800, len(checks) * plan.total_timeout),
                     "attempts_per_probe": 1, "gateway_retries": "不可观察", "phase": "direct_probe",
@@ -130,6 +131,7 @@ class Manager:
                       preview_fingerprint=preview["fingerprint"])
         if getattr(plan, "all_channels", False):
             config["channel_ids"] = [c["id"] for c in preview["channels"]]
+            config["channel_names"] = {str(c["id"]): c["name"] for c in preview["channels"]}
         identifier = uuid4().hex
         report = {"version": 2, "id": identifier, "created_at": time.time(), "state": "running", "config": config,
                   "request_count": preview["request_count"], "search_session_id": "eval-" + uuid4().hex,

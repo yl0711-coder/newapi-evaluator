@@ -65,7 +65,10 @@ async function show(id) {
   $('conclusion').replaceChildren(node('p', `${states[report.state] || report.state} · ${report.config.mode === 'mock' ? '本地 Mock 演示' : '真实上游检测'}`),
     ...report.warnings.map(value => node('p', value, 'error')));
   $('capabilities').replaceChildren(...report.capabilities.map(model => {
-    const row = node('tr'); row.append(node('td', `${model.channel_id ? '渠道 #' + model.channel_id + ' · ' : ''}${model.upstream_model}`));
+    const supported = Object.entries(model.protocols).filter(([, value]) => value.status === 'supported').map(([key]) => metadata.protocols[key].name);
+    if (model.search.status === 'supported') supported.push('Alpha Search');
+    const overall = supported.length ? `可用 · 支持：${supported.join('、')}` : '未确认支持任何协议';
+    const row = node('tr'); row.append(node('td', `${model.channel_name ? model.channel_name + ' · ' : (model.channel_id ? '渠道 #' + model.channel_id + ' · ' : '')}${model.upstream_model} · ${overall}`));
     for (const protocol of Object.keys(metadata.protocols)) {
       const value = model.protocols[protocol], cell = node('td', value.label, value.status);
       cell.append(node('small', `普通：${value.details.basic.label} · 流式：${value.details.stream.label}`, 'hint'));
