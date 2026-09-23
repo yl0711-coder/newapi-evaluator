@@ -106,6 +106,10 @@ $('add-model').addEventListener('click', () => {
 });
 $('fetch-models').addEventListener('click', async () => {
   error(); const ticket = ++generation;
+  if ($('channel').value === '__all__') {
+    $('fetch-status').textContent = '全渠道模式不读取单一渠道模型列表，请在下方手动添加本次新模型。';
+    return;
+  }
   const body = {...connection(), api_key:$('api-key').value, mode:$('mode').value, confirm_live:$('confirm-live').checked};
   busy(true); $('fetch-status').textContent = '正在获取模型列表…';
   try {
