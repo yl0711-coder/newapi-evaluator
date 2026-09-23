@@ -42,6 +42,18 @@ class Manager:
         config = plan.model_dump(mode="json", exclude={"api_key", "mode", "confirm_live", "preview_fingerprint"})
         base = plan.base_url
         channel_version = None
+        selected_channels = []
+        if getattr(plan, "all_channels", False):
+            selected_channels = [c for c in self.registry.list() if c["enabled"]]
+            if not selected_channels:
+                raise ValueError("没有启用的公共渠道")
+            checks = [asdict(p) for c in selected_channels for p in probes(plan, c["id"])]
+            config["channel_ids"] = [c["id"] for c in selected_channels]
+            config["channel_versions"] = {str(c["id"]): c["version"] for c in selected_channels}
+            return {"fingerprint": fingerprint(config), "request_count": len(checks), "probes": checks,
+                    "maximum_seconds": min(1800, len(checks) * plan.total_timeout),
+                    "attempts_per_probe": 1, "gateway_retries": "不可观察", "phase": "direct_probe",
+                    "channel_version": None, "channels": selected_channels}
         if plan.channel_id:
             channel = self.registry.get(plan.channel_id)
             if not channel["enabled"]:
@@ -62,6 +74,12 @@ class Manager:
 
     def connection(self, plan):
         base, key = plan.base_url, plan.api_key.get_secret_value()
+        if getattr(plan, "all_channels", False):
+            if plan.mode == "live" and not plan.confirm_live:
+                raise ValueError("真实请求需要本次明确确认")
+            if not [c for c in self.registry.list() if c["enabled"]]:
+                raise ValueError("没有启用的公共渠道")
+            return "", ""
         if plan.channel_id:
             channel = self.registry.resolve(plan.channel_id)
             base, key = channel["base_url"], channel["api_key"]
@@ -110,6 +128,8 @@ class Manager:
             raise ValueError("模型名称不能包含渠道密钥")
         config.update(channel_version=preview["channel_version"], masked_host="host-" + fingerprint(urlsplit(base).hostname or "mock")[:12],
                       preview_fingerprint=preview["fingerprint"])
+        if getattr(plan, "all_channels", False):
+            config["channel_ids"] = [c["id"] for c in preview["channels"]]
         identifier = uuid4().hex
         report = {"version": 2, "id": identifier, "created_at": time.time(), "state": "running", "config": config,
                   "request_count": preview["request_count"], "search_session_id": "eval-" + uuid4().hex,
@@ -124,12 +144,20 @@ class Manager:
         try:
             async def sequence():
                 nonlocal current
-                for index, probe in enumerate(probes(plan)):
+                run_probes = probes(plan) if not plan.all_channels else [
+                    probe for channel in self.registry.list() if channel["enabled"]
+                    for probe in probes(plan, channel["id"])
+                ]
+                for index, probe in enumerate(run_probes):
                     current = index
                     report["probes"][index].update(status="running", error_class="", attempts=1)
                     self.store.save(evaluate(report))
                     transport = httpx.MockTransport(mock_response) if plan.mode == "mock" else self.transport_factory() if self.transport_factory else None
-                    value = await execute(probe, base or "https://mock.invalid/v1", key or "synthetic-mock", plan, report["search_session_id"], transport)
+                    probe_base, probe_key = base, key
+                    if probe.channel_id:
+                        channel = self.registry.resolve(probe.channel_id)
+                        probe_base, probe_key = channel["base_url"], channel["api_key"]
+                    value = await execute(probe, probe_base or "https://mock.invalid/v1", probe_key or "synthetic-mock", plan, report["search_session_id"], transport)
                     report["probes"][index] = value
                     self.store.save(evaluate(report))
                     current = None

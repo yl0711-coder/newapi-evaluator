@@ -6,7 +6,7 @@ let metadata, channels = [], preview = null, active = null, poll = null, generat
 const available = new Set(), selected = new Set();
 
 function connection() {
-  return {channel_id:Number($('channel').value) || null, base_url:$('base-url').value.trim()};
+  return {channel_id:Number($('channel').value) || null, all_channels:$('channel').value === '__all__', base_url:$('base-url').value.trim()};
 }
 function plan() {
   if (!selected.size) throw new Error('请选择至少一个模型。');
@@ -45,6 +45,7 @@ async function resetConnection() {
   $('report').hidden = true; $('fetch-status').textContent = ''; $('confirm-live').checked = false;
   if (!$('channel').value) return;
   try {
+    if ($('channel').value === '__all__') { $('fetch-status').textContent = '将使用所有启用渠道；请手动填写本次新模型。'; return; }
     const value = await api('models?channel_id=' + $('channel').value);
     if (ticket !== generation) return;
     value.models.forEach(model => available.add(model)); renderModels();
@@ -64,7 +65,7 @@ async function show(id) {
   $('conclusion').replaceChildren(node('p', `${states[report.state] || report.state} · ${report.config.mode === 'mock' ? '本地 Mock 演示' : '真实上游检测'}`),
     ...report.warnings.map(value => node('p', value, 'error')));
   $('capabilities').replaceChildren(...report.capabilities.map(model => {
-    const row = node('tr'); row.append(node('td', model.upstream_model));
+    const row = node('tr'); row.append(node('td', `${model.channel_id ? '渠道 #' + model.channel_id + ' · ' : ''}${model.upstream_model}`));
     for (const protocol of Object.keys(metadata.protocols)) {
       const value = model.protocols[protocol], cell = node('td', value.label, value.status);
       cell.append(node('small', `普通：${value.details.basic.label} · 流式：${value.details.stream.label}`, 'hint'));
@@ -77,7 +78,7 @@ async function show(id) {
   $('results').replaceChildren(...report.probes.map(probe => {
     const row = node('tr');
     const explanation = metadata.errors[probe.error_class] || probe.error_class || (probe.capability.status === 'supported' ? '本项通过' : probe.capability.label);
-    for (const text of [`${probe.model} · ${probe.label}`, probe.capability.label, probe.http_status ?? '—', `${probe.total_ms ?? '—'} ms`, explanation]) row.append(node('td', String(text)));
+    for (const text of [`${probe.channel_id ? '渠道 #' + probe.channel_id + ' · ' : ''}${probe.model} · ${probe.label}`, probe.capability.label, probe.http_status ?? '—', `${probe.total_ms ?? '—'} ms`, explanation]) row.append(node('td', String(text)));
     return row;
   }));
   for (const format of ['json', 'html']) $(`export-${format}`).href = `./api/runs/${id}/export/${format}`;

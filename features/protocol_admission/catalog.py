@@ -32,10 +32,11 @@ class Probe:
     stream: bool
     purpose: str
     label: str
+    channel_id: int | None = None
 
 
-def probes(plan):
-    return [Probe(f"m{i}-{check}", check, model.model, model.upstream_model or model.model, *CHECKS[check])
+def probes(plan, channel_id=None):
+    return [Probe(f"c{channel_id or 0}-m{i}-{check}", check, model.model, model.upstream_model or model.model, *CHECKS[check], channel_id)
             for i, model in enumerate(plan.models) for check in CHECKS]
 
 
