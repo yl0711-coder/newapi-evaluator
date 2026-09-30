@@ -104,7 +104,18 @@ python -m relay_lab inspect-config --config configs/relay-lab/example.yaml
 
 设置 `PLATFORM_USERNAME` 和至少 12 位的 `PLATFORM_PASSWORD` 后，才可使用 `--host 0.0.0.0`。所有页面、接口统一鉴权，修改接口检查跨站请求。`/internal/v1/*` 例外：只接受 Monitor 专用签名（`EVAL_MONITOR_KEY_ID`/`EVAL_MONITOR_SECRET`），不接受工作台登录，未配置时关闭，见 [Monitor 内部接口](docs/monitor-internal-api.md)。公网接入使用 HTTPS 反向代理；代理应保留 Host，关闭准入流响应缓冲，并允许非流式长请求（最多 5 × 600 秒）。
 
-Docker 默认以稳定模式运行，容器端口只发布到本机 8090，`./data` 挂载到容器中，因此重建镜像不会丢失渠道、密钥、计划和历史。稳定性报告默认保留 5 天，可通过 `STABILITY_RETENTION_DAYS` 调整；容器 JSON 日志按 10 MiB、最多 5 个文件轮转。先从 `.env.example` 创建 `.env` 并设置至少 12 位的密码，然后使用：
+Eval 的 Monitor 控制面也通过这个服务端口提供。`compose.yml` 和 `compose.prod.yml` 当前都使用以下端口映射：
+
+```yaml
+ports:
+  - "${PLATFORM_BIND_ADDRESS:-127.0.0.1}:${PLATFORM_PORT:-8090}:8090"
+```
+
+因此默认地址 `http://127.0.0.1:8090` 只对同一台主机可达，远程 Monitor 不能直接读取；同机 Monitor 可以把 Eval Base URL 设为该地址。后续部署远程 Monitor 时，应把 `PLATFORM_BIND_ADDRESS` 改为受防火墙保护的内网地址，或通过 HTTPS 反向代理提供内网域名，并在 Monitor 中使用代理地址。本次只在 README 标记这个部署边界，Compose 默认绑定方式留待后续部署调整。
+
+Monitor 访问 `/internal/v1/*` 时必须同时配置 `EVAL_MONITOR_KEY_ID` 和至少 32 位的 `EVAL_MONITOR_SECRET`，按 [Monitor 内部接口](docs/monitor-internal-api.md) 的 HMAC 规则签名；这组凭据不授予工作台页面或普通 `/api/*` 权限。`EVAL_MONITOR_EXECUTOR=off`（默认）只开放控制面读写，任务不会执行真实上游请求；只有在受控环境明确设为 `EVAL_MONITOR_EXECUTOR=live` 时，Eval 才会执行复测。远程可达、签名通过与执行器开启是三个独立条件。
+
+Docker 默认以稳定模式运行，容器端口只发布到本机 8090，`./data` 挂载到容器中，因此重建镜像不会丢失渠道、密钥、计划和历史。稳定性报告默认保留 5 天，可通过 `STABILITY_RETENTION_DAYS` 调整；容器 JSON 日志按 10 MiB、最多 5 个文件轮转。先从 `.env.example` 创建 `.env` 并设置至少 12 个字符的密码，然后使用：
 
 ```bash
 make up       # 构建/重建并后台启动
