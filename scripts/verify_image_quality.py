@@ -14,6 +14,8 @@ import sys
 import time
 
 ROOT = Path(__file__).resolve().parents[1]
+sys.path.insert(0, str(ROOT))
+from scripts.test_manifest import image_quality
 
 
 def classify(returncode, output, kind):
@@ -237,17 +239,8 @@ def main():
     for key in list(env):
         if key.startswith("ADMISSION_FEISHU_"):
             del env[key]
-    commands = [
-        ("syntax", [sys.executable, __file__, "--syntax-only"], 300, "syntax"),
-        ("image-inspect", [sys.executable, "-m", "features.image_quality", "inspect-config",
-                           "--config", "tests/fixtures/image_quality/config.json"], 60, "inspect"),
-        ("workbench-python", [sys.executable, "scripts/test_all.py"], 900, "unittest"),
-        ("workbench-web", ["node", "scripts/test_web.js"], 120, "web"),
-        ("workbench-security", [sys.executable, "scripts/repo_security_scan.py", "."], 120, "security"),
-        ("workbench-e2e", [sys.executable, "scripts/e2e.py", "--output", str(output / "e2e")], 600, "e2e"),
-        ("workbench-browser", ["node", "scripts/ui_smoke.cjs"], 600, "browser"),
-        ("build-container", [sys.executable, "scripts/image_quality_container.py", "--output", str(output / "container")], 900, "container"),
-    ]
+    commands=[(suite.suite_id, list(suite.command), suite.timeout_seconds, suite.kind)
+              for suite in image_quality(sys.executable, output)]
     if os.getenv("VERIFY_IMAGE_QUALITY_EARLY_CANCEL") == "1":
         # The cancellation fixture owns a fake node process; run it first so the
         # harness tests cancellation without recursively entering the full suite.

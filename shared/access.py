@@ -3,6 +3,7 @@ from __future__ import annotations
 import base64
 import hmac
 import os
+import secrets
 from urllib.parse import urlsplit
 
 from fastapi.exceptions import RequestValidationError
@@ -22,6 +23,19 @@ def install_access(app):
 
     @app.middleware("http")
     async def access(request, call_next):
+        # Monitor's internal contract uses its own signed credential (features/model_coverage/monitor.py);
+        # workbench logins are never accepted there and Monitor signatures never open the workbench.
+        if request.url.path == "/internal/v1" or request.url.path.startswith("/internal/v1/"):
+            # No slash redirects here: an unauthenticated 307 would echo the caller's Host header.
+            if request.url.path.endswith("/"):
+                request_id = "eval-" + secrets.token_hex(8)
+                return JSONResponse({"schema_version": "1.0", "error": {"code": "not_found", "message": "unknown internal path",
+                                     "retryable": False, "request_id": request_id}}, status_code=404,
+                                    headers={"Cache-Control": "no-store", "X-Content-Type-Options": "nosniff",
+                                             "X-Request-Id": request_id})
+            response = await call_next(request)
+            response.headers.update({"Cache-Control": "no-store", "X-Content-Type-Options": "nosniff"})
+            return response
         if username:
             try:
                 scheme, encoded = request.headers.get("authorization", "").split(" ", 1)

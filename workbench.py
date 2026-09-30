@@ -14,6 +14,7 @@ from shared.api import router
 from shared.config import WEB_DIR
 from shared.registry import get_registry
 from shared.scheduler_lock import scheduler_lock
+from features.model_coverage import internal_api as monitor_internal
 from features.model_coverage.api import router as model_coverage_router
 
 FEATURES = {
@@ -43,6 +44,9 @@ def create_app(mode: str | None = None):
             if "stability" in children:
                 from features.stability.app.config import DATA_DIR
                 stack.enter_context(scheduler_lock(DATA_DIR))
+                # The Monitor executor shares the single-scheduler lock, so only one process runs it.
+                if await monitor_internal.start_executor():
+                    stack.push_async_callback(monitor_internal.stop_executor)
             for child in children.values():
                 await stack.enter_async_context(child.router.lifespan_context(child))
             yield
@@ -51,6 +55,7 @@ def create_app(mode: str | None = None):
     install_access(app)
     app.include_router(router)
     app.include_router(model_coverage_router)
+    app.include_router(monitor_internal.internal_router)
     app.state.stability_available = "stability" in children
 
     @app.get("/api/platform")
@@ -66,6 +71,7 @@ def create_app(mode: str | None = None):
         if "stability" in children:
             from features.stability.app import scheduler, storage
             state["scheduler"] = scheduler.status()
+            state["monitor_executor"] = monitor_internal.executor_status()
             if not storage.health() or not state["scheduler"]["running"]:
                 state["status"] = "degraded"
         return state

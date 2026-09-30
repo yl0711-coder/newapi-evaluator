@@ -12,6 +12,7 @@ sys.path.insert(0, str(ROOT))
 from scripts.verify_diagnosis import classify, snapshot
 from scripts.verify_image_quality import (aggregate_status, cancellation_signals,
                                           classify as classify_image, run_process)
+from scripts.test_manifest import admission
 
 
 def main():
@@ -35,25 +36,8 @@ def main():
     env.update(PYTHONDONTWRITEBYTECODE="1", PYTHONPATH=str(ROOT), TMPDIR=str(output / "tmp"),
                PLATFORM_DATA_DIR=str(output / "platform"), RELAY_LAB_DATA_DIR=str(output),
                PYTHON_EXECUTABLE=sys.executable)
-    commands = [
-        ("protocol-inspect", [sys.executable, "scripts/inspect_protocol_admission.py"], 60, "inspect"),
-        ("protocol-browser", ["node", "scripts/protocol_admission_ui.cjs"], 300, "browser"),
-        ("admission-inspect", [sys.executable, "scripts/inspect_admission.py", "--protocol", "openai"], 60, "inspect"),
-        ("workbench-python", [sys.executable, "scripts/test_all.py"], 900, "python"),
-        ("workbench-web", ["node", "scripts/test_web.js"], 120, "web"),
-        ("workbench-security", [sys.executable, "scripts/repo_security_scan.py", "."], 120, "security"),
-        ("syntax", [sys.executable, "scripts/diagnosis_syntax.py"], 300, "json"),
-        ("workbench-e2e", [sys.executable, "scripts/e2e.py", "--output", str(output / "e2e")], 600, "e2e"),
-        ("workbench-browser", ["node", "scripts/ui_smoke.cjs"], 600, "browser"),
-        ("diagnosis-browser", ["node", "scripts/diagnosis_ui.cjs"], 300, "json"),
-        ("diagnosis-inspect", [sys.executable, "-m", "features.diagnosis.inspect", "--data-dir", str(output / "platform")], 60, "inspect"),
-        ("image-inspect", [sys.executable, "-m", "features.image_quality", "inspect-config", "--config", "tests/fixtures/image_quality/config.json"], 60, "image-inspect"),
-        ("model-coverage-inspect", [sys.executable, "scripts/inspect_model_coverage.py"], 60, "inspect"),
-        ("model-coverage-browser", ["node", "scripts/model_coverage_ui.cjs"], 300, "browser"),
-    ]
-    if args.sha:
-        commands.append(("legacy-acceptance", [sys.executable, "scripts/acceptance.py", "--sha", sha,
-                                                "--output", str(output / "legacy")], 1200, "legacy"))
+    commands = [(suite.suite_id, list(suite.command), suite.timeout_seconds, suite.kind)
+                for suite in admission(sys.executable, output, sha=sha if args.sha else None)]
     budget = 3000 if args.sha else 1800
     before = snapshot()
     rows = [{"suite_id": name, "command": command, "timeout_seconds": timeout, "status": "not_run"}

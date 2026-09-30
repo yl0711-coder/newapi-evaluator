@@ -6,6 +6,7 @@ from pathlib import Path
 import tempfile
 import time
 import unittest
+from concurrent.futures import ThreadPoolExecutor
 from unittest.mock import patch
 
 import httpx
@@ -466,6 +467,103 @@ class CoverageTests(unittest.IsolatedAsyncioTestCase):
         plan=storage.upsert_schedule(ScheduleInput(name='Second plan',daily_times='23:59',channel_ids=[other]).model_dump())
         with self.assertRaises(RegistryError): service.plan_preview(plan,self.selection)
         self.assertFalse(storage.get_channel(target)['enabled'])
+
+    async def test_production_snapshot_import_is_idempotent_and_separates_coverage(self):
+        payload = {'source':'synthetic-production','version':'v1','generated_at':time.time(),'cursor':'c1',
+                   'items':[{'channel_identity':'channel-a','model':self.model['model'],'protocol':'openai',
+                             'production_status':'online','eval_channel_id':self.channel['id']},
+                            {'channel_identity':'channel-b','model':'missing-model','protocol':'openai',
+                             'production_status':'online'}]}
+        first = await self.client.post('/api/model-coverage/production/import', json=payload)
+        self.assertEqual(first.status_code, 200)
+        second = await self.client.post('/api/model-coverage/production/import', json=payload)
+        self.assertEqual((second.status_code, second.json()['added']), (200, False))
+        overview = (await self.client.get('/api/model-coverage')).json()['production_coverage']['sources'][0]
+        self.assertEqual([item['coverage'] for item in overview['items']], ['covered','conflict'])
+        changed = {**payload, 'items':[{'channel_identity':'channel-a','model':'changed-model','protocol':'openai','production_status':'online'}]}
+        self.assertEqual((await self.client.post('/api/model-coverage/production/import', json=changed)).status_code, 409)
+
+    async def test_production_snapshot_rejects_secret_and_marks_stale(self):
+        bad = {'source':'synthetic-production','version':'secret','generated_at':time.time(),'items':[
+            {'channel_identity':'https://secret.example','model':'safe-model','protocol':'openai','production_status':'online'}]}
+        self.assertEqual((await self.client.post('/api/model-coverage/production/import', json=bad)).status_code, 400)
+        old = {'source':'synthetic-old','version':'v1','generated_at':time.time()-49*3600,'items':[
+            {'channel_identity':'channel-a','model':'safe-model','protocol':'openai','production_status':'online'}]}
+        self.assertEqual((await self.client.post('/api/model-coverage/production/import', json=old)).status_code, 200)
+        sources = (await self.client.get('/api/model-coverage')).json()['production_coverage']['sources']
+        self.assertEqual(sources[0]['items'][0]['coverage'], 'stale')
+        from features.model_coverage.production import ProductionCoverage
+        nan = {**old, 'source':'synthetic-nan', 'generated_at':float('nan')}
+        with self.assertRaises(RegistryError): ProductionCoverage(self.registry).import_snapshot(nan)
+
+    async def test_workflow_queue_is_idempotent_and_cancellable(self):
+        body={'task_type':'synthetic-reconcile','payload':{'source':'local'},'idempotency_key':'synthetic-key','budget_seconds':60}
+        first=await self.client.post('/api/model-coverage/workflow/tasks',json=body)
+        self.assertEqual(first.status_code,200)
+        duplicate=await self.client.post('/api/model-coverage/workflow/tasks',json=body)
+        self.assertEqual((duplicate.status_code,duplicate.json()['id']),(200,first.json()['id']))
+        conflict={**body,'payload':{'source':'changed'}}
+        self.assertEqual((await self.client.post('/api/model-coverage/workflow/tasks',json=conflict)).status_code,409)
+        task_id=first.json()['id']
+        cancelled=await self.client.post(f'/api/model-coverage/workflow/tasks/{task_id}/cancel')
+        self.assertEqual(cancelled.json()['state'],'cancelled')
+        self.assertEqual((await self.client.get('/api/model-coverage/workflow/tasks')).json()['tasks'][0]['cancel_requested'],True)
+
+    async def test_monitor_event_maps_to_idempotent_local_task(self):
+        event={'event_id':'monitor-1','event_type':'coverage.changed','payload':{'channel_identity':'synthetic'}}
+        first=await self.client.post('/api/model-coverage/workflow/events',json=event)
+        second=await self.client.post('/api/model-coverage/workflow/events',json=event)
+        self.assertEqual((first.status_code,second.status_code),(202,202))
+        self.assertEqual(first.json()['id'],second.json()['id'])
+        self.assertEqual(first.json()['task_type'],'monitor:coverage.changed')
+
+    async def test_workflow_payload_rejects_sensitive_fields(self):
+        body={'task_type':'synthetic','payload':{'api_key':'sk-synthetic-secret'},'idempotency_key':'secret-key'}
+        response=await self.client.post('/api/model-coverage/workflow/tasks',json=body)
+        self.assertEqual(response.status_code,400)
+        oversized={'task_type':'synthetic','payload':{'blob':'x'*(64*1024)},'idempotency_key':'oversized'}
+        self.assertEqual((await self.client.post('/api/model-coverage/workflow/tasks',json=oversized)).status_code,400)
+
+    async def test_workflow_finish_requires_claim_and_terminal_state_is_immutable(self):
+        from features.model_coverage.workflow import WorkflowQueue
+        queue=WorkflowQueue(self.registry)
+        task=queue.enqueue('synthetic',{},idempotency_key='immutable')
+        with self.assertRaises(Conflict): queue.finish(task['id'],'succeeded')
+        claimed=queue.claim_next()
+        self.assertEqual(claimed['state'],'running')
+        done=queue.finish(task['id'],'succeeded',{'ok':True})
+        self.assertEqual(done['state'],'succeeded')
+        with self.assertRaises(Conflict): queue.finish(task['id'],'failed')
+
+    async def test_workflow_outbox_is_idempotent_and_guarded(self):
+        from features.model_coverage.workflow import WorkflowQueue
+        queue=WorkflowQueue(self.registry)
+        task=queue.enqueue('synthetic-outbox',{},idempotency_key='outbox-task')
+        first=queue.enqueue_outbox(task['id'],'notify',{'n':1})
+        again=queue.enqueue_outbox(task['id'],'notify',{'n':2})
+        self.assertEqual((first['id'],again['payload']),(again['id'],{'n':1}),'same task and kind keep the first row')
+        with self.assertRaises(KeyError): queue.enqueue_outbox(9999,'notify',{})
+        with self.assertRaises(RegistryError): queue.enqueue_outbox(task['id'],'secret',{'api_key':'sk-synthetic'})
+        with self.assertRaises(RegistryError): queue.enqueue_outbox(task['id'],'large',{'blob':'x'*(64*1024)})
+
+    async def test_workflow_claim_is_single_winner(self):
+        from features.model_coverage.workflow import WorkflowQueue
+        queue=WorkflowQueue(self.registry)
+        queue.enqueue('synthetic',{},idempotency_key='single-winner')
+        with ThreadPoolExecutor(max_workers=2) as pool:
+            claimed=list(pool.map(lambda _: WorkflowQueue(self.registry).claim_next(), range(2)))
+        self.assertEqual(sum(item is not None for item in claimed),1)
+
+    async def test_workflow_runner_records_success_and_failure_without_hidden_retries(self):
+        from features.model_coverage.runner import run_one
+        from features.model_coverage.workflow import WorkflowQueue
+        queue=WorkflowQueue(self.registry)
+        queue.enqueue('synthetic-success',{'value':1},idempotency_key='runner-success')
+        result=run_one(queue,lambda payload,cancel:{'value':payload['value']+1})
+        self.assertEqual((result['state'],result['result']['value']),("succeeded",2))
+        queue.enqueue('synthetic-failure',{'value':1},idempotency_key='runner-failure')
+        failed=run_one(queue,lambda payload,cancel: (_ for _ in ()).throw(RuntimeError('synthetic failure')))
+        self.assertEqual((failed['state'],failed['error']),('failed','synthetic failure'))
 
 
 if __name__=='__main__': unittest.main()

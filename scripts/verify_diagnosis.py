@@ -12,6 +12,8 @@ import sys
 import time
 
 ROOT=Path(__file__).resolve().parents[1]
+sys.path.insert(0,str(ROOT))
+from scripts.test_manifest import diagnosis
 
 
 def classify(returncode,output,kind,expected=None):
@@ -108,16 +110,8 @@ def main():
     cp=subprocess.run(collect,cwd=ROOT,env=env,capture_output=True,text=True,timeout=60)
     (output/'collection.log').write_text(cp.stdout+cp.stderr)
     expected=int(cp.stdout.strip()) if cp.returncode==0 and cp.stdout.strip().isdigit() else 0
-    commands=[('workbench-python',[py,'scripts/test_all.py'],900,'python'),
-              ('workbench-web',['node','scripts/test_web.js'],120,'web'),
-              ('workbench-security',[py,'scripts/repo_security_scan.py','.'],120,'security'),
-              ('syntax',[py,'scripts/diagnosis_syntax.py'],300,'json'),
-              ('workbench-e2e',[py,'scripts/e2e.py','--output',str(output/'e2e')],600,'e2e'),
-              ('workbench-browser',['node','scripts/ui_smoke.cjs'],600,'browser'),
-              ('diagnosis-browser',['node','scripts/diagnosis_ui.cjs'],300,'json'),
-              ('diagnosis-inspect',[py,'-m','features.diagnosis.inspect','--data-dir',str(output/'platform')],60,'inspect'),
-              ('build-container',[py,'scripts/diagnosis_container.py','--output',str(output/'container')],900,'json')]
-    if args.sha:commands.append(('legacy-acceptance',[py,'scripts/acceptance.py','--sha',sha,'--output',str(output/'legacy')],1200,'legacy'))
+    commands=[(suite.suite_id, list(suite.command), suite.timeout_seconds, suite.kind)
+              for suite in diagnosis(py, output, sha=sha if args.sha else None)]
     results=[{'suite_id':name,'status':'not_run','command':cmd,'timeout_seconds':limit} for name,cmd,limit,kind in commands]
     result={'source_sha':sha,'source_files':before,'independent':bool(args.sha),'python':sys.version,'interpreter':py,'platform':platform.platform(),'expected_unittest_cases':expected,'rules_version':'1.0','results':results,'status':'incomplete','real_upstream_tested':False,'execution_budget_seconds':3600,'cleanup_grace_seconds':65}
     def save():

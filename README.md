@@ -100,7 +100,9 @@ python -m relay_lab inspect-config --config configs/relay-lab/example.yaml
 
 ## 部署
 
-设置 `PLATFORM_USERNAME` 和至少 12 位的 `PLATFORM_PASSWORD` 后，才可使用 `--host 0.0.0.0`。所有页面、接口统一鉴权，修改接口检查跨站请求。公网接入使用 HTTPS 反向代理；代理应保留 Host，关闭准入流响应缓冲，并允许非流式长请求（最多 5 × 600 秒）。
+开发、独立验收、OrbStack 容器测试、Tag 发布和清理流程见[开发、验收、发布与清理流程](docs/development-release-flow.md)。
+
+设置 `PLATFORM_USERNAME` 和至少 12 位的 `PLATFORM_PASSWORD` 后，才可使用 `--host 0.0.0.0`。所有页面、接口统一鉴权，修改接口检查跨站请求。`/internal/v1/*` 例外：只接受 Monitor 专用签名（`EVAL_MONITOR_KEY_ID`/`EVAL_MONITOR_SECRET`），不接受工作台登录，未配置时关闭，见 [Monitor 内部接口](docs/monitor-internal-api.md)。公网接入使用 HTTPS 反向代理；代理应保留 Host，关闭准入流响应缓冲，并允许非流式长请求（最多 5 × 600 秒）。
 
 Docker 默认以稳定模式运行，容器端口只发布到本机 8090，`./data` 挂载到容器中，因此重建镜像不会丢失渠道、密钥、计划和历史。稳定性报告默认保留 5 天，可通过 `STABILITY_RETENTION_DAYS` 调整；容器 JSON 日志按 10 MiB、最多 5 个文件轮转。先从 `.env.example` 创建 `.env` 并设置至少 12 位的密码，然后使用：
 

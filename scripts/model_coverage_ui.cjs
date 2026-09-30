@@ -108,11 +108,19 @@ const upstream = http.createServer(async (req,res) => {
     if (width === 1440) assert.ok(await page.locator('.record').first().evaluate(el=>el.getBoundingClientRect().width > 1000), 'Expanded models use the whole content width');
     await page.screenshot({path:path.join(data,`coverage-${width}.png`),fullPage:true});
   }
+  page.once('dialog',dialog=>dialog.accept('newapi-channel-ui-1'));
+  await page.getByRole('button',{name:'绑定 NewAPI 渠道身份',exact:true}).first().click();
+  await page.getByRole('button',{name:'NewAPI 渠道身份：newapi-channel-ui-1',exact:true}).first().waitFor();
+  assert.equal((await request('/api/model-coverage/monitor/identities')).identities[String(channel.id)],'newapi-channel-ui-1');
+  await page.locator('#monitor-refresh').click();
+  await page.waitForFunction(()=>document.getElementById('monitor-status').textContent==='已刷新');
+  assert.match(await page.locator('#monitor-list').innerText(),/尚无复测任务/);
+  assert.equal((await fetch(base+'/internal/v1/probe-results')).status,503,'Monitor API stays closed without its credential');
   const before=listCalls; await page.locator('#refresh').click();
   await page.locator('.coverage-table tbody tr').first().waitFor(); assert.equal(listCalls,before);
   assert.deepEqual(errors,[]);
   assert.ok(!fs.readFileSync(path.join(data,'stability','stability.db')).includes(Buffer.from('synthetic-browser-key')));
-  console.log(JSON.stringify({status:'passed',mockRequests:listCalls+testCalls,artifacts:data,checks:18}));
+  console.log(JSON.stringify({status:'passed',mockRequests:listCalls+testCalls,artifacts:data,checks:22}));
 })().catch(error=>{console.error(error); if(logs)console.error(logs);process.exitCode=1;}).finally(async()=>{
   if(browser) await browser.close();
   if(app && app.exitCode===null && app.signalCode===null) app.kill('SIGTERM');

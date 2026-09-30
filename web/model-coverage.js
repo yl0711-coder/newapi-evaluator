@@ -2,13 +2,48 @@ window.ModelCoverage = (() => {
   const $ = id => document.getElementById(id), node = (...args) => Workbench.node(...args);
   const api = (path = '', body, method = 'POST') => Workbench.api('/api/model-coverage' + path, body ? {method, body:JSON.stringify(body)} : {});
   const selected = new Map(), expanded = new Set();
-  let data = {channels:[], models:[], schedules:[], rules:{}}, channels = [], fetchIds = [], mapping, enrollmentItems = [], verificationItems = [], preview;
+  let data = {channels:[], models:[], schedules:[], rules:{}, production_coverage:{sources:[]}}, channels = [], fetchIds = [], mapping, enrollmentItems = [], verificationItems = [], preview;
   let previewGeneration = 0, refreshing = false, protocolAvailable = false;
   const availability = {listed:'已列出', not_listed:'未列出', unknown:'尚未获取', fetch_failed:'获取失败', connection_changed:'连接已变更'};
   const enrollment = {scheduled:'已加入计划', missing:'未接入', unscheduled:'待排期', paused:'已暂停'};
   const health = {stable:'稳定', observing:'可用，待观察', unstable:'不稳定', untested:'未测试', stale:'结果已过期', connection_changed:'连接变更，待重测'};
   const speed = {normal:'速度正常', slow:'速度缓慢', collecting:'速度基线采样中', disabled:'未评估速度', unknown:'速度数据不足', unavailable:'速度数据不足'};
   const time = value => value ? new Date(value * 1000).toLocaleString() : '尚无记录';
+  function renderProduction() {
+    const root = $('production-list'); root.replaceChildren();
+    const sources = data.production_coverage?.sources || [];
+    if (!sources.length) { root.textContent = '尚未导入快照。'; return; }
+    for (const source of sources) {
+      const counts = source.items.reduce((acc, item) => { acc[item.coverage] = (acc[item.coverage] || 0) + 1; return acc; }, {});
+      root.append(node('p', `${source.source} · 版本 ${source.version} · ${time(source.generated_at)} · ${Object.entries(counts).map(([k,v]) => `${k} ${v}`).join('、')}`));
+    }
+  }
+  async function renderWorkflow() {
+    const root = $('workflow-list'); root.replaceChildren();
+    const result = await api('/workflow/tasks');
+    if (!result.tasks.length) { root.textContent = '尚无任务。'; return; }
+    for (const task of result.tasks) {
+      const row = node('p', `#${task.id} · ${task.task_type} · ${task.state} · ${task.idempotency_key}`);
+      if (['queued','running'].includes(task.state)) {
+        const cancel = action('取消', async () => { await api(`/workflow/tasks/${task.id}/cancel`, {}, 'POST'); await renderWorkflow(); });
+        row.append(' ', cancel);
+      }
+      root.append(row);
+    }
+  }
+  const jobState = {queued:'排队中', running:'执行中', completed:'已完成', partially_completed:'部分完成', cancelled:'已取消', expired:'已过期', rejected:'已拒绝', failed:'失败'};
+  let identities = {};
+  async function renderMonitor() {
+    const root = $('monitor-list'); root.replaceChildren();
+    const [bound, result] = await Promise.all([api('/monitor/identities'), api('/monitor/jobs')]);
+    identities = bound.identities;
+    if (!result.jobs.length) { root.textContent = '尚无复测任务。'; return; }
+    for (const job of result.jobs) {
+      const done = job.progress.completed_requests || 0, planned = job.progress.planned_requests;
+      const text = `${job.job_type} · ${job.channel_identity} · ${job.model} · ${job.protocol} · ${jobState[job.status] || job.status}${job.status_reason ? `（${job.status_reason}）` : ''} · 请求 ${done}/${planned} · 截止 ${new Date(job.expires_at).toLocaleString()}`;
+      root.append(node('p', text));
+    }
+  }
   const key = item => `${item.channel_id}:${item.id}`;
   const selections = items => items.map(item => ({channel_id:item.channel_id, model_id:item.id}));
   const channelData = id => data.channels.find(c => c.channel_id === id);
@@ -77,6 +112,9 @@ window.ModelCoverage = (() => {
     onChange() {}, onRefresh:async () => {},
     async load() {
       data = await api();
+      renderProduction();
+      await renderWorkflow();
+      await renderMonitor();
       const valid = new Map(data.channels.flatMap(c => c.models).map(item => [key(item), item]));
       for (const [id] of selected) { if (valid.has(id)) selected.set(id, valid.get(id)); else selected.delete(id); }
       counts();
@@ -93,6 +131,15 @@ window.ModelCoverage = (() => {
       details.append(node('summary', `常用模型 ${info.models.length} 个 · 上游已列出 ${listed} · 已排期 ${scheduled}`));
       details.open = expanded.has(channel.id) || Boolean($('coverage-filter').value || $('model-search').value.trim());
       details.addEventListener('toggle', () => details.open ? expanded.add(channel.id) : expanded.delete(channel.id));
+      const identity = identities[String(channel.id)];
+      const bind = action(identity ? `NewAPI 渠道身份：${identity}` : '绑定 NewAPI 渠道身份', async () => {
+        const value = window.prompt('填写 Monitor 使用的 NewAPI 渠道身份（例如 newapi-channel-96）；留空解除绑定', identity || '');
+        if (value === null) return;
+        await api(`/monitor/identities/${channel.id}`, {channel_identity:value.trim() || null}, 'PUT');
+        $('coverage-message').textContent = value.trim() ? '已绑定 NewAPI 渠道身份' : '已解除 NewAPI 渠道身份绑定';
+        await reload();
+      });
+      details.append(bind);
       const fetch = action('获取模型', () => openFetch([channel.id])); fetch.disabled = !channel.enabled;
       details.append(fetch, node('p', `上次成功获取：${time(info.discovery?.succeeded_at)}${info.discovery?.error ? ' · 最近获取失败或未完成，保留上次清单' : ''}`, 'hint'));
       const scroll = node('div', '', 'coverage-scroll'), table = node('table', '', 'coverage-table');
@@ -197,6 +244,28 @@ window.ModelCoverage = (() => {
       const result = await api('/verify', {items:selections(verificationItems), confirm_live:true});
       $('coverage-message').textContent = `验证任务 #${result.run_id} 已排队，实测状态会自动更新。`;
     });
+  });
+  $('production-import').addEventListener('click', async () => {
+    const text = window.prompt('粘贴脱敏生产覆盖 JSON（source/version/generated_at/cursor/items）');
+    if (!text) return;
+    try {
+      const payload = JSON.parse(text);
+      const result = await api('/production/import', payload);
+      $('production-status').textContent = result.added ? `已导入批次，哈希 ${result.content_hash.slice(0, 12)}…` : '该批次已存在，未重复写入';
+      await reload();
+    } catch (error) { $('production-status').textContent = error.message; }
+  });
+  $('monitor-refresh').addEventListener('click', () => renderMonitor().then(() => $('monitor-status').textContent = '已刷新').catch(error => $('monitor-status').textContent = error.message));
+  $('workflow-refresh').addEventListener('click', () => renderWorkflow().catch(error => $('coverage-message').textContent = error.message));
+  $('workflow-create').addEventListener('click', async () => {
+    const taskType = window.prompt('任务类型，例如 production-coverage-reconcile');
+    if (!taskType) return;
+    const key = window.prompt('幂等键（同键同负载不会重复创建）');
+    if (!key) return;
+    try {
+      await api('/workflow/tasks', {task_type:taskType, payload:{source:'local-ui'}, idempotency_key:key, budget_seconds:900});
+      await renderWorkflow();
+    } catch (error) { $('coverage-message').textContent = error.message; }
   });
   setInterval(async () => {
     if (document.hidden || document.querySelector('dialog[open]') || refreshing) return;

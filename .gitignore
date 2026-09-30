@@ -8,3 +8,7 @@ backups/
 __pycache__/
 *.pyc
 .DS_Store
+
+# AOCI agent host integration (machine-bound; do not commit)
+.codex/config.toml
+.codex/config.toml.backup.*
