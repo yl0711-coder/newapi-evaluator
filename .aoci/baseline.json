@@ -1,7 +1,7 @@
 {
   "version": 1,
   "created_at": "2026-09-27T06:21:51Z",
-  "updated_at": "2026-09-30T03:10:07Z",
+  "updated_at": "2026-10-08T02:22:59Z",
   "files": {
     ".dockerignore": {
       "role": "index",
@@ -53,15 +53,15 @@
     },
     "README.md": {
       "role": "index",
-      "sha256": "d9a2578d3984f9ae6715441a13bb882642b799853e4bb3c8c9d3e4512f64f62b",
-      "size": 15881,
-      "normalized_sha256": "d9a2578d3984f9ae6715441a13bb882642b799853e4bb3c8c9d3e4512f64f62b"
+      "sha256": "5fe7c5cda344f33e117bd5bb9ec658f7f93a4b7853f6b5317193569fdf150b4f",
+      "size": 17112,
+      "normalized_sha256": "5fe7c5cda344f33e117bd5bb9ec658f7f93a4b7853f6b5317193569fdf150b4f"
     },
     "aoci.code.txt": {
       "role": "index",
-      "sha256": "b699884e16ce0ee82de4c6b152d10e4d581c8a4885c80e687a4d1d9af63c0d94",
-      "size": 85227,
-      "normalized_sha256": "b699884e16ce0ee82de4c6b152d10e4d581c8a4885c80e687a4d1d9af63c0d94"
+      "sha256": "5c6598192575352812ae2da0a65507a4b5b0f9a6513bda10793feb2a5320a650",
+      "size": 84888,
+      "normalized_sha256": "5c6598192575352812ae2da0a65507a4b5b0f9a6513bda10793feb2a5320a650"
     },
     "aoci.meta.txt": {
       "role": "index",
@@ -221,9 +221,9 @@
     },
     "docs/eval-workflow-control-plane.md": {
       "role": "index",
-      "sha256": "37ba8592f868c667646baecfdfa18ea9207ed32c2d93c8532d216f73d5180ebf",
-      "size": 2352,
-      "normalized_sha256": "37ba8592f868c667646baecfdfa18ea9207ed32c2d93c8532d216f73d5180ebf"
+      "sha256": "51fa5835f05759a4c2e0ff39ff8dd4f0bed107ce91de9969696be370d4e1f574",
+      "size": 3548,
+      "normalized_sha256": "51fa5835f05759a4c2e0ff39ff8dd4f0bed107ce91de9969696be370d4e1f574"
     },
     "docs/frontend-style.md": {
       "role": "index",
@@ -533,9 +533,9 @@
     },
     "features/model_coverage/production.py": {
       "role": "index",
-      "sha256": "64b9f339695f84d684f83a86be224ac5241d30ff5bfe0691935e7ff01e945bcd",
-      "size": 6959,
-      "normalized_sha256": "64b9f339695f84d684f83a86be224ac5241d30ff5bfe0691935e7ff01e945bcd"
+      "sha256": "7376a7f308bd36bc274a1508dc728356ad74b2b651f140706035b1198aaeb162",
+      "size": 6978,
+      "normalized_sha256": "7376a7f308bd36bc274a1508dc728356ad74b2b651f140706035b1198aaeb162"
     },
     "features/model_coverage/runner.py": {
       "role": "index",
@@ -551,9 +551,9 @@
     },
     "features/model_coverage/workflow.py": {
       "role": "index",
-      "sha256": "d271b320aad669cbbc7eb2fb08bc2d43b3f6c68adabf1c1128794092e610be32",
-      "size": 9308,
-      "normalized_sha256": "d271b320aad669cbbc7eb2fb08bc2d43b3f6c68adabf1c1128794092e610be32"
+      "sha256": "ba652ee4fe2e5900745fe876abae64bfd50ece73a1a0db3563a29f0f46b3ce99",
+      "size": 10566,
+      "normalized_sha256": "ba652ee4fe2e5900745fe876abae64bfd50ece73a1a0db3563a29f0f46b3ce99"
     },
     "features/protocol_admission/__init__.py": {
       "role": "index",
@@ -1222,9 +1222,9 @@
     },
     "tests/test_model_coverage.py": {
       "role": "observe",
-      "sha256": "edfbca6d9ac342def148538cc0cb4f74bbc07f779a2b8e7ae0a06055a7a86dec",
-      "size": 37811,
-      "normalized_sha256": "edfbca6d9ac342def148538cc0cb4f74bbc07f779a2b8e7ae0a06055a7a86dec"
+      "sha256": "4a6afb036cc9d350903b9ff754030553181d9ffbffac1557cd887117402d1718",
+      "size": 50930,
+      "normalized_sha256": "4a6afb036cc9d350903b9ff754030553181d9ffbffac1557cd887117402d1718"
     },
     "tests/test_modes_recovery.py": {
       "role": "observe",

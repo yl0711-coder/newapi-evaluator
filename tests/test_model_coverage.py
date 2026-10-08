@@ -7,6 +7,8 @@ import tempfile
 import time
 import unittest
 from concurrent.futures import ThreadPoolExecutor
+from threading import Barrier, Event
+from contextlib import contextmanager
 from unittest.mock import patch
 
 import httpx
@@ -565,5 +567,211 @@ class CoverageTests(unittest.IsolatedAsyncioTestCase):
         failed=run_one(queue,lambda payload,cancel: (_ for _ in ()).throw(RuntimeError('synthetic failure')))
         self.assertEqual((failed['state'],failed['error']),('failed','synthetic failure'))
 
+
+    async def test_production_latest_uses_generation_time_and_keeps_history(self):
+        from features.model_coverage.production import ProductionCoverage
+        production = ProductionCoverage(self.registry)
+        now = time.time()
+        def snapshot(source, version, generated_at):
+            return {'source': source, 'version': version, 'generated_at': generated_at,
+                    'items': [{'channel_identity': 'synthetic-channel', 'model': 'synthetic-model',
+                               'protocol': 'openai', 'production_status': 'online'}]}
+        newer = snapshot('synthetic-z', 'new', now)
+        older = snapshot('synthetic-z', 'old', now - 49 * 3600)
+        for payload in [newer, snapshot('synthetic-a', 'a-new', now - 10), older,
+                        snapshot('synthetic-a', 'a-old', now - 20)]:
+            self.assertTrue(production.import_snapshot(payload)['added'])
+        sources = production.overview([])['sources']
+        self.assertEqual([(x['source'], x['version']) for x in sources],
+                         [('synthetic-a', 'a-new'), ('synthetic-z', 'new')])
+        self.assertNotEqual(sources[1]['items'][0]['coverage'], 'stale')
+        with self.registry.connect() as conn:
+            before = [tuple(row) for row in conn.execute('SELECT * FROM production_coverage_snapshots ORDER BY id')]
+        self.assertFalse(production.import_snapshot(older)['added'])
+        for changed in [{**newer, 'generated_at': now - 1},
+                        {**newer, 'items': [{**newer['items'][0], 'production_status': 'offline'}]}]:
+            with self.assertRaises(Conflict): production.import_snapshot(changed)
+        with self.registry.connect() as conn:
+            self.assertEqual(before, [tuple(row) for row in conn.execute('SELECT * FROM production_coverage_snapshots ORDER BY id')])
+        production.import_snapshot(snapshot('synthetic-z', 'same-time', now))
+        self.assertEqual(production.overview([])['sources'][1]['version'], 'same-time')
+        self.assertFalse(production.import_snapshot(newer)['added'])
+        self.assertEqual(production.overview([])['sources'][1]['version'], 'same-time')
+
+    def workflow_rows(self):
+        with self.registry.connect() as conn:
+            return [tuple(row) for row in conn.execute('SELECT * FROM eval_workflow_tasks ORDER BY id')]
+
+    async def test_workflow_finish_rejects_sensitive_values_without_any_write(self):
+        from features.model_coverage.workflow import WorkflowQueue
+        queue = WorkflowQueue(self.registry)
+        unsafe = [{'nested': [{field: 'synthetic-value'}]} for field in
+                  ['api_key', 'api key', 'token', 'cookie', 'password', 'secret', 'auth', 'authorization']]
+        unsafe += [{'message': text} for text in ['Bearer synthetic-value', 'Basic synthetic-value', 'sk-synthetic-value',
+                   'https://synthetic.invalid/path?value=synthetic', 'api_key = synthetic-value',
+                   'API key: synthetic-value', 'password: synthetic-value', 'secret=synthetic-value',
+                   'auth: synthetic-value', 'token = synthetic-value', 'cookie : synthetic-value']]
+        unsafe += [{'nested': ({'token': 'synthetic-value'},)},
+                   {'https://synthetic.invalid': 'safe'}, {'sk-synthetic-value': 'safe'},
+                   {'safe': ('Bearer synthetic-value',)}]
+        for index, result in enumerate(unsafe):
+            with self.subTest(case=index):
+                task = queue.enqueue('synthetic', {}, idempotency_key=f'result-{index}')
+                queue.claim_next()
+                before = self.workflow_rows()
+                with self.assertRaises(RegistryError) as raised: queue.finish(task['id'], 'succeeded', result)
+                self.assertNotIn('synthetic-value', str(raised.exception))
+                self.assertEqual(before, self.workflow_rows())
+                self.assertEqual(queue.finish(task['id'], 'succeeded', {'ok': True})['state'], 'succeeded')
+        for index, error in enumerate(['Bearer synthetic-value', 'api_key=synthetic-value',
+                                       'x' * 301 + ' password = synthetic-value',
+                                       'API key: synthetic-value', 'token = synthetic-value',
+                                       'secret: synthetic-value', 'Authorization: synthetic-value',
+                                       'Authorization: Basic synthetic-value', 'Basic synthetic-value',
+                                       'x' * 5000 + ' https://synthetic.invalid/path']):
+            with self.subTest(error_case=index):
+                task = queue.enqueue('synthetic', {}, idempotency_key=f'error-{index}')
+                queue.claim_next()
+                before = self.workflow_rows()
+                with self.assertRaises(RegistryError): queue.finish(task['id'], 'failed', {'ok': False}, error)
+                self.assertEqual(before, self.workflow_rows())
+                done = queue.finish(task['id'], 'failed', {'ok': False}, 'synthetic failure')
+                self.assertEqual((done['state'], done['error']), ('failed', 'synthetic failure'))
+
+    async def test_workflow_finish_preserves_safe_json_and_limits(self):
+        from features.model_coverage.workflow import WorkflowQueue
+        queue = WorkflowQueue(self.registry)
+        task = queue.enqueue('synthetic', {}, idempotency_key='safe-json')
+        queue.claim_next()
+        result = {'metrics': [None, True, 1, 1.5, 'safe'], 'nested': {'status': 'ok'},
+                  'tuple': (1, 'safe'), 12: 'number-key'}
+        done = queue.finish(task['id'], 'succeeded', result, 'x' * 5000)
+        self.assertEqual(done['result'], json.loads(json.dumps(result)))
+        self.assertEqual(done['error'], 'x' * 300)
+        for index, result in enumerate([{'blob': 'x' * 4097}, {'nodes': [0] * 1001},
+                                       {'value': float('nan')}, {'value': object()},
+                                       {'size': ['x' * 4096] * 17}]):
+            task = queue.enqueue('synthetic', {}, idempotency_key=f'invalid-{index}')
+            queue.claim_next()
+            before = self.workflow_rows()
+            with self.assertRaises(RegistryError): queue.finish(task['id'], 'succeeded', result)
+            self.assertEqual(before, self.workflow_rows())
+            queue.finish(task['id'], 'failed', {}, 'invalid result')
+        task = queue.enqueue('synthetic', {}, idempotency_key='too-deep')
+        queue.claim_next()
+        result = {}
+        for _ in range(10): result = {'nested': result}
+        with self.assertRaises(RegistryError): queue.finish(task['id'], 'succeeded', result)
+
+    async def test_workflow_cancel_discards_unsafe_finish_and_terminals_stay_immutable(self):
+        from features.model_coverage.workflow import WorkflowQueue
+        queue = WorkflowQueue(self.registry)
+        task = queue.enqueue('synthetic', {}, idempotency_key='cancel-unsafe')
+        before = self.workflow_rows()
+        with self.assertRaises(Conflict): queue.finish(task['id'], 'succeeded', {'token': 'synthetic'})
+        self.assertEqual(before, self.workflow_rows())
+        queue.claim_next()
+        queue.cancel(task['id'])
+        done = queue.finish(task['id'], 'failed', {'token': 'synthetic'}, 'Bearer synthetic')
+        self.assertEqual((done['state'], done['result'], done['error']),
+                         ('cancelled', {'reason': 'cancel_requested'}, ''))
+        before = self.workflow_rows()
+        self.assertEqual(queue.cancel(task['id']), done)
+        with self.assertRaises(Conflict): queue.finish(task['id'], 'succeeded', {'ok': True})
+        self.assertEqual(before, self.workflow_rows())
+
+    async def test_workflow_finish_competition_has_one_terminal_winner(self):
+        from features.model_coverage.workflow import WorkflowQueue
+        queue = WorkflowQueue(self.registry)
+        task = queue.enqueue('synthetic', {}, idempotency_key='finish-race')
+        queue.claim_next()
+        barrier = Barrier(2)
+        def finish(state):
+            barrier.wait(timeout=5)
+            try: return queue.finish(task['id'], state, {'winner': state})
+            except Conflict: return None
+        with ThreadPoolExecutor(max_workers=2) as pool:
+            results = list(pool.map(finish, ['succeeded', 'failed']))
+        winners = [result for result in results if result is not None]
+        self.assertEqual(len(winners), 1)
+        self.assertEqual(queue.list()[0], winners[0])
+        self.assertEqual(queue.cancel(task['id']), winners[0])
+
+    async def test_workflow_finish_waits_for_committing_cancel_request(self):
+        from features.model_coverage.workflow import WorkflowQueue
+        queue = WorkflowQueue(self.registry)
+        task = queue.enqueue('synthetic', {}, idempotency_key='cancel-commit-race')
+        queue.claim_next()
+        connected, committed = Event(), Event()
+        original_connect = self.registry.connect
+        @contextmanager
+        def observed_connect():
+            with original_connect() as conn:
+                class ObservedConnection:
+                    def execute(self, sql, *args):
+                        if sql == 'BEGIN IMMEDIATE':
+                            connected.set()
+                        cursor = conn.execute(sql, *args)
+                        if sql.startswith('SELECT * FROM eval_workflow_tasks WHERE id='):
+                            # Consume the old row before allowing the cancel commit on the baseline.
+                            rows = cursor.fetchall()
+                            connected.set()
+                            if not committed.wait(timeout=5):
+                                raise AssertionError('cancel transaction did not commit')
+                            class Rows:
+                                def fetchone(self): return rows[0] if rows else None
+                            return Rows()
+                        return cursor
+                yield ObservedConnection()
+        with ThreadPoolExecutor(max_workers=1) as pool:
+            with original_connect() as conn:
+                conn.execute('BEGIN IMMEDIATE')
+                conn.execute('UPDATE eval_workflow_tasks SET cancel_requested=1 WHERE id=?', (task['id'],))
+                with patch.object(self.registry, 'connect', observed_connect):
+                    future = pool.submit(queue.finish, task['id'], 'succeeded', {'ok': True})
+                    self.assertTrue(connected.wait(timeout=5))
+            committed.set()
+            result = future.result(timeout=5)
+        self.assertEqual((result['state'], result['result']), ('cancelled', {'reason': 'cancel_requested'}))
+
+    async def test_workflow_runner_sensitive_failure_is_rejected_without_persistence(self):
+        from features.model_coverage.runner import run_one
+        from features.model_coverage.workflow import WorkflowQueue
+        queue = WorkflowQueue(self.registry)
+        task = queue.enqueue('synthetic', {}, idempotency_key='runner-sensitive')
+        before_finish = []
+        def unsafe_handler(payload, cancel):
+            before_finish.extend(self.workflow_rows())
+            raise RuntimeError('Bearer synthetic-value')
+        with self.assertRaises(RegistryError):
+            run_one(queue, unsafe_handler)
+        self.assertEqual(before_finish, self.workflow_rows())
+        row = queue.list()[0]
+        self.assertEqual((row['state'], row['result'], row['error']), ('running', {}, ''))
+        self.assertEqual(queue.finish(task['id'], 'failed', {}, 'synthetic failure')['state'], 'failed')
+        task2 = queue.enqueue('synthetic', {}, idempotency_key='runner-unsafe-result')
+        done = run_one(queue, lambda payload, cancel: {'api_key': 'synthetic-value'})
+        self.assertEqual((done['id'], done['state'], done['result']), (task2['id'], 'failed', {}))
+        self.assertNotIn('synthetic-value', json.dumps(queue.list()))
+
+    async def test_workflow_finish_rejects_sensitive_json_key_collisions(self):
+        from features.model_coverage.workflow import WorkflowQueue
+        queue = WorkflowQueue(self.registry)
+        collisions = [
+            {1: 'Bearer synthetic-value', '1': 'safe'},
+            {1: {'api_key': 'synthetic-value'}, '1': 'safe'},
+            {'nested': {1: 'Bearer synthetic-value', '1': 'safe'}},
+            {'nested': {1: {'token': 'synthetic-value'}, '1': {}}},
+            {True: 'password=synthetic-value', 'true': 'safe'},
+            {None: 'Basic synthetic-value', 'null': 'safe'},
+        ]
+        for index, result in enumerate(collisions):
+            with self.subTest(case=index):
+                task = queue.enqueue('synthetic', {}, idempotency_key=f'key-collision-{index}')
+                queue.claim_next()
+                before = self.workflow_rows()
+                with self.assertRaises(RegistryError): queue.finish(task['id'], 'succeeded', result)
+                self.assertEqual(before, self.workflow_rows())
+                self.assertEqual(queue.finish(task['id'], 'succeeded', {'ok': True})['state'], 'succeeded')
 
 if __name__=='__main__': unittest.main()

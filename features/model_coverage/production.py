@@ -102,7 +102,7 @@ class ProductionCoverage:
 
     def overview(self, eval_rows: list[dict[str, Any]]) -> dict[str, Any]:
         with self.registry.connect() as conn:
-            rows = [dict(row) for row in conn.execute("SELECT * FROM production_coverage_snapshots ORDER BY source, id DESC")]
+            rows = [dict(row) for row in conn.execute("SELECT * FROM production_coverage_snapshots ORDER BY source, generated_at DESC, id DESC")]
         latest = {}
         for row in rows:
             latest.setdefault(row["source"], row)

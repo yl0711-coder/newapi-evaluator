@@ -13,6 +13,11 @@ _KEY = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._:/@+\-]{0,159}$")
 MAX_PAYLOAD_BYTES = 64 * 1024
 MAX_DEPTH = 8
 MAX_NODES = 1000
+_SENSITIVE_FIELD = re.compile(r"(?i)(api[\s_-]?key|token|cookie|password|secret|authorization|^auth$)")
+_SENSITIVE_TEXT = re.compile(
+    r"(?i)(sk-|(?:bearer|basic)\s|https?://|(?:api[\s_-]?key|token|cookie|password|secret|auth(?:orization)?)"
+    r"[\"']?\s*[:=])"
+)
 
 
 class WorkflowQueue:
@@ -51,14 +56,14 @@ class WorkflowQueue:
             for key, child in value.items():
                 if len(str(key)) > 80:
                     raise RegistryError("任务负载字段名过长")
-                if re.search(r"(?i)(api[_-]?key|token|cookie|password|secret|authorization)", str(key)):
+                if _SENSITIVE_FIELD.search(str(key)) or _SENSITIVE_TEXT.search(str(key)):
                     raise RegistryError("任务负载不能包含凭据字段")
                 WorkflowQueue._safe_payload(child, depth=depth + 1, nodes=nodes)
-        elif isinstance(value, list):
+        elif isinstance(value, (list, tuple)):
             for child in value:
                 WorkflowQueue._safe_payload(child, depth=depth + 1, nodes=nodes)
         elif isinstance(value, str):
-            if len(value) > 4096 or re.search(r"(?i)(sk-|bearer\s|https?://|cookie=|token=)", value):
+            if len(value) > 4096 or _SENSITIVE_TEXT.search(value):
                 raise RegistryError("任务负载不能包含凭据、敏感地址或过长文本")
 
     def enqueue(self, task_type: str, payload: dict[str, Any], *, idempotency_key: str, budget_seconds: int = 900) -> dict[str, Any]:
@@ -95,6 +100,7 @@ class WorkflowQueue:
 
     def cancel(self, task_id: int) -> dict[str, Any]:
         with self.registry.connect() as conn:
+            conn.execute("BEGIN IMMEDIATE")
             row = conn.execute("SELECT * FROM eval_workflow_tasks WHERE id=?", (task_id,)).fetchone()
             if row is None:
                 raise KeyError("任务不存在")
@@ -123,6 +129,7 @@ class WorkflowQueue:
         if state not in {"succeeded", "failed", "cancelled"}:
             raise RegistryError("任务终态无效")
         with self.registry.connect() as conn:
+            conn.execute("BEGIN IMMEDIATE")
             current = conn.execute("SELECT * FROM eval_workflow_tasks WHERE id=?", (task_id,)).fetchone()
             if current is None:
                 raise KeyError("任务不存在")
@@ -130,9 +137,23 @@ class WorkflowQueue:
                 raise Conflict("任务尚未领取或已经进入终态")
             if current["cancel_requested"]:
                 state, result, error = "cancelled", {"reason": "cancel_requested"}, ""
+            if result is not None and not isinstance(result, dict):
+                raise RegistryError("任务结果必须是 JSON 对象")
+            # JSON key normalization can collapse distinct keys; validate every original value first.
+            self._safe_payload(result)
+            try:
+                result_json = json.dumps(result if result is not None else {}, ensure_ascii=False, allow_nan=False)
+                persisted_result = json.loads(result_json)
+            except (TypeError, ValueError, OverflowError, RecursionError):
+                raise RegistryError("任务结果必须是有效 JSON") from None
+            self._safe_payload(persisted_result)
+            if len(result_json.encode()) > MAX_PAYLOAD_BYTES:
+                raise RegistryError("任务结果超过 64 KiB 限制")
+            if not isinstance(error, str) or _SENSITIVE_TEXT.search(error):
+                raise RegistryError("任务错误不能包含凭据或敏感地址")
             now = time.time()
             conn.execute("UPDATE eval_workflow_tasks SET state=?,result_json=?,error=?,finished_at=?,updated_at=? WHERE id=?",
-                         (state, json.dumps(result or {}, ensure_ascii=False), error[:300], now, now, task_id))
+                         (state, result_json, error[:300], now, now, task_id))
             row = conn.execute("SELECT * FROM eval_workflow_tasks WHERE id=?", (task_id,)).fetchone()
         return self._out(row)
 
