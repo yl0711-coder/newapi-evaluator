@@ -17,7 +17,7 @@ def inspect(directory, channel_id=None, protocol="openai", model="diagnosis-mock
         path = Path(directory).expanduser().resolve() / "channels.db"
         if not path.is_file():
             raise ValueError("公共渠道库不存在")
-        conn = sqlite3.connect(path.as_uri() + "?mode=ro")
+        conn = sqlite3.connect(path.as_uri() + "?mode=ro", uri=True)
         try:
             conn.execute("PRAGMA query_only=ON")
             row = conn.execute("SELECT id,version,base_url,enabled FROM channels WHERE id=?", (channel_id,)).fetchone()

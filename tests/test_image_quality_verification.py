@@ -9,7 +9,8 @@ import tempfile
 import time
 import unittest
 
-from scripts.verify_image_quality import ROOT, aggregate_status, classify, run_process
+from scripts.verify_image_quality import (ROOT, aggregate_status, classify, run_process,
+                                          test_artifact_root, validate_new_output)
 
 
 def framework_output(counts=(2, 3, 4), statuses=("OK", "OK", "OK")):
@@ -66,6 +67,14 @@ class VerificationTests(unittest.TestCase):
         self.assertEqual(aggregate_status([{"status": "passed"}], source_changed=True), "incomplete")
         self.assertEqual(aggregate_status([{"status": "passed"}, {"status": "not_run"}]), "incomplete")
 
+    def test_known_failure_survives_missing_or_signal_exit_evidence(self):
+        output = framework_output(statuses=("FAILED (failures=1)", "OK", "OK"))
+        for code in (None, -15, -9):
+            with self.subTest(code=code):
+                result = classify(code, output, "unittest")
+                self.assertEqual((result["status"], result["failure_count"]), ("failed", 1))
+                self.assertEqual(aggregate_status([result, {"status": "not_run"}]), "failed")
+
     def test_bounded_subprocess_keeps_error_exit_and_output(self):
         code, output, timed_out = run_process([sys.executable, "-c", "import sys; print('synthetic failure',file=sys.stderr); sys.exit(3)"], os.environ, 3)
         self.assertEqual(code, 3)
@@ -92,6 +101,7 @@ pending.replace(path)
 time.sleep(30)
 '''
             env = {**os.environ, "PYTHONPATH": str(ROOT), "SYNTHETIC_CHILD_LEDGER": str(ledger)}
+            env["EVAL_TEST_ARTIFACT_ROOT"] = str(root)
             if full_entrypoint:
                 node = root / "node"
                 node.write_text("#!" + sys.executable + "\n" + child)
@@ -192,6 +202,37 @@ if args[0] == "port":
 
     def test_missing_docker_is_incomplete_without_resource_cleanup(self):
         self.run_container_mock("unavailable")
+
+    def test_device_mapping_is_explicit_and_does_not_relax_isolation(self):
+        with tempfile.TemporaryDirectory() as folder:
+            root = Path(folder)
+            self.assertEqual(test_artifact_root(root, repository=ROOT, environment={}, platform="darwin"), root.resolve())
+            self.assertEqual(test_artifact_root(environment={"EVAL_TEST_ARTIFACT_ROOT": str(root)}, platform="linux"), root.resolve())
+            with self.assertRaises(ValueError):
+                test_artifact_root(repository=ROOT, environment={}, platform="linux")
+            with self.assertRaises(ValueError):
+                test_artifact_root(ROOT, environment={})
+            with self.assertRaises(ValueError):
+                test_artifact_root("relative", environment={})
+            with self.assertRaises(ValueError):
+                test_artifact_root(root / "missing", environment={})
+            self.assertEqual(validate_new_output(root / "new", root), root / "new")
+            for rejected in (root, ROOT / "evidence", root.parent / "outside"):
+                with self.subTest(rejected=rejected), self.assertRaises(ValueError):
+                    validate_new_output(rejected, root)
+            (root / "existing").mkdir()
+            with self.assertRaises(ValueError):
+                validate_new_output(root / "existing", root)
+            (root / "broken-link").symlink_to(root / "absent-target")
+            with self.assertRaises(ValueError):
+                validate_new_output(root / "broken-link", root)
+            self.assertFalse((root / "absent-target").exists())
+
+    def test_macos_default_still_uses_the_unified_directory(self):
+        from unittest.mock import patch
+        with patch.object(Path, "is_dir", return_value=True):
+            self.assertEqual(test_artifact_root(environment={}, platform="darwin"),
+                             Path("/Users/lmurder/Desktop/api中转站/中转站极限测试数据").resolve())
 
 
 class UIBootstrapTests(unittest.TestCase):

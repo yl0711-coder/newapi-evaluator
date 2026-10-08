@@ -5,12 +5,47 @@ from pathlib import Path
 import sys
 import tempfile
 import unittest
+import contextlib
+import io
+import subprocess
+from unittest.mock import patch
+from scripts.test_manifest import SuiteSpec
 
 spec=importlib.util.spec_from_file_location('diagnosis_verifier',Path(__file__).resolve().parents[1]/'scripts'/'verify_diagnosis.py')
 verifier=importlib.util.module_from_spec(spec);spec.loader.exec_module(verifier)
 
 
 class VerificationTests(unittest.TestCase):
+    def test_outer_verifier_forwards_external_artifact_root_to_collection_and_suites(self):
+        with tempfile.TemporaryDirectory() as folder:
+            root = Path(folder)
+            observed = []
+
+            def collect(command, **kwargs):
+                observed.append(kwargs["env"])
+                self.assertEqual(kwargs["env"]["EVAL_TEST_ARTIFACT_ROOT"], str(root))
+                self.assertNotIn("EVAL_MONITOR_SECRET", kwargs["env"])
+                return subprocess.CompletedProcess(command, 0, "1\n", "")
+
+            def execute(command, logpath, env, timeout):
+                observed.append(env)
+                self.assertEqual(env["EVAL_TEST_ARTIFACT_ROOT"], str(root))
+                self.assertNotIn("EVAL_MONITOR_SECRET", env)
+                logpath.write_text("UI contract tests passed: synthetic\n")
+                return 0
+
+            suites = [SuiteSpec("workbench-web", ("synthetic-node", "scripts/test_web.js"), 1, "web")]
+            with patch.dict(os.environ, {"EVAL_TEST_ARTIFACT_ROOT": str(root), "EVAL_MONITOR_SECRET": "synthetic-secret"}), \
+                    patch.object(sys, "argv", ["verify", "--output", str(root / "report")]), \
+                    patch.object(verifier, "snapshot", return_value={}), \
+                    patch.object(verifier.platform, "platform", return_value="synthetic-platform"), \
+                    patch.object(verifier.subprocess, "check_output", return_value="a" * 40 + "\n"), \
+                    patch.object(verifier.subprocess, "run", collect), \
+                    patch.object(verifier, "diagnosis", return_value=suites), \
+                    patch.object(verifier, "execute", execute), contextlib.redirect_stdout(io.StringIO()):
+                self.assertEqual(verifier.main(), 0)
+            self.assertEqual(len(observed), 2)
+
     def test_framework_failure_missing_collection_and_skip_cannot_pass(self):
         output='Ran 34 tests in .1s\nRan 41 tests in .1s\nRan 12 tests in .1s\n'+'  OK   fixture\n'*22+'All engine and integration checks passed.'
         self.assertEqual(verifier.classify(0,output,'python',12)['status'],'passed')

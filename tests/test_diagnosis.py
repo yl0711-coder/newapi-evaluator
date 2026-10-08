@@ -1,5 +1,6 @@
 import asyncio
 import json
+import sqlite3
 from pathlib import Path
 import tempfile
 import unittest
@@ -52,6 +53,42 @@ class SchemaTests(unittest.TestCase):
         self.assertEqual(e.outcome(),'output_limit')
         e=StreamEvidence('responses');e.nonstream({'status':'completed','output':[{'type':'message','content':[{'type':'refusal','refusal':'no'}]}]})
         self.assertEqual(e.outcome(),'refused')
+
+
+class ReadOnlyInspectTests(unittest.TestCase):
+    def test_existing_database_special_paths_remains_byte_identical(self):
+        for name in ("中文", "with space", "特殊 #? path"):
+            with self.subTest(name=name), tempfile.TemporaryDirectory() as folder:
+                directory = Path(folder) / name
+                directory.mkdir()
+                path = directory / "channels.db"
+                with sqlite3.connect(path) as connection:
+                    connection.execute("CREATE TABLE channels(id INTEGER,version INTEGER,base_url TEXT,enabled INTEGER)")
+                    connection.execute("INSERT INTO channels VALUES(1,7,'https://fixture.invalid/v1',1)")
+                before = path.read_bytes()
+                path.chmod(0o444)
+                connect = sqlite3.connect
+                with patch("features.diagnosis.inspect.sqlite3.connect", wraps=connect) as readonly:
+                    value = inspect(directory, 1)
+                self.assertTrue(readonly.call_args.kwargs["uri"])
+                self.assertIn("mode=ro", readonly.call_args.args[0])
+                self.assertEqual(value["version"], 7)
+                self.assertEqual(path.read_bytes(), before)
+                self.assertEqual(value["requests_sent"], 0)
+
+    def test_missing_database_and_missing_table_never_create_or_modify(self):
+        with tempfile.TemporaryDirectory() as folder:
+            directory = Path(folder)
+            with self.assertRaises(ValueError):
+                inspect(directory, 1)
+            path = directory / "channels.db"
+            self.assertFalse(path.exists())
+            with sqlite3.connect(path) as connection:
+                connection.execute("CREATE TABLE unrelated(id INTEGER)")
+            before = path.read_bytes()
+            with self.assertRaises(sqlite3.OperationalError):
+                inspect(directory, 1)
+            self.assertEqual(path.read_bytes(), before)
 
 
 class DiagnosisTests(unittest.IsolatedAsyncioTestCase):

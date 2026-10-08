@@ -6,11 +6,11 @@ let metadata, channels = [], preview = null, active = null, poll = null, generat
 const available = new Set(), selected = new Set();
 
 function connection() {
-  return {channel_id:Number($('channel').value) || null, all_channels:$('channel').value === '__all__', base_url:$('base-url').value.trim()};
+  return {channel_id:Number($('channel').value) || null, base_url:$('base-url').value.trim()};
 }
 function plan() {
   if (!selected.size) throw new Error('请选择至少一个模型。');
-  return {...connection(), models:[...selected].map(model => ({model}))};
+  return {...connection(), all_channels:$('channel').value === '__all__', models:[...selected].map(model => ({model}))};
 }
 function invalidate() {
   preview = null; $('start').disabled = true; $('preview-list').replaceChildren();

@@ -6,6 +6,27 @@ const http = require('node:http');
 const net = require('node:net');
 const {spawn} = require('node:child_process');
 const {chromium} = require(process.env.PLAYWRIGHT_MODULE || 'playwright');
+async function waitForVerificationRun(base, runId, {timeout=20000, interval=100}={}) {
+  assert.ok(Number.isInteger(runId) && runId>0, 'Verification response identifies a run');
+  const deadline=performance.now()+timeout;
+  while (performance.now()<deadline) {
+    const response=await fetch(`${base}/stability/api/runs/${runId}`, {
+      signal:AbortSignal.timeout(Math.max(1,Math.ceil(deadline-performance.now())))});
+    assert.equal(response.status,200,'Verification run query succeeds');
+    const run=await response.json();
+    assert.equal(run.id,runId,'Verification query returns the submitted run');
+    if (run.status==='completed') {
+      assert.ok(Array.isArray(run.results),'Completed verification contains results');
+      assert.equal(run.results.length,6,'Completed verification has all six probe results');
+      assert.ok(run.results.every(result=>result.run_id===runId && result.model==='gpt-6-astra'),
+        'Verification results belong to the submitted run and model');
+      return run;
+    }
+    assert.ok(['pending','running'].includes(run.status),`Verification run ended as ${run.status}`);
+    await new Promise(resolve=>setTimeout(resolve,Math.max(0,Math.min(interval,deadline-performance.now()))));
+  }
+  assert.fail('Verification run timed out');
+}
 const root = path.resolve(__dirname,'..');
 const data = fs.mkdtempSync(path.join(os.tmpdir(),'model-coverage-ui-'));
 let browser, app, appExit, logs='', listCalls=0, testCalls=0, failList=false;
@@ -63,12 +84,18 @@ const upstream = http.createServer(async (req,res) => {
   await page.waitForFunction(()=>document.querySelector('[data-model="gpt-5.5"]').textContent.includes('已列出'));
   assert.equal(listCalls,1);
   const gpt=page.locator('[data-model="gpt-6-astra"]');
+  const verificationResponse=page.waitForResponse(response=>response.url()===base+'/api/model-coverage/verify'
+    && response.request().method()==='POST');
   await gpt.getByRole('button',{name:'验证',exact:true}).click(); await page.locator('#verify-confirm').check(); await page.locator('#verify-submit').click();
+  const verification=await verificationResponse;
+  assert.equal(verification.status(),202,'Single verification is accepted');
+  const {run_id:runId}=await verification.json();
   await page.locator('#verify-dialog').waitFor({state:'hidden'});
-  await page.waitForFunction(async()=>{
-    const data=await (await fetch('/api/model-coverage')).json();
-    return data.channels[0].models.find(m=>m.model==='gpt-6-astra').measurement.status==='observing';
-  },{},{timeout:20000});
+  await waitForVerificationRun(base,runId);
+  const coverage=await request('/api/model-coverage');
+  const measured=coverage.channels.find(item=>item.channel_id===channel.id).models.find(model=>model.model==='gpt-6-astra').measurement;
+  assert.equal(measured.status,'observing');
+  assert.equal(measured.report_id,runId,'Observing measurement refers to the completed verification');
   assert.equal(testCalls,6);
   await page.locator('#refresh').click();
   await page.waitForFunction(()=>document.querySelector('[data-model="gpt-6-astra"]').textContent.includes('可用，待观察'));

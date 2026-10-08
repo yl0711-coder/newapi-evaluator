@@ -22,6 +22,7 @@ import time
 
 
 ROOT = Path(__file__).resolve().parents[1]
+sys.path.insert(0, str(ROOT))
 OVERALL_BUDGET_SECONDS = 840
 TERMINATION_GRACE_SECONDS = 5
 
@@ -160,12 +161,18 @@ def run_group(command: tuple[str, ...], env: dict[str, str], timeout: float) -> 
 
 def _unittest_counts(output: str) -> tuple[list[int], int, int]:
     counts = [int(value) for value in re.findall(r"(?m)^Ran (\d+) tests?", output)]
-    skipped = sum(int(value) for value in re.findall(r"skipped=(\d+)", output))
-    failures = sum(
-        int(value)
-        for value in re.findall(r"(?:failures|errors|unexpected successes)=(\d+)", output)
-    )
-    failures += len(re.findall(r"^FAILED\b|^ERROR:\s|^FAIL:\s", output, re.MULTILINE))
+    summaries = list(re.finditer(r"(?m)^(?:OK|FAILED)\b[^\n]*", output))
+    skipped = failures = previous = 0
+    for match in summaries:
+        line = match.group()
+        skipped += sum(int(value) for value in re.findall(r"skipped=(\d+)", line))
+        values = re.findall(r"(?:failures|errors|unexpected successes)=(\d+)", line)
+        if values:
+            failures += sum(map(int, values))
+        elif line.startswith("FAILED"):
+            failures += max(1, len(re.findall(r"(?m)^(?:ERROR|FAIL):\s", output[previous:match.start()])))
+        previous = match.end()
+    failures += len(re.findall(r"(?m)^(?:ERROR|FAIL):\s", output[previous:]))
     return counts, skipped, failures
 
 
@@ -179,8 +186,26 @@ def classify_group(spec: GroupSpec, returncode: int | None, output: str,
     else:
         executed = sum(counts)
 
-    if reason in {"cancelled", "overall_budget"} or timed_out or returncode is None:
+    dependency_missing = bool(re.search(r"ModuleNotFoundError|ImportError|Required executable unavailable", output))
+    failed_cases = set(re.findall(r"(?m)^(?:FAIL|ERROR):\s+(.+?\([^)]*\))", output))
+    summaries = list(re.finditer(r"(?m)^(?:OK|FAILED)\b[^\n]*", output))
+    count_exact = (not failures or bool(summaries) and all(
+        not match.group().startswith("FAILED") or bool(re.search(
+            r"(?:failures|errors|unexpected successes)=\d+", match.group())) for match in summaries)
+        and not re.search(r"(?m)^(?:ERROR|FAIL):\s", output[summaries[-1].end():]))
+    if returncode not in (None, 0) and not summaries:
+        count_exact = False
+
+    known_failure = failures > 0 and (not dependency_missing or bool(re.search(
+        r"(?m)^FAIL:\s|^  FAIL\s|failures=[1-9]", output)))
+    if known_failure:
+        status = "failed"
+    elif reason in {"cancelled", "overall_budget", "timeout"} or timed_out or returncode is None:
         status = "incomplete"
+    elif dependency_missing or returncode == 127 or returncode < 0:
+        status = "failed" if re.search(r"(?m)^FAIL:\s|failures=[1-9]", output) else "incomplete"
+    elif failures:
+        status = "failed"
     elif returncode != 0:
         status = "failed"
     elif spec.kind == "manual":
@@ -193,20 +218,34 @@ def classify_group(spec: GroupSpec, returncode: int | None, output: str,
             and failures == 0
             and bool(re.search(r"(?m)^OK(?:\s|$)", output))
         ) else "incomplete"
-    return {
+    result = {
         "status": status,
         "executed": executed,
         "failed": failures,
         "skipped": skipped,
         "framework_runs": counts,
+        "failed_test_count": len(failed_cases) if failed_cases else None if failures or returncode not in (None, 0) else 0,
+        "failure_count_kind": "framework_failure_and_error_records",
+        "failure_count_exact": count_exact,
+        "timed_out": timed_out or reason == "timeout",
     }
+    if reason:
+        result["reason"] = reason
+    elif timed_out:
+        result["reason"] = "timeout"
+    elif returncode is None:
+        result["reason"] = "exit_unknown"
+    elif returncode < 0:
+        result["reason"] = "child_signal"
+    return result
 
 
-def _safe_environment(output: Path) -> dict[str, str]:
+def _safe_environment(output: Path, artifact_root: Path | None = None) -> dict[str, str]:
     allowed = {
         "PATH", "LANG", "LC_ALL", "SYSTEMROOT", "SSL_CERT_FILE", "SSL_CERT_DIR",
         "PLAYWRIGHT_MODULE", "PLAYWRIGHT_CHANNEL",
         "PLAYWRIGHT_BROWSERS_PATH", "UI_TEST_PORT",
+        "EVAL_TEST_ARTIFACT_ROOT",
     }
     env = {key: value for key, value in os.environ.items() if key in allowed}
     for directory in ("tmp", "home", "platform", "relay-lab"):
@@ -220,6 +259,8 @@ def _safe_environment(output: Path) -> dict[str, str]:
         RELAY_LAB_DATA_DIR=str(output / "relay-lab"),
         PYTHON_EXECUTABLE=sys.executable,
     )
+    if artifact_root is not None:
+        env["EVAL_TEST_ARTIFACT_ROOT"] = str(artifact_root)
     return env
 
 
@@ -229,16 +270,14 @@ def _write_summary(path: Path, summary: dict[str, object]) -> None:
     temporary.replace(path)
 
 
-def _new_output(path: Path | None) -> tuple[Path, tempfile.TemporaryDirectory[str] | None]:
+def _new_output(path: Path | None, artifact_root: Path | None = None) -> tuple[Path, tempfile.TemporaryDirectory[str] | None]:
+    from scripts.verify_image_quality import test_artifact_root, validate_new_output
+    artifact_root = artifact_root or test_artifact_root(repository=ROOT)
     if path is not None:
-        output = path.expanduser().resolve()
-        if output == ROOT or ROOT in output.parents:
-            raise ValueError("--output must be external to the repository")
-        if output.exists():
-            raise ValueError("--output must be a new directory")
+        output = validate_new_output(path, artifact_root, repository=ROOT)
         output.mkdir(parents=True)
         return output, None
-    holder = tempfile.TemporaryDirectory(prefix="workbench-all-")
+    holder = tempfile.TemporaryDirectory(prefix="workbench-all-", dir=artifact_root)
     output = Path(holder.name) / "evidence"
     output.mkdir()
     return output, holder
@@ -247,9 +286,12 @@ def _new_output(path: Path | None) -> tuple[Path, tempfile.TemporaryDirectory[st
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--output", type=Path, help="new external evidence directory")
+    parser.add_argument("--artifact-root", type=Path, help="explicit external test-artifact root")
     args = parser.parse_args(argv)
     try:
-        output, temporary = _new_output(args.output)
+        from scripts.verify_image_quality import test_artifact_root
+        artifact_root = test_artifact_root(args.artifact_root, repository=ROOT)
+        output, temporary = _new_output(args.output, artifact_root)
     except ValueError as exc:
         parser.error(str(exc))
     groups = registered_groups(sys.executable)
@@ -293,7 +335,7 @@ def main(argv: list[str] | None = None) -> int:
                 active_row = row
                 print(f"=== {spec.group_id} ===", flush=True)
                 try:
-                    env = _safe_environment(output / "runtime" / spec.group_id)
+                    env = _safe_environment(output / "runtime" / spec.group_id, artifact_root)
                     code, output_text, timed_out = run_group(spec.command, env, min(spec.timeout_seconds, remaining))
                     reason = "timeout" if timed_out else None
                 except VerificationCancelled as exc:

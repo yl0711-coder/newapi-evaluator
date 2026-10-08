@@ -14,6 +14,7 @@ class SuiteSpec:
     command: tuple[str, ...]
     timeout_seconds: int
     kind: str
+    expected_modules: tuple[str, ...] = ()
 
     def as_dict(self) -> dict:
         return {
@@ -21,6 +22,7 @@ class SuiteSpec:
             "command": list(self.command),
             "timeout_seconds": self.timeout_seconds,
             "kind": self.kind,
+            "expected_modules": list(self.expected_modules),
         }
 
 
@@ -106,6 +108,24 @@ def image_quality(python: str, output: Path) -> list[SuiteSpec]:
         SuiteSpec("build-container", _python(python, "scripts/image_quality_container.py", "--output", _output_arg(output, "container")), 900, "container"),
     ]
     return _validate(suites)
+
+
+def workflow_control_plane(python: str, output: Path) -> list[SuiteSpec]:
+    """Register the control-plane contracts, execution regressions and UI checks."""
+    return _validate([
+        SuiteSpec("workflow-python", _python(python, "scripts/verify_workflow_control_plane.py", "--python-tests"),
+                  900, "workflow-unittest", (
+                      "tests.test_model_coverage", "tests.test_monitor_internal",
+                      "tests.test_monitor_execution", "tests.test_monitor_transport",
+                      "tests.test_workflow_control_plane", "tests.test_test_all",
+                      "tests.test_test_manifest",
+                  )),
+        SuiteSpec("workflow-syntax", _python(python, "scripts/diagnosis_syntax.py"), 300, "syntax"),
+        SuiteSpec("workflow-security", _python(python, "scripts/repo_security_scan.py", "."), 120, "security"),
+        SuiteSpec("workflow-web", ("node", "scripts/test_web.js"), 120, "web"),
+        SuiteSpec("workflow-browser", ("node", "scripts/model_coverage_ui.cjs"), 300, "browser"),
+        SuiteSpec("monitor-control-browser", ("node", "scripts/monitor_control_plane_ui.cjs"), 300, "browser"),
+    ])
 
 
 def manifest_dict(suites: Iterable[SuiteSpec], *, plan: str, rules_version: str = "1.0") -> dict:

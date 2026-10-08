@@ -10,6 +10,24 @@ import httpx
 from httpcore._backends.auto import AutoBackend
 
 
+class SocketEgressDenied(httpcore.ConnectError):
+    """Policy refusal remains distinct from HTTP client connection failures."""
+
+
+def socket_egress_denied(exc):
+    pending = [exc]
+    seen = set()
+    while pending:
+        current = pending.pop()
+        if id(current) in seen:
+            continue
+        seen.add(id(current))
+        if isinstance(current, SocketEgressDenied):
+            return True
+        pending.extend(link for link in (current.__cause__, current.__context__) if link is not None)
+    return False
+
+
 def permitted(host, address):
     ip = ipaddress.ip_address(address)
     if ip.is_global and not ip.is_multicast and not ip.is_reserved and not ip.is_unspecified:
@@ -40,7 +58,7 @@ class PublicNetwork(AutoBackend):
             raise httpcore.ConnectError("上游域名无法解析") from exc
         addresses = list(dict.fromkeys(item[4][0] for item in resolved))
         if not addresses or any(not permitted(host, value) for value in addresses):
-            raise httpcore.ConnectError("内网或保留地址不在部署者设置的访问白名单中")
+            raise SocketEgressDenied("内网或保留地址不在部署者设置的访问白名单中")
         last_error = None
         for address in addresses:
             remaining = None if timeout is None else max(0, timeout - (time.monotonic() - started))

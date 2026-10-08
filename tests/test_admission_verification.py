@@ -13,9 +13,51 @@ import unittest
 from unittest.mock import patch
 
 from scripts import verify_admission as verifier
+from scripts.test_manifest import SuiteSpec
 
 
 class AdmissionVerificationTests(unittest.TestCase):
+    def test_external_artifact_root_is_forwarded_without_business_configuration(self):
+        with tempfile.TemporaryDirectory() as folder:
+            root = Path(folder)
+            observed = []
+
+            def fake_run(command, env, timeout):
+                observed.append(env)
+                self.assertEqual(env["EVAL_TEST_ARTIFACT_ROOT"], str(root))
+                self.assertNotIn("EVAL_MONITOR_SECRET", env)
+                if "-c" in command:
+                    return 0, "1\n", False
+                return 0, "UI contract tests passed: synthetic\n", False
+
+            suites = [SuiteSpec("workbench-web", ("synthetic-node", "scripts/test_web.js"), 1, "web")]
+            with patch.dict(os.environ, {"EVAL_TEST_ARTIFACT_ROOT": str(root), "EVAL_MONITOR_SECRET": "synthetic-secret"}), \
+                    patch.object(sys, "argv", ["verify", "--output", str(root / "report")]), \
+                    patch.object(verifier, "snapshot", return_value={}), \
+                    patch.object(verifier, "admission", return_value=suites), \
+                    patch.object(verifier, "run_process", fake_run), contextlib.redirect_stdout(io.StringIO()):
+                self.assertEqual(verifier.main(), 0)
+            self.assertEqual(len(observed), 2)
+
+    def test_timeout_after_known_failure_stays_failed(self):
+        with tempfile.TemporaryDirectory() as folder:
+            root = Path(folder)
+
+            def fake_run(command, env, timeout):
+                if "-c" in command:
+                    return 0, "1\n", False
+                return -15, "Ran 1 test in 0.1s\nFAILED (failures=1)\n", True
+
+            suites = [SuiteSpec("workbench-python", (sys.executable, "scripts/test_all.py"), 1, "python")]
+            with patch.object(sys, "argv", ["verify", "--output", str(root / "report")]), \
+                    patch.object(verifier, "admission", return_value=suites), \
+                    patch.object(verifier, "run_process", fake_run), contextlib.redirect_stdout(io.StringIO()):
+                self.assertEqual(verifier.main(), 1)
+            value = json.loads((root / "report/verification.json").read_text())
+            self.assertEqual(value["status"], "failed")
+            self.assertEqual(value["results"][0]["status"], "failed")
+            self.assertEqual(value["results"][0]["reason"], "timeout")
+
     def test_failed_group_survives_later_passed_groups(self):
         def fake_run(command, env, timeout):
             if '-c' in command:

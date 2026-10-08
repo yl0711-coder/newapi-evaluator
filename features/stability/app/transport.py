@@ -3,11 +3,16 @@ from __future__ import annotations
 import json
 import math
 import re
+import socket
+import unicodedata
 from time import perf_counter
-from typing import Any
+from typing import Any, Awaitable, Callable
 from urllib.parse import urlsplit, urlunsplit
 
 import httpx
+
+from shared.network import SocketEgressDenied, socket_egress_denied
+from shared.redaction import scrub as redact_secrets
 
 from .egress import EgressDenied, validate_url
 from .security import scrub
@@ -78,20 +83,51 @@ def _text(value: Any) -> str:
     return ""
 
 
+def _token_count(value: Any) -> int | None:
+    return value if type(value) is int and value >= 0 else None
+
+
+def _reported_usage(data: dict[str, Any]) -> tuple[int | None, int | None]:
+    message = data.get("message") if isinstance(data.get("message"), dict) else {}
+    input_tokens = output_tokens = None
+    for usage in (data.get("usage"), message.get("usage")):
+        if not isinstance(usage, dict):
+            continue
+        for names, is_input in ((("prompt_tokens", "input_tokens"), True),
+                                (("completion_tokens", "output_tokens"), False)):
+            value = next((count for name in names if (count := _token_count(usage.get(name))) is not None), None)
+            if is_input and input_tokens is None:
+                input_tokens = value
+            elif not is_input and output_tokens is None:
+                output_tokens = value
+    return input_tokens, output_tokens
+
+
 def _usage(payload_value: dict[str, Any]) -> int | None:
-    usage = payload_value.get("usage") or {}
-    for name in ("completion_tokens", "output_tokens"):
-        value = usage.get(name)
-        if isinstance(value, int) and value >= 0:
-            return value
-    return None
+    return _reported_usage(payload_value)[1]
 
 
 def _usage_complete(data: dict[str, Any]) -> bool:
-    usage = data.get("usage") or {}
-    has_input = any(isinstance(usage.get(name), int) for name in ("prompt_tokens", "input_tokens"))
-    has_output = any(isinstance(usage.get(name), int) for name in ("completion_tokens", "output_tokens"))
-    return has_input and has_output
+    input_tokens, output_tokens = _reported_usage(data)
+    return input_tokens is not None and output_tokens is not None
+
+
+def _safe_model(value: Any, secret: str) -> str:
+    if value is None or value == "":
+        return ""
+    if not isinstance(value, str):
+        return "unrecognized"
+    if (len(value) > 160 or redact_secrets(value, (secret,)) != value
+            or any(unicodedata.category(char).startswith("C") for char in value)
+            or re.search(r"(?i)\b(?:https?|wss?|ftp)://|\bwww\.", value)
+            or re.search(r"(?i)\b(?:bearer|basic)\s+|\b(?:api[_-]?key|access[_-]?token|authorization|cookie|password|secret)\b\s*[:=]"
+                         r"|(?:^|[^a-z0-9])sk[-_][a-z0-9_-]{8,}|\beyJ[a-z0-9_-]+\.[a-z0-9_-]+\.[a-z0-9_-]+", value)):
+        return "unrecognized"
+    return value
+
+
+def _egress_status(exc: EgressDenied) -> str:
+    return "network_error" if isinstance(exc.__cause__, socket.gaierror) else "egress_denied"
 
 
 def _nonstream_content(data: dict[str, Any]) -> tuple[str, str, int | None, str, bool]:
@@ -125,7 +161,7 @@ def _matches(probe: dict[str, Any], content: str) -> bool:
 
 
 def _model_mismatch(requested: str, actual: str) -> bool:
-    if not requested or not actual:
+    if not requested or not actual or actual == "unrecognized":
         return False
     requested_key = requested.casefold()
     actual_key = actual.casefold()
@@ -144,10 +180,11 @@ def _http_status(status_code: int) -> str:
     return "http_error"
 
 
-async def run_probe(client: httpx.AsyncClient, channel: dict[str, Any], probe: dict[str, Any]) -> dict[str, Any]:
+async def run_probe(client: httpx.AsyncClient, channel: dict[str, Any], probe: dict[str, Any], *,
+                    before_send: Callable[[], Awaitable[None]] | None = None) -> dict[str, Any]:
     if channel["protocol"] == "responses":
         from .responses import run_probe as run_responses_probe
-        return await run_responses_probe(client, channel, probe)
+        return await run_responses_probe(client, channel, probe, before_send=before_send)
     url = endpoint_url(channel["base_url"], channel["protocol"])
     started = perf_counter()
     base = {
@@ -155,12 +192,15 @@ async def run_probe(client: httpx.AsyncClient, channel: dict[str, Any], probe: d
         "status": "error", "latency_ms": None, "ttft_ms": None,
         "tokens_per_second": None, "output_tokens": None, "finish_reason": "", "error": "",
         "actual_model": "", "usage_complete": False, "model_mismatch": False,
+        "input_tokens_reported": None, "output_tokens_reported": None, "output_tokens_estimated": None,
         "stream_break": False,
     }
     chunks = 0
     try:
         await validate_url(url)
         if not probe["stream"]:
+            if before_send is not None:
+                await before_send()
             response = await client.post(url, headers=headers(channel), json=payload(channel, probe))
             elapsed = round((perf_counter() - started) * 1000)
             if response.status_code >= 400:
@@ -173,10 +213,14 @@ async def run_probe(client: httpx.AsyncClient, channel: dict[str, Any], probe: d
             if not isinstance(data, dict):
                 return {**base, "status": "invalid_response", "latency_ms": elapsed, "error": "响应 JSON 不是对象"}
             content, finish_reason, output_tokens, actual_model, usage_complete = _nonstream_content(data)
+            actual_model = _safe_model(actual_model, channel["api_key"])
+            input_tokens, output_tokens = _reported_usage(data)
             evidence = {
                 "actual_model": actual_model,
                 "usage_complete": usage_complete,
                 "model_mismatch": _model_mismatch(channel["model"], actual_model),
+                "input_tokens_reported": input_tokens,
+                "output_tokens_reported": output_tokens,
             }
             if not content.strip():
                 return {**base, "status": "empty_response", "latency_ms": elapsed,
@@ -191,12 +235,13 @@ async def run_probe(client: httpx.AsyncClient, channel: dict[str, Any], probe: d
         first_output_at: float | None = None
         last_output_at: float | None = None
         output_tokens: int | None = None
+        input_tokens: int | None = None
         finish_reason = ""
         chars = 0
         done = False
         actual_model = ""
-        has_input_usage = False
-        has_output_usage = False
+        if before_send is not None:
+            await before_send()
         async with client.stream("POST", url, headers=headers(channel), json=payload(channel, probe)) as response:
             if response.status_code >= 400:
                 await response.aread()
@@ -218,16 +263,13 @@ async def run_probe(client: httpx.AsyncClient, channel: dict[str, Any], probe: d
                     continue
                 if not isinstance(data, dict):
                     continue
-                output_tokens = _usage(data) or output_tokens
+                reported_input, reported_output = _reported_usage(data)
+                if reported_input is not None:
+                    input_tokens = reported_input
+                if reported_output is not None:
+                    output_tokens = reported_output
                 message = data.get("message") or {}
-                usage = data.get("usage") or message.get("usage") or {}
-                has_input_usage = has_input_usage or any(
-                    isinstance(usage.get(name), int) for name in ("prompt_tokens", "input_tokens")
-                )
-                has_output_usage = has_output_usage or any(
-                    isinstance(usage.get(name), int) for name in ("completion_tokens", "output_tokens")
-                )
-                actual_model = str(data.get("model") or message.get("model") or actual_model)
+                actual_model = _safe_model(data.get("model") or message.get("model") or actual_model, channel["api_key"])
                 content = ""
                 choices = data.get("choices") or []
                 if choices:
@@ -253,34 +295,41 @@ async def run_probe(client: httpx.AsyncClient, channel: dict[str, Any], probe: d
         ended = perf_counter()
         latency_ms = round((ended - started) * 1000)
         ttft_ms = round((first_output_at - started) * 1000) if first_output_at else None
-        usage_complete = has_input_usage and has_output_usage
+        usage_complete = input_tokens is not None and output_tokens is not None
+        evidence = {"actual_model": actual_model, "usage_complete": usage_complete,
+                    "model_mismatch": _model_mismatch(channel["model"], actual_model),
+                    "input_tokens_reported": input_tokens, "output_tokens_reported": output_tokens}
         if chars == 0:
             return {**base, "status": "empty_response", "latency_ms": latency_ms,
                     "ttft_ms": ttft_ms, "finish_reason": finish_reason, "output_tokens": output_tokens,
-                    "actual_model": actual_model, "usage_complete": usage_complete,
-                    "model_mismatch": _model_mismatch(channel["model"], actual_model)}
+                    **evidence}
         if not done:
             return {**base, "status": "stream_break", "latency_ms": latency_ms,
                     "ttft_ms": ttft_ms, "finish_reason": finish_reason, "output_tokens": output_tokens,
-                    "actual_model": actual_model, "usage_complete": usage_complete,
-                    "model_mismatch": _model_mismatch(channel["model"], actual_model),
+                    **evidence,
                     "stream_break": True,
                     "error": "连接结束但未收到完成标记"}
         generation = (last_output_at - first_output_at) if first_output_at and last_output_at else 0
-        measured_tokens = output_tokens or max(round(chars / 4), 1)
+        estimated_tokens = max(round(chars / 4), 1) if output_tokens is None else None
+        measured_tokens = output_tokens if output_tokens is not None else estimated_tokens
         speed = round(measured_tokens / generation, 1) if chunks > 1 and generation > 0 else None
         return {**base, "ok": True, "status": "completed", "latency_ms": latency_ms,
                 "ttft_ms": ttft_ms, "finish_reason": finish_reason,
                 "output_tokens": measured_tokens, "tokens_per_second": speed,
-                "actual_model": actual_model, "usage_complete": usage_complete,
-                "model_mismatch": _model_mismatch(channel["model"], actual_model)}
-    except EgressDenied as exc:
+                "output_tokens_estimated": estimated_tokens, **evidence}
+    except SocketEgressDenied:
         return {**base, "status": "egress_denied", "latency_ms": round((perf_counter() - started) * 1000),
-                "error": scrub(str(exc), channel.get("api_key", ""))}
+                "error": "上游地址不在允许范围"}
+    except EgressDenied as exc:
+        return {**base, "status": _egress_status(exc), "latency_ms": round((perf_counter() - started) * 1000),
+                "error": "上游域名无法解析" if _egress_status(exc) == "network_error" else "上游地址不在允许范围"}
     except httpx.TimeoutException:
         return {**base, "status": "timeout", "latency_ms": round((perf_counter() - started) * 1000),
                 "stream_break": bool(probe["stream"]), "error": "请求超时"}
     except httpx.HTTPError as exc:
+        if socket_egress_denied(exc):
+            return {**base, "status": "egress_denied", "latency_ms": round((perf_counter() - started) * 1000),
+                    "error": "上游地址不在允许范围"}
         return {**base, "status": "network_error", "latency_ms": round((perf_counter() - started) * 1000),
                 "stream_break": bool(probe["stream"]),
                 "error": scrub(type(exc).__name__, channel.get("api_key", ""))}

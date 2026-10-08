@@ -18,13 +18,49 @@ sys.path.insert(0, str(ROOT))
 from scripts.test_manifest import image_quality
 
 
+def test_artifact_root(configured=None, *, repository=ROOT, environment=None, platform=None):
+    """Resolve the prepared device mapping without falling back to source/data."""
+    environment = os.environ if environment is None else environment
+    platform = sys.platform if platform is None else platform
+    value = configured or environment.get("EVAL_TEST_ARTIFACT_ROOT")
+    if value is None:
+        if platform != "darwin":
+            raise ValueError("set EVAL_TEST_ARTIFACT_ROOT or --artifact-root to a prepared external directory")
+        value = "/Users/lmurder/Desktop/api中转站/中转站极限测试数据"
+    path = Path(value).expanduser()
+    if not path.is_absolute():
+        raise ValueError("test-artifact root must be absolute")
+    path = path.resolve()
+    repository = Path(repository).resolve()
+    if path == repository or repository in path.parents or path in repository.parents:
+        raise ValueError("test-artifact root must be isolated from the repository")
+    if not path.is_dir():
+        raise ValueError("test-artifact root must be a prepared directory")
+    return path
+
+
+def validate_new_output(value, artifact_root, *, repository=ROOT):
+    requested = Path(value).expanduser()
+    if requested.is_symlink():
+        raise ValueError("--output must be a new directory")
+    output = requested.resolve()
+    repository = Path(repository).resolve()
+    artifact_root = Path(artifact_root).resolve()
+    if output == repository or repository in output.parents:
+        raise ValueError("--output must be external to the repository")
+    if artifact_root not in output.parents:
+        raise ValueError("--output must be a new directory inside the configured test-artifact root")
+    if output.exists():
+        raise ValueError("--output must be a new directory")
+    return output
+
+
 def classify(returncode, output, kind):
+    from scripts.test_all import _unittest_counts
     summaries = re.findall(r"(?m)^Ran (\d+) tests?[^\n]*\n\s*\n?(OK[^\n]*|FAILED[^\n]*)", output)
-    counts = [int(value) for value in re.findall(r"(?m)^Ran (\d+) tests?", output)]
+    counts, skipped, failures = _unittest_counts(output)
     manual_checks = len(re.findall(r"(?m)^  OK\s", output)) if kind == "unittest" else 0
     count = sum(counts) + manual_checks if kind == "unittest" else 0
-    skipped = sum(int(value) for value in re.findall(r"skipped=(\d+)", output))
-    failures = sum(int(value) for value in re.findall(r"(?:failures|errors|unexpected successes)=(\d+)", output))
     failures += len(re.findall(r"(?m)^  FAIL\s", output))
     if re.search(r"(?m)^FAILED\b", output):
         failures = max(1, failures)
@@ -217,6 +253,7 @@ def source_fingerprint():
 def main():
     parser = argparse.ArgumentParser()
     parser.add_argument("--output", type=Path)
+    parser.add_argument("--artifact-root", type=Path, help="explicit external test-artifact root")
     parser.add_argument("--syntax-only", action="store_true")
     args = parser.parse_args()
     if args.syntax_only:
@@ -224,16 +261,15 @@ def main():
         return 0
     if not args.output:
         parser.error("--output 必须指定全新的仓库外目录")
-    output = args.output.expanduser().resolve()
-    if output == ROOT or ROOT in output.parents or output.exists():
-        parser.error("--output 必须为不存在的仓库外目录")
-    if sys.platform == "darwin":
-        allowed = Path("/Users/lmurder/Desktop/api中转站/中转站极限测试数据").resolve()
-        if allowed not in output.parents:
-            parser.error("本机证据必须位于统一测试数据目录")
+    try:
+        artifact_root = test_artifact_root(args.artifact_root)
+        output = validate_new_output(args.output, artifact_root)
+    except ValueError as exc:
+        parser.error(str(exc))
     output.mkdir(parents=True)
     (output / "tmp").mkdir()
     env = {**os.environ, "PYTHONDONTWRITEBYTECODE": "1", "TMPDIR": str(output / "tmp"),
+           "EVAL_TEST_ARTIFACT_ROOT": str(artifact_root),
            "PLATFORM_DATA_DIR": str(output / "platform"), "RELAY_LAB_DATA_DIR": str(output),
            "PLATFORM_USERNAME": "", "PLATFORM_PASSWORD": "", "PYTHON_EXECUTABLE": sys.executable}
     for key in list(env):

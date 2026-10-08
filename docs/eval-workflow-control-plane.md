@@ -26,6 +26,12 @@ Monitor 风格事件使用 `event:<event_id>` 作为幂等键，并映射为 `mo
 
 按《Monitor—Eval 内部接口契约 v1.0》实现，调用说明、签名算法和权限见 [monitor-internal-api.md](monitor-internal-api.md)。旧的未签名入口 `/api/model-coverage/internal/v1/*` 已删除；本地队列 `eval_workflow_tasks` 不再对 Monitor 暴露。
 
+Monitor 复测使用独立的 `monitor_probe_jobs` / `monitor_probe_attempts` 账本。每个请求在取得共享请求名额、完成 URL 预检后，通过发送许可事务核验有效租约、取消/期限、原连接和身份、关联生产清单及预算，再保存唯一 attempt 与 token 预留。结果、attempt 完成状态和 reported 用量同事务提交；心跳只续有效租约。未知 attempt 保留预算且不自动重发，旧任务缺原始连接快照时拒绝执行。结果和复现事件绑定发送许可时的脱敏目标快照；缺失用量、显式 0 和字符估算分别表示，详见内部接口文档。
+
+生产清单明确停用的渠道仍可发起恢复复测，前提是 Eval 测试连接启用且清单状态未在排队后漂移。发送许可前的 DNS/连接失败和超时在任务终态分别保留 `transport_connect` / `transport_timeout`，未发送步骤不产生 attempt、预算预留、HTTP 请求或伪造结果。旧运行任务恢复只保留可证明的旧请求数与预留，缺失预留和无法追溯的 reported 用量保持 `null`。
+
+本地生产覆盖导入和 Monitor 签名清单是两个入口：前者允许保留乱序旧快照，按来源选择最新；后者拒绝生成时间不晚于当前清单的新版本。不要互换它们的版本规则。
+
 ## 前端入口
 
 公共渠道页 `/channels/` 提供生产覆盖导入、任务创建、刷新和取消，以及 NewAPI 渠道身份绑定和 Monitor 复测任务状态。所有新建后端用户能力都必须同步提供可见操作和状态反馈。
@@ -37,7 +43,12 @@ Monitor 风格事件使用 `event:<event_id>` 作为幂等键，并映射为 `mo
 统一本地门禁：
 
 ```bash
-python scripts/verify_workflow_control_plane.py --output <仓库外新证据目录>
+python -B scripts/inspect_test_plan.py workflow-control-plane
+python -B scripts/verify_workflow_control_plane.py --output <仓库外新证据目录>
 ```
 
-它分别记录模型覆盖测试、语法诊断、安全扫描和 Web 契约测试；该门禁不替代独立浏览器、容器和发布验收。
+清单登记六组：`workflow-python`、`workflow-syntax`、`workflow-security`、`workflow-web`、`workflow-browser` 和 `monitor-control-browser`。后两组分别运行模型覆盖页面与控制面/签名本地调用方的合成浏览器检查；它们不证明真实 Monitor 联调或生产上游命中。逐组入口、依赖、预算和设备证据根配置见 [统一测试清单](test-plan-manifest.md)。
+
+门禁默认整体预算 1800 秒，可显式传入正有限值 `--overall-budget`；每组实际时限取单组上限与剩余整体预算的较小值。它预先注册全部组，并持续保存 `summary.json` 和逐组日志。零收集、注册模块漏项、必需跳过、缺依赖、超时、取消或结果证据缺失均不能得到 `passed`；取消/预算耗尽后未启动的组为 `not_run`。已有确定失败时该组和总体保持 `failed`，同时保留超时、取消或未知退出原因及 `timed_out`，后续成功或执行中断都不覆盖已知失败；只有执行缺口而无已知失败时为 `incomplete`。`complete=true` 仅表示本轮汇总已收尾，质量结论以 `status` 为准。只有总体 `passed` 返回 0，取消返回 130（即使已记录质量失败），其余返回 1。
+
+专项门禁不替代工作台全部适用测试组、干净候选提交的独立审查/验收、容器和发布验收；最终证据仍需绑定实际候选版本。真实 Monitor 联调、真实上游、`end_to_end` 隔离身份及自动发布仍未由本地门禁验证。

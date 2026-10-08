@@ -5,18 +5,21 @@ from time import perf_counter
 
 import httpx
 
+from shared.network import SocketEgressDenied, socket_egress_denied
+
 from features.admission.main import (GPT6_OUTPUT_LIMIT, GPT6_REASONING_EFFORT,
                                      RESPONSES_TOTAL_TIMEOUT_SECONDS, parse_stream_line, stream_events)
 from .egress import EgressDenied, validate_url
-from .security import scrub
-from .transport import _http_status, _matches, _model_mismatch, endpoint_url, headers
+from .transport import (_egress_status, _http_status, _matches, _model_mismatch,
+                        _safe_model, _token_count, endpoint_url, headers)
 
 
-async def run_probe(client, channel, probe):
+async def run_probe(client, channel, probe, *, before_send=None):
     started = perf_counter()
     base = {"probe_id": probe["id"], "probe_name": probe["name"], "ok": False,
             "status": "error", "latency_ms": None, "ttft_ms": None, "tokens_per_second": None,
             "output_tokens": None, "finish_reason": "", "error": "", "actual_model": "",
+            "input_tokens_reported": None, "output_tokens_reported": None, "output_tokens_estimated": None,
             "usage_complete": False, "model_mismatch": False, "stream_break": False}
 
     async def measure():
@@ -36,6 +39,8 @@ async def run_probe(client, channel, probe):
         recovered = False
         input_tokens = output_tokens = reasoning_tokens = None
         actual = finish = ""
+        if before_send is not None:
+            await before_send()
         async with client.stream("POST", url, headers=headers(channel), json=body) as response:
             if response.status_code != 200:
                 return {**base, "status": _http_status(response.status_code), "error": f"HTTP {response.status_code}"}
@@ -67,12 +72,12 @@ async def run_probe(client, channel, probe):
                 upstream_error = upstream_error or event_error == "upstream_error"
                 terminal = event["response_status"] or terminal
                 refused = refused or event["refused"]
-                actual = scrub(event["actual_model"] or actual, channel["api_key"])[:160]
+                actual = _safe_model(event["actual_model"] or actual, channel["api_key"])
                 finish = event["finish_reason"] or finish
                 if event["input_tokens"] is not None:
-                    input_tokens = event["input_tokens"]
+                    input_tokens = _token_count(event["input_tokens"])
                 if event["output_tokens"] is not None:
-                    output_tokens = event["output_tokens"]
+                    output_tokens = _token_count(event["output_tokens"])
                 if event["reasoning_tokens"] is not None:
                     reasoning_tokens = event["reasoning_tokens"]
                 delta = event["content"]
@@ -115,15 +120,21 @@ async def run_probe(client, channel, probe):
                 "ttft_ms": round((first - started) * 1000) if first is not None and probe["stream"] else None,
                 "output_tokens": output_tokens, "tokens_per_second": speed, "finish_reason": finish,
                 "actual_model": actual, "usage_complete": input_tokens is not None and output_tokens is not None,
+                "input_tokens_reported": input_tokens, "output_tokens_reported": output_tokens,
                 "model_mismatch": _model_mismatch(channel["model"], actual), "stream_break": status == "stream_break"}
     try:
         result = await asyncio.wait_for(measure(), RESPONSES_TOTAL_TIMEOUT_SECONDS)
     except (asyncio.TimeoutError, httpx.TimeoutException):
         result = {**base, "status": "timeout", "stream_break": bool(probe["stream"]), "error": "请求超时"}
-    except EgressDenied:
+    except SocketEgressDenied:
         result = {**base, "status": "egress_denied", "error": "上游地址不在允许范围"}
-    except httpx.HTTPError:
-        result = {**base, "status": "network_error", "stream_break": bool(probe["stream"]), "error": "上游连接失败"}
+    except EgressDenied as exc:
+        result = {**base, "status": _egress_status(exc),
+                  "error": "上游域名无法解析" if _egress_status(exc) == "network_error" else "上游地址不在允许范围"}
+    except httpx.HTTPError as exc:
+        result = ({**base, "status": "egress_denied", "error": "上游地址不在允许范围"}
+                  if socket_egress_denied(exc) else
+                  {**base, "status": "network_error", "stream_break": bool(probe["stream"]), "error": "上游连接失败"})
     except (ValueError, TypeError, AttributeError, KeyError, IndexError):
         result = {**base, "status": "invalid_response", "error": "Responses 响应格式无效"}
     return {**result, "latency_ms": round((perf_counter() - started) * 1000)}

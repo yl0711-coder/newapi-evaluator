@@ -32,7 +32,12 @@ jobs:
         run: python -m pip install -r requirements.txt
 
       - name: Run automated tests
-        run: python scripts/test_all.py
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          test_artifact_root="$(mktemp -d "${RUNNER_TEMP:?RUNNER_TEMP is required}/eval-tests.XXXXXX")"
+          EVAL_TEST_ARTIFACT_ROOT="$test_artifact_root" PYTHONDONTWRITEBYTECODE=1 \
+            python scripts/test_all.py --output "$test_artifact_root/evidence"
 
       - name: Build smoke-test image
         run: docker build --tag model-test-workbench:ci .

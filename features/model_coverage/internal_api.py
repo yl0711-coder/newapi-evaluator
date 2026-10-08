@@ -7,6 +7,7 @@ import json
 import logging
 import secrets
 import time
+from concurrent.futures import ThreadPoolExecutor
 
 import httpx
 from fastapi import APIRouter, Request
@@ -21,6 +22,11 @@ from .monitor import SCHEMA_VERSION, ContractError, MonitorStore
 
 logger = logging.getLogger(__name__)
 internal_router = APIRouter(prefix="/internal/v1")
+DNS_TIMEOUT_SECONDS = 5
+DNS_WORKERS = 2
+_dns_pool = ThreadPoolExecutor(max_workers=DNS_WORKERS, thread_name_prefix="monitor-egress")
+_dns_limiter: asyncio.Semaphore | None = None
+_dns_loop: asyncio.AbstractEventLoop | None = None
 
 
 def _error(exc: ContractError, request_id: str) -> JSONResponse:
@@ -114,6 +120,34 @@ def egress_check(channel: dict, protocol: str) -> None:
         raise ContractError(422, "egress_denied", "target URL violates the Eval egress policy") from None
 
 
+async def _bounded_egress(channel: dict, protocol: str) -> None:
+    global _dns_limiter, _dns_loop
+    loop = asyncio.get_running_loop()
+    if _dns_loop is not loop:
+        _dns_limiter, _dns_loop = asyncio.Semaphore(DNS_WORKERS), loop
+    limiter = _dns_limiter
+    try:
+        await asyncio.wait_for(limiter.acquire(), DNS_TIMEOUT_SECONDS)
+    except asyncio.TimeoutError:
+        raise ContractError(503, "egress_check_timeout", "target validation is busy", retryable=True) from None
+    future = _dns_pool.submit(egress_check, channel, protocol)
+
+    def release(_future):
+        try:
+            loop.call_soon_threadsafe(limiter.release)
+        except RuntimeError:
+            pass
+
+    future.add_done_callback(release)
+    task = asyncio.wrap_future(future, loop=loop)
+    task.add_done_callback(lambda done: done.exception() if not done.cancelled() else None)
+    try:
+        await asyncio.wait_for(asyncio.shield(task), DNS_TIMEOUT_SECONDS)
+    except asyncio.TimeoutError:
+        # A running libc resolver cannot be terminated; its slot stays held until it returns.
+        raise ContractError(503, "egress_check_timeout", "target validation timed out", retryable=True) from None
+
+
 async def _handle(request: Request, action):
     request_id = "eval-" + secrets.token_hex(8)
     try:
@@ -121,12 +155,12 @@ async def _handle(request: Request, action):
         status, payload = await action(raw)
     except ContractError as exc:
         # Log code and path only: never headers, bodies or channel data.
-        logger.info("monitor internal %s %s -> %s", request.method, request.url.path, exc.code)
+        logger.info("monitor internal %s -> %s", request.method, exc.code)
         return _error(exc, request_id)
     except RegistryError:
         return _error(ContractError(400, "invalid_request", "request was rejected by validation"), request_id)
     except Exception:
-        logger.exception("monitor internal request failed")
+        logger.error("monitor internal request failed: eval_unavailable")
         return _error(ContractError(503, "eval_unavailable", "Eval could not process the request", retryable=True,
                                     headers={"Retry-After": "30"}), request_id)
     return JSONResponse(payload, status_code=status, headers={"X-Request-Id": request_id})
@@ -154,7 +188,13 @@ async def create_probe_job(request: Request):
     async def action(raw):
         key = _idempotency_key(request)
         body = _json_body(raw)
-        response, created = MonitorStore(get_registry()).create_job(body, key, _public_channel, egress_check)
+        store = MonitorStore(get_registry())
+        replay = store.replay_job(body, key)
+        if replay:
+            return 200, replay
+        validated = store._validate_job(body, _public_channel, lambda _channel, _protocol: None)
+        await _bounded_egress(validated["_channel"], validated["protocol"])
+        response, created = store.create_job(body, key, _public_channel, lambda _channel, _protocol: None, validated_job=validated)
         if created:
             wake_executor()
         return (201 if created else 200), response
@@ -205,14 +245,14 @@ EXECUTOR_ID = "executor-" + secrets.token_hex(8)
 _wake: asyncio.Event | None = None
 
 
-async def send_probe(channel: dict, probe: dict) -> dict:
+async def send_probe(channel: dict, probe: dict, *, before_send=None) -> dict:
     """One upstream request through the guarded transport and the process-wide request limiter."""
     from features.stability.app.scheduler import probe_semaphore
     timeout = httpx.Timeout(connect=20, read=180, write=20, pool=20)
     async with probe_semaphore():
         async with httpx.AsyncClient(timeout=timeout, follow_redirects=False, trust_env=False,
                                      transport=guarded_transport()) as client:
-            return await transport.run_probe(client, channel, probe)
+            return await transport.run_probe(client, channel, probe, before_send=before_send)
 
 
 async def run_pending(send=send_probe, *, limit: int = 20) -> int:
@@ -226,7 +266,7 @@ async def run_pending(send=send_probe, *, limit: int = 20) -> int:
             await monitor.execute_job(store, job, resolve_channel, send)
         except Exception:
             # The job is already ended as executor_error; keep draining the rest of the queue.
-            logger.exception("monitor job execution failed")
+            logger.error("monitor job execution failed: executor_error")
         count += 1
     return count
 
@@ -243,7 +283,7 @@ async def _loop() -> None:
         except asyncio.CancelledError:
             raise
         except Exception:
-            logger.exception("monitor executor tick failed")
+            logger.error("monitor executor tick failed")
         try:
             await asyncio.wait_for(_wake.wait(), POLL_SECONDS)
         except asyncio.TimeoutError:

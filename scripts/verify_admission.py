@@ -31,7 +31,8 @@ def main():
     output.mkdir(parents=True, exist_ok=False)
     (output / "tmp").mkdir()
     allowed = {"PATH", "HOME", "LANG", "LC_ALL", "SYSTEMROOT", "SSL_CERT_FILE", "SSL_CERT_DIR",
-               "PLAYWRIGHT_MODULE", "PLAYWRIGHT_CHANNEL", "PLAYWRIGHT_BROWSERS_PATH", "UI_TEST_PORT"}
+               "PLAYWRIGHT_MODULE", "PLAYWRIGHT_CHANNEL", "PLAYWRIGHT_BROWSERS_PATH", "UI_TEST_PORT",
+               "EVAL_TEST_ARTIFACT_ROOT"}
     env = {key: value for key, value in os.environ.items() if key in allowed}
     env.update(PYTHONDONTWRITEBYTECODE="1", PYTHONPATH=str(ROOT), TMPDIR=str(output / "tmp"),
                PLATFORM_DATA_DIR=str(output / "platform"), RELAY_LAB_DATA_DIR=str(output),

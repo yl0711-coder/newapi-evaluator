@@ -7,9 +7,12 @@ job. Reproduction events are written in the same transaction as the job's termin
 """
 from __future__ import annotations
 
+import asyncio
 import hashlib
 import hmac
+import inspect
 import json
+import math
 import os
 import re
 import secrets
@@ -43,6 +46,40 @@ class ContractError(Exception):
         super().__init__(message)
         self.status, self.code, self.message, self.retryable = status, code, message, retryable
         self.headers = headers or {}
+
+
+class SendNotPermitted(RuntimeError):
+    """A safe executor control signal, never an upstream failure."""
+
+    def __init__(self, status: str, reason: str):
+        super().__init__(reason)
+        self.status, self.reason = status, reason
+
+
+def _enum(value: Any, field: str, choices: set[str], *, status: int = 400, code: str = "invalid_field") -> str:
+    if not isinstance(value, str) or not value or len(value) > 80:
+        raise ContractError(400, "invalid_field", f"{field} must be a string")
+    if value not in choices:
+        raise ContractError(status, code, f"{field} is invalid")
+    return value
+
+
+def _number(value: Any) -> int | float | None:
+    return value if not isinstance(value, bool) and isinstance(value, (int, float)) and math.isfinite(value) and value >= 0 else None
+
+
+def _tokens(value: Any) -> int | None:
+    return value if not isinstance(value, bool) and isinstance(value, int) and value >= 0 else None
+
+
+def _publish(value: Any, keys: tuple[str, ...] = ()) -> Any:
+    if isinstance(value, str):
+        return "[redacted]" if _SENSITIVE.search(value) or any(key and key in value for key in keys) else value
+    if isinstance(value, dict):
+        return {key: _publish(item, keys) for key, item in value.items()}
+    if isinstance(value, list):
+        return [_publish(item, keys) for item in value]
+    return value
 
 
 def rfc3339(epoch: float | None) -> str | None:
@@ -153,6 +190,7 @@ class MonitorStore:
     def __init__(self, registry):
         self.registry = registry
         with registry.connect() as conn:
+            conn.execute("BEGIN IMMEDIATE")
             conn.execute("""CREATE TABLE IF NOT EXISTS monitor_channel_identities (
                 channel_identity TEXT PRIMARY KEY, registry_channel_id INTEGER NOT NULL UNIQUE,
                 updated_at REAL NOT NULL)""")
@@ -172,6 +210,16 @@ class MonitorStore:
                 skipped_json TEXT NOT NULL DEFAULT '[]', created_at REAL NOT NULL, updated_at REAL NOT NULL,
                 started_at REAL, finished_at REAL, lease_until REAL, lease_owner TEXT)""")
             conn.execute("CREATE INDEX IF NOT EXISTS idx_monitor_probe_jobs_status ON monitor_probe_jobs(status,not_before)")
+            columns = {row[1] for row in conn.execute("PRAGMA table_info(monitor_probe_jobs)")}
+            if "connection_fingerprint" not in columns:
+                conn.execute("ALTER TABLE monitor_probe_jobs ADD COLUMN connection_fingerprint TEXT")
+            conn.execute("""CREATE TABLE IF NOT EXISTS monitor_probe_attempts (
+                attempt_id TEXT PRIMARY KEY, job_id TEXT NOT NULL, scenario TEXT NOT NULL, round INTEGER NOT NULL,
+                status TEXT NOT NULL, input_tokens_reserved INTEGER NOT NULL, output_tokens_reserved INTEGER NOT NULL,
+                input_tokens_reported INTEGER, output_tokens_reported INTEGER, target_snapshot_json TEXT NOT NULL,
+                result_id TEXT UNIQUE, permitted_at REAL NOT NULL, completed_at REAL,
+                UNIQUE(job_id,scenario,round))""")
+            conn.execute("CREATE INDEX IF NOT EXISTS idx_monitor_probe_attempts_job ON monitor_probe_attempts(job_id)")
             # Append-only: rows are never updated; id is the pull cursor.
             conn.execute("""CREATE TABLE IF NOT EXISTS monitor_probe_results (
                 id INTEGER PRIMARY KEY AUTOINCREMENT, result_id TEXT NOT NULL UNIQUE, job_id TEXT NOT NULL,
@@ -243,16 +291,22 @@ class MonitorStore:
             if identity in seen:
                 raise ContractError(400, "invalid_field", "duplicate channel_identity")
             seen.add(identity)
-            models = item.get("models") or []
+            models = item.get("models", [])
             if not isinstance(models, list) or len(models) > 500:
                 raise ContractError(400, "invalid_field", "models must be a list of at most 500 entries")
+            groups = item.get("groups", [])
+            if not isinstance(groups, list) or len(groups) > 500:
+                raise ContractError(400, "invalid_field", "groups must be a list of at most 500 entries")
+            newapi_id = item.get("newapi_channel_id")
+            if newapi_id is not None:
+                newapi_id = _integer(newapi_id, "newapi_channel_id", 1, 2**63 - 1)
             channels.append({
                 "channel_identity": identity,
-                "newapi_channel_id": item.get("newapi_channel_id") if isinstance(item.get("newapi_channel_id"), int) else None,
+                "newapi_channel_id": newapi_id,
                 "display_name": _plain(item.get("display_name", ""), "display_name"),
                 "supplier_failure_domain_id": _clean(item.get("supplier_failure_domain_id"), "supplier_failure_domain_id", optional=True),
                 "enabled_status": _plain(item.get("enabled_status", "unknown"), "enabled_status", 40),
-                "groups": sorted({_clean(g, "groups") for g in (item.get("groups") or [])}),
+                "groups": sorted({_clean(g, "groups") for g in groups}),
                 "models": sorted({_clean(m, "models") for m in models}),
                 "channel_type": _plain(item.get("channel_type", ""), "channel_type", 80),
                 "production_role": _plain(item.get("production_role", ""), "production_role", 40),
@@ -309,8 +363,7 @@ class MonitorStore:
         return next((c for c in json.loads(row[0]) if c["channel_identity"] == channel_identity), None)
 
     # ---- probe jobs ------------------------------------------------------------------------
-    def create_job(self, body: dict[str, Any], header_key: str, resolve_channel, egress_check) -> tuple[dict[str, Any], bool]:
-        """Validate and queue a job. Returns (response, created). Rejections raise ContractError."""
+    def replay_job(self, body: dict[str, Any], header_key: str) -> dict[str, Any] | None:
         key = _clean(body.get("idempotency_key"), "idempotency_key")
         if header_key != key:
             raise ContractError(400, "idempotency_key_mismatch", "Idempotency-Key header must equal body idempotency_key")
@@ -322,8 +375,17 @@ class MonitorStore:
         if existing:
             if existing["request_hash"] != digest:
                 raise ContractError(409, "idempotency_conflict", "idempotency_key was used for a different job")
-            return self._accepted(existing), False
-        job = self._validate_job(body, resolve_channel, egress_check)
+            return self._accepted(existing)
+        return None
+
+    def create_job(self, body: dict[str, Any], header_key: str, resolve_channel, egress_check,
+                   *, validated_job: dict[str, Any] | None = None) -> tuple[dict[str, Any], bool]:
+        """Validate and queue a job. DNS work must finish before opening its write transaction."""
+        existing = self.replay_job(body, header_key)
+        if existing:
+            return existing, False
+        key, digest = body["idempotency_key"].strip(), body_hash(body)
+        job = validated_job if validated_job is not None else self._validate_job(body, resolve_channel, egress_check)
         now = time.time()
         job_id = _new_id("probe")
         with self.registry.connect() as conn:
@@ -333,14 +395,15 @@ class MonitorStore:
                 if again["request_hash"] != digest:
                     raise ContractError(409, "idempotency_conflict", "idempotency_key was used for a different job")
                 return self._accepted(again), False
+            self._verify_target(conn, job, channel=job["_channel"])
             conn.execute("""INSERT INTO monitor_probe_jobs(job_id,idempotency_key,request_hash,source_event_id,job_type,priority,
                 channel_identity,registry_channel_id,model,protocol,probe_path,scenarios_json,rounds,not_before,expires_at,
-                budget_json,expected_inventory_version,reason,status,created_at,updated_at)
-                VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,'queued',?,?)""",
+                budget_json,expected_inventory_version,reason,status,created_at,updated_at,connection_fingerprint)
+                VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,'queued',?,?,?)""",
                 (job_id, key, digest, job["source_event_id"], job["job_type"], job["priority"], job["channel_identity"],
                  job["registry_channel_id"], job["model"], job["protocol"], job["probe_path"], _json(job["scenarios"]),
                  job["rounds"], job["not_before"], job["expires_at"], _json(job["budget"]),
-                 job["expected_inventory_version"], job["reason"], now, now))
+                 job["expected_inventory_version"], job["reason"], now, now, job["connection_fingerprint"]))
             row = conn.execute("SELECT * FROM monitor_probe_jobs WHERE job_id=?", (job_id,)).fetchone()
         return self._accepted(row), True
 
@@ -352,16 +415,12 @@ class MonitorStore:
                 "estimated_start_at": rfc3339(start) if row["status"] == "queued" else None}
 
     def _validate_job(self, body: dict[str, Any], resolve_channel, egress_check) -> dict[str, Any]:
-        job_type = body.get("job_type")
-        if job_type not in JOB_TYPES:
-            raise ContractError(400, "invalid_field", "job_type is invalid")
-        priority = body.get("priority", "p2")
-        if priority not in PRIORITIES:
-            raise ContractError(400, "invalid_field", "priority is invalid")
-        protocol = body.get("protocol")
-        if protocol not in PROTOCOLS:
-            raise ContractError(422, "protocol_not_supported", "protocol is not supported by Eval")
+        job_type = _enum(body.get("job_type"), "job_type", JOB_TYPES)
+        priority = _enum(body.get("priority", "p2"), "priority", PRIORITIES)
+        protocol = _enum(body.get("protocol"), "protocol", PROTOCOLS, status=422, code="protocol_not_supported")
         probe_path = body.get("probe_path", "direct")
+        if not isinstance(probe_path, str):
+            raise ContractError(400, "invalid_field", "probe_path must be a string")
         if probe_path == "end_to_end":
             # No isolated gateway identity exists yet, so business-metric exclusion cannot be guaranteed.
             raise ContractError(422, "end_to_end_isolation_unavailable", "end_to_end probes require an isolated identity Eval does not have")
@@ -369,7 +428,8 @@ class MonitorStore:
             raise ContractError(400, "invalid_field", "probe_path is invalid")
         scenarios = body.get("scenarios")
         if (not isinstance(scenarios, list) or not 1 <= len(scenarios) <= len(SCENARIOS)
-                or len(set(scenarios)) != len(scenarios) or any(s not in SCENARIOS for s in scenarios)):
+                or any(not isinstance(s, str) or s not in SCENARIOS for s in scenarios)
+                or len(set(scenarios)) != len(scenarios)):
             raise ContractError(400, "invalid_field", f"scenarios must be distinct values of {sorted(SCENARIOS)}")
         rounds = _integer(body.get("rounds", 1), "rounds", 1, MAX_ROUNDS)
         now = time.time()
@@ -389,11 +449,16 @@ class MonitorStore:
         channel = resolve_channel(registry_channel_id)
         if channel is None:
             raise ContractError(404, "channel_not_found", "bound Eval channel was deleted or disabled")
+        try:
+            connection = self.registry.get(registry_channel_id, secret=True)
+        except (KeyError, RegistryError):
+            raise ContractError(404, "channel_not_found", "bound Eval channel was deleted or disabled") from None
         egress_check(channel, protocol)
         return {"job_type": job_type, "priority": priority, "protocol": protocol, "probe_path": probe_path,
                 "scenarios": scenarios, "rounds": rounds, "not_before": not_before, "expires_at": expires_at,
                 "budget": budget, "channel_identity": identity, "model": model, "registry_channel_id": registry_channel_id,
                 "expected_inventory_version": expected,
+                "connection_fingerprint": self.registry.connection_fingerprint(connection), "_channel": connection,
                 "source_event_id": _clean(body.get("source_event_id"), "source_event_id", optional=True),
                 "reason": _plain(body.get("reason", ""), "reason", 300)}
 
@@ -435,6 +500,112 @@ class MonitorStore:
             current = self.inventory_channel(latest, identity)
             if current is None or model not in current["models"] or current["config_fingerprint"] != channel["config_fingerprint"]:
                 raise ContractError(409, "inventory_version_conflict", "target changed in a newer inventory; resynchronize before probing")
+
+    def _channel_at(self, conn, channel_id: int) -> dict[str, Any] | None:
+        row = conn.execute("SELECT * FROM channels WHERE id=?", (channel_id,)).fetchone()
+        if row is None or not row["enabled"]:
+            return None
+        channel = self.registry.public(row)
+        try:
+            channel["api_key"] = self.registry._cipher.decrypt(row["key_enc"].encode()).decode()
+        except Exception:
+            raise ContractError(409, "connection_unavailable", "channel connection cannot be verified") from None
+        return channel
+
+    def _verify_target(self, conn, job, *, channel: dict[str, Any]) -> dict[str, Any]:
+        binding = conn.execute("SELECT registry_channel_id FROM monitor_channel_identities WHERE channel_identity=?",
+                               (job["channel_identity"],)).fetchone()
+        if binding is None or binding[0] != job["registry_channel_id"]:
+            raise ContractError(409, "target_identity_changed", "channel identity binding changed")
+        if not job["connection_fingerprint"]:
+            raise ContractError(409, "connection_snapshot_missing", "job has no original connection snapshot")
+        current = self._channel_at(conn, job["registry_channel_id"])
+        if current is None:
+            raise ContractError(409, "channel_not_found", "bound Eval channel was deleted or disabled")
+        if (self.registry.connection_fingerprint(current) != job["connection_fingerprint"]
+                or self.registry.connection_fingerprint(channel) != job["connection_fingerprint"]):
+            raise ContractError(409, "connection_changed", "channel connection changed")
+        expected = job["expected_inventory_version"]
+        if expected:
+            original = conn.execute("SELECT channels_json FROM monitor_inventories WHERE inventory_version=?", (expected,)).fetchone()
+            latest = conn.execute("SELECT channels_json FROM monitor_inventories ORDER BY generated_at DESC,rowid DESC LIMIT 1").fetchone()
+            before = next((c for c in json.loads(original[0]) if c["channel_identity"] == job["channel_identity"]), None) if original else None
+            after = next((c for c in json.loads(latest[0]) if c["channel_identity"] == job["channel_identity"]), None) if latest else None
+            if (before is None or after is None or job["model"] not in before["models"] or job["model"] not in after["models"]
+                    or before["config_fingerprint"] != after["config_fingerprint"]
+                    or before["enabled_status"] != after["enabled_status"]):
+                raise ContractError(409, "inventory_version_conflict", "target changed in the production inventory")
+        return current
+
+    @staticmethod
+    def _control(row, owner: str, now: float, *, before_send: bool = True) -> None:
+        if row is None or row["status"] != "running" or row["lease_owner"] != owner or not row["lease_until"] or row["lease_until"] <= now:
+            raise SendNotPermitted("lost", "executor_lease_lost")
+        if before_send and row["cancel_requested"]:
+            raise SendNotPermitted("cancelled", "cancel_requested")
+        if before_send and row["expires_at"] <= now:
+            raise SendNotPermitted("expired", "expired_during_run")
+
+    def check_running(self, job_id: str, owner: str, *, before_send: bool = True) -> None:
+        self._control(self._row(job_id), owner, time.time(), before_send=before_send)
+
+    @staticmethod
+    def _refresh_ledger(conn, job_id: str) -> tuple[dict[str, Any], dict[str, Any]]:
+        attempts = conn.execute("SELECT * FROM monitor_probe_attempts WHERE job_id=?", (job_id,)).fetchall()
+        completed = conn.execute("SELECT COUNT(*) FROM monitor_probe_results WHERE job_id=?", (job_id,)).fetchone()[0]
+        row = conn.execute("SELECT budget_json,connection_fingerprint,consumed_json FROM monitor_probe_jobs WHERE job_id=?", (job_id,)).fetchone()
+        progress = {"completed_requests": completed, "planned_requests": json.loads(row["budget_json"])["planned"]["requests"]}
+        consumed = {"requests": max(len(attempts), completed),
+                    "input_tokens_reserved": sum(a["input_tokens_reserved"] for a in attempts),
+                    "output_tokens_reserved": sum(a["output_tokens_reserved"] for a in attempts),
+                    "unknown_requests": sum(a["status"] == "unknown" for a in attempts)}
+        if not row["connection_fingerprint"] and not attempts:
+            previous = json.loads(row["consumed_json"])
+            consumed["requests"] = max(consumed["requests"], _tokens(previous.get("requests")) or 0)
+            for kind in ("input", "output"):
+                field = kind + "_tokens_reserved"
+                consumed[field] = _tokens(previous.get(field))
+            consumed.update(reservation_source="legacy_persisted", reported_usage_source="unavailable_legacy")
+        for kind in ("input", "output"):
+            field = kind + "_tokens_reported"
+            known = [a[field] for a in attempts if a[field] is not None]
+            consumed[field] = sum(known) if known else None
+            consumed[field + "_requests"] = len(known)
+            consumed[kind + "_tokens_missing_requests"] = consumed["requests"] - len(known)
+        conn.execute("UPDATE monitor_probe_jobs SET progress_json=?,consumed_json=? WHERE job_id=?",
+                     (_json(progress), _json(consumed), job_id))
+        return progress, consumed
+
+    def permit_attempt(self, job_id: str, owner: str, channel: dict[str, Any], scenario: str, round_number: int) -> dict[str, Any]:
+        """Commit the unique attempt and reservation immediately before actual HTTP sending."""
+        with self.registry.connect() as conn:
+            conn.execute("BEGIN IMMEDIATE")
+            now = time.time()
+            row = conn.execute("SELECT * FROM monitor_probe_jobs WHERE job_id=?", (job_id,)).fetchone()
+            self._control(row, owner, now)
+            try:
+                self._verify_target(conn, row, channel=channel)
+            except ContractError as exc:
+                raise SendNotPermitted("rejected", exc.code) from None
+            if conn.execute("SELECT 1 FROM monitor_probe_attempts WHERE job_id=? AND scenario=? AND round=?",
+                            (job_id, scenario, round_number)).fetchone():
+                raise SendNotPermitted("failed", "attempt_already_permitted")
+            budget = json.loads(row["budget_json"])
+            reserved = conn.execute("SELECT COUNT(*),COALESCE(SUM(input_tokens_reserved),0),COALESCE(SUM(output_tokens_reserved),0) FROM monitor_probe_attempts WHERE job_id=?",
+                                    (job_id,)).fetchone()
+            input_cap, output_cap = SCENARIOS[scenario]["input_cap"], output_reservation(row["protocol"], scenario)
+            if (reserved[0] + 1 > budget["max_requests"] or reserved[1] + input_cap > budget["max_input_tokens"]
+                    or reserved[2] + output_cap > budget["max_output_tokens"]):
+                raise SendNotPermitted("partially_completed", "budget_exhausted")
+            snapshot = {"channel_identity": row["channel_identity"], "registry_channel_id": row["registry_channel_id"],
+                        "connection_fingerprint": row["connection_fingerprint"], "inventory_version": row["expected_inventory_version"],
+                        "model": row["model"], "protocol": row["protocol"]}
+            attempt_id = _new_id("attempt")
+            conn.execute("""INSERT INTO monitor_probe_attempts(attempt_id,job_id,scenario,round,status,input_tokens_reserved,
+                output_tokens_reserved,target_snapshot_json,permitted_at) VALUES(?,?,?,?,'permitted',?,?,?,?)""",
+                         (attempt_id, job_id, scenario, round_number, input_cap, output_cap, _json(snapshot), now))
+            self._refresh_ledger(conn, job_id)
+        return {"attempt_id": attempt_id, "target_snapshot": snapshot, "permitted_at": now}
 
     def _row(self, job_id: str):
         with self.registry.connect() as conn:
@@ -511,12 +682,16 @@ class MonitorStore:
         """
         now = time.time()
         with self.registry.connect() as conn:
-            return conn.execute("""UPDATE monitor_probe_jobs SET status=CASE WHEN EXISTS(SELECT 1 FROM monitor_probe_results r
-                WHERE r.job_id=monitor_probe_jobs.job_id) THEN 'partially_completed' ELSE 'failed' END,
-                status_reason='executor_lease_lost',finished_at=?,updated_at=?,lease_until=NULL,lease_owner=NULL,
-                progress_json=json_set(COALESCE(progress_json,'{}'),'$.completed_requests',
-                    (SELECT COUNT(*) FROM monitor_probe_results r WHERE r.job_id=monitor_probe_jobs.job_id))
-                WHERE status='running' AND (lease_until IS NULL OR lease_until<?)""", (now, now, now)).rowcount
+            conn.execute("BEGIN IMMEDIATE")
+            rows = conn.execute("SELECT job_id FROM monitor_probe_jobs WHERE status='running' AND (lease_until IS NULL OR lease_until<=?)", (now,)).fetchall()
+            for row in rows:
+                job_id = row[0]
+                conn.execute("UPDATE monitor_probe_attempts SET status='unknown' WHERE job_id=? AND status='permitted'", (job_id,))
+                progress, _ = self._refresh_ledger(conn, job_id)
+                conn.execute("""UPDATE monitor_probe_jobs SET status=?,status_reason='executor_lease_lost',finished_at=?,
+                    updated_at=?,lease_until=NULL,lease_owner=NULL WHERE job_id=?""",
+                             ("partially_completed" if progress["completed_requests"] else "failed", now, now, job_id))
+            return len(rows)
 
     def claim(self, owner: str) -> dict[str, Any] | None:
         """Claim the highest-priority due job (p0 first, then oldest) for executor ``owner``."""
@@ -534,32 +709,49 @@ class MonitorStore:
             job = conn.execute("SELECT * FROM monitor_probe_jobs WHERE job_id=?", (row[0],)).fetchone()
         return {**dict(job), "scenarios": json.loads(job["scenarios_json"]), "budget": json.loads(job["budget_json"])}
 
-    def heartbeat(self, job_id: str, owner: str, progress: dict[str, Any], consumed: dict[str, Any]) -> str:
-        """Persist progress and extend the lease. Returns "continue", "cancel" or "lost".
+    def heartbeat(self, job_id: str, owner: str, progress: dict[str, Any] | None = None, consumed: dict[str, Any] | None = None) -> str:
+        """Extend only an unexpired lease. Ledger arguments are accepted but never persisted.
 
         "lost" means the job is no longer running under this owner (recovered, ended elsewhere);
         the executor must stop immediately without sending or recording anything more.
         """
-        now = time.time()
         with self.registry.connect() as conn:
-            changed = conn.execute("""UPDATE monitor_probe_jobs SET progress_json=?,consumed_json=?,lease_until=?,updated_at=?
-                WHERE job_id=? AND status='running' AND lease_owner=?""",
-                (_json(progress), _json(consumed), now + self.LEASE_SECONDS, now, job_id, owner)).rowcount
+            conn.execute("BEGIN IMMEDIATE")
+            now = time.time()
+            changed = conn.execute("""UPDATE monitor_probe_jobs SET lease_until=?,updated_at=?
+                WHERE job_id=? AND status='running' AND lease_owner=? AND lease_until>?""",
+                (now + self.LEASE_SECONDS, now, job_id, owner, now)).rowcount
             if changed != 1:
                 return "lost"
             row = conn.execute("SELECT cancel_requested FROM monitor_probe_jobs WHERE job_id=?", (job_id,)).fetchone()
         return "cancel" if row[0] else "continue"
 
     def append_result(self, job_id: str, owner: str, body: dict[str, Any]) -> str | None:
-        """Append only while ``owner`` still holds the running job; None means ownership was lost."""
+        """Commit result, attempt completion and ledger together, with idempotent completion."""
         result_id = _new_id("result")
         with self.registry.connect() as conn:
             conn.execute("BEGIN IMMEDIATE")
-            if not conn.execute("SELECT 1 FROM monitor_probe_jobs WHERE job_id=? AND status='running' AND lease_owner=?",
-                                (job_id, owner)).fetchone():
+            attempt_id = body.get("attempt_id")
+            attempt = conn.execute("SELECT * FROM monitor_probe_attempts WHERE attempt_id=? AND job_id=?", (attempt_id, job_id)).fetchone() if attempt_id else None
+            if attempt_id and attempt is None:
                 return None
+            if attempt is not None and attempt["status"] == "completed":
+                return attempt["result_id"]
+            now = time.time()
+            if not conn.execute("SELECT 1 FROM monitor_probe_jobs WHERE job_id=? AND status='running' AND lease_owner=? AND lease_until>?",
+                                (job_id, owner, now)).fetchone() or (attempt is not None and attempt["status"] != "permitted"):
+                return None
+            row = conn.execute("SELECT registry_channel_id FROM monitor_probe_jobs WHERE job_id=?", (job_id,)).fetchone()
+            channel = self._channel_at(conn, row[0])
+            clean = _publish(body, (channel["api_key"],) if channel else ())
+            if attempt is not None:
+                clean["target_snapshot"] = json.loads(attempt["target_snapshot_json"])
+                conn.execute("""UPDATE monitor_probe_attempts SET status='completed',result_id=?,input_tokens_reported=?,
+                    output_tokens_reported=?,completed_at=? WHERE attempt_id=?""",
+                             (result_id, _tokens(clean.get("input_tokens_reported")), _tokens(clean.get("output_tokens_reported")), now, attempt_id))
             conn.execute("INSERT INTO monitor_probe_results(result_id,job_id,body_json,created_at) VALUES(?,?,?,?)",
-                         (result_id, job_id, _json({**body, "result_id": result_id}), time.time()))
+                         (result_id, job_id, _json({**clean, "result_id": result_id}), now))
+            self._refresh_ledger(conn, job_id)
         return result_id
 
     def finish_job(self, job_id: str, status: str, reason: str, progress: dict[str, Any], consumed: dict[str, Any],
@@ -567,18 +759,26 @@ class MonitorStore:
         """Set the terminal state if ``owner`` still holds the job; returns False when ownership was lost."""
         if status not in TERMINAL_STATES:
             raise ValueError("invalid terminal status")
-        now = time.time()
         with self.registry.connect() as conn:
             conn.execute("BEGIN IMMEDIATE")
-            changed = conn.execute("""UPDATE monitor_probe_jobs SET status=?,status_reason=?,progress_json=?,consumed_json=?,
+            now = time.time()
+            row = conn.execute("SELECT * FROM monitor_probe_jobs WHERE job_id=?", (job_id,)).fetchone()
+            try:
+                self._control(row, owner, now, before_send=False)
+            except SendNotPermitted:
+                return False
+            conn.execute("UPDATE monitor_probe_attempts SET status='unknown' WHERE job_id=? AND status='permitted'", (job_id,))
+            self._refresh_ledger(conn, job_id)
+            changed = conn.execute("""UPDATE monitor_probe_jobs SET status=?,status_reason=?,
                 skipped_json=?,finished_at=?,updated_at=?,lease_until=NULL,lease_owner=NULL
-                WHERE job_id=? AND status='running' AND lease_owner=?""",
-                (status, reason, _json(progress), _json(consumed), _json(skipped[:200]), now, now, job_id, owner)).rowcount
+                WHERE job_id=? AND status='running' AND lease_owner=? AND lease_until>?""",
+                (status, reason, _json(skipped[:200]), now, now, job_id, owner, now)).rowcount
             # The event commits with the terminal state, so a pulled event always has final results.
             if changed and event:
                 event_id = _new_id("eval-event")
+                channel = self._channel_at(conn, row["registry_channel_id"])
                 conn.execute("INSERT INTO monitor_probe_events(event_id,body_json,created_at) VALUES(?,?,?)",
-                             (event_id, _json({**event, "event_id": event_id}), now))
+                             (event_id, _json(_publish({**event, "event_id": event_id}, (channel["api_key"],) if channel else ())), now))
         return bool(changed)
 
     # ---- cursors -------------------------------------------------------------------------
@@ -636,8 +836,11 @@ _SUMMARY = {
 _MODEL = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._:/@+\-]{0,159}$")
 
 
-def to_result(job: dict[str, Any], scenario: str, round_number: int, raw: dict[str, Any], started: float, finished: float) -> dict[str, Any]:
+def to_result(job: dict[str, Any], scenario: str, round_number: int, raw: dict[str, Any], started: float, finished: float,
+              *, keys: tuple[str, ...] = ()) -> dict[str, Any]:
     status = raw.get("status", "platform_error")
+    if not isinstance(status, str):
+        status = "platform_error"
     if status == "stream_break":
         category = "stream_interrupted_midstream" if raw.get("ttft_ms") is not None else "stream_interrupted_before_first_event"
         outcome, channel_result = "interrupted", "interrupted"
@@ -646,23 +849,32 @@ def to_result(job: dict[str, Any], scenario: str, round_number: int, raw: dict[s
     stream = SCENARIOS[scenario]["stream"]
     responded = status in {"completed", "content_mismatch", "stream_break", "empty_response", "truncated"}
     match = re.search(r"HTTP (\d{3})", str(raw.get("error") or ""))
-    reported = str(raw.get("actual_model") or "")
-    return {
+    reported = raw.get("actual_model") if isinstance(raw.get("actual_model"), str) else ""
+    input_reported = _tokens(raw.get("input_tokens_reported"))
+    output_reported = _tokens(raw.get("output_tokens_reported"))
+    if "input_tokens_reported" not in raw and raw.get("usage_complete") is True:
+        input_reported = _tokens(raw.get("input_tokens"))
+    if "output_tokens_reported" not in raw and raw.get("usage_complete") is True:
+        output_reported = _tokens(raw.get("output_tokens"))
+    usage = "complete" if input_reported is not None and output_reported is not None else "partial" if input_reported is not None or output_reported is not None else "missing"
+    return _publish({
         "job_id": job["job_id"], "source_event_id": job["source_event_id"], "channel_identity": job["channel_identity"],
         "inventory_version": job["expected_inventory_version"], "model_requested": job["model"],
-        "model_reported": reported if _MODEL.fullmatch(reported) else ("unrecognized" if reported else None),
+        "model_reported": reported if _MODEL.fullmatch(reported) and _publish(reported, keys) == reported else ("unrecognized" if reported else None),
         "model_mismatch": bool(raw.get("model_mismatch")), "protocol": job["protocol"], "probe_path": job["probe_path"],
         "scenario": scenario, "round": round_number, "started_at": rfc3339(started), "finished_at": rfc3339(finished),
         "outcome": outcome, "channel_result": channel_result, "error_category": category,
         # Only HTTP error statuses are observed by the transport; success statuses are not recorded.
         "http_status": int(match.group(1)) if match else None,
-        "ttft_ms": raw.get("ttft_ms"), "duration_ms": raw.get("latency_ms"),
+        "ttft_ms": _number(raw.get("ttft_ms")), "duration_ms": _number(raw.get("latency_ms")),
         "stream_complete": (status in {"completed", "content_mismatch"}) if stream else None,
-        "usage_status": ("complete" if raw.get("usage_complete") else "missing") if responded else "unknown",
+        "usage_status": usage if responded else "unknown",
+        "input_tokens_reported": input_reported, "output_tokens_reported": output_reported,
+        "output_tokens_estimated": _tokens(raw.get("output_tokens_estimated")),
         "attempt_count": 1, "evidence_summary": _SUMMARY.get(status, "Eval executor error"),
         "runner_version": RUNNER_VERSION, "policy_version": POLICY_VERSION,
         "exclude_from_business_metrics": True, "supersedes_result_id": None,
-    }
+    }, keys)
 
 
 def reproduced_event(job: dict[str, Any], results: list[dict[str, Any]]) -> dict[str, Any] | None:
@@ -675,6 +887,7 @@ def reproduced_event(job: dict[str, Any], results: list[dict[str, Any]]) -> dict
         if (len(items) == job["rounds"] and len(categories) == 1 and None not in categories
                 and not next(iter(categories)).startswith("eval_") and next(iter(categories)) != "semantic_quality"):
             return {"channel_identity": job["channel_identity"], "model": job["model"], "protocol": job["protocol"],
+                    "target_snapshot": items[0].get("target_snapshot"),
                     "event_type": "probe_failure_reproduced", "state": "observed", "scenario": scenario,
                     "error_category": next(iter(categories)), "source_event_id": job["source_event_id"], "job_id": job["job_id"],
                     "first_seen_at": items[0]["started_at"], "last_seen_at": items[-1]["finished_at"],
@@ -689,17 +902,16 @@ async def execute_job(store: MonitorStore, job: dict[str, Any], resolve_channel,
     owner = job["lease_owner"]
     try:
         return await _execute_job(store, job, owner, resolve_channel, send)
-    except Exception:
-        # Keep what is known: request count and reservations from the local ledger, results from storage.
+    except (Exception, asyncio.CancelledError) as exc:
         ledger = job.get("_ledger") or {}
-        consumed = ledger.get("consumed") or {}
         with store.registry.connect() as conn:
             done = conn.execute("SELECT COUNT(*) FROM monitor_probe_results WHERE job_id=?", (job["job_id"],)).fetchone()[0]
         progress = {"completed_requests": done, "planned_requests": job["budget"]["planned"]["requests"]}
         steps = ledger.get("steps") or []
-        skipped = [{"scenario": s, "round": r, "reason": "executor_error"} for r, s in steps[ledger.get("next_index", 0):]]
-        store.finish_job(job["job_id"], "partially_completed" if done else "failed", "executor_error",
-                         progress, consumed, skipped, owner=owner)
+        reason = "executor_stopped" if isinstance(exc, asyncio.CancelledError) else "executor_error"
+        skipped = [{"scenario": s, "round": r, "reason": reason} for r, s in steps[ledger.get("next_index", 0):]]
+        store.finish_job(job["job_id"], "partially_completed" if done else "failed", reason,
+                         progress, {}, skipped, owner=owner)
         raise
 
 
@@ -710,58 +922,84 @@ async def _execute_job(store: MonitorStore, job: dict[str, Any], owner: str, res
     budget, so a stopped job never issues a new request. A request already in flight finishes,
     but its result is discarded if ownership was lost meanwhile.
     """
-    planned = job["budget"]["planned"]
-    progress = {"completed_requests": 0, "planned_requests": planned["requests"]}
-    consumed = {"requests": 0, "input_tokens_reserved": 0, "output_tokens_reserved": 0, "output_tokens_reported": 0}
     skipped: list[dict[str, Any]] = []
     results: list[dict[str, Any]] = []
     steps = [(round_number, scenario) for round_number in range(1, job["rounds"] + 1) for scenario in job["scenarios"]]
     # Shared with execute_job so an unexpected error can still report consumption and skipped steps.
-    job["_ledger"] = {"consumed": consumed, "steps": steps, "next_index": 0}
+    job["_ledger"] = {"steps": steps, "next_index": 0}
     status, reason = "completed", ""
     channel = resolve_channel(job["registry_channel_id"])
     if channel is None:
-        store.finish_job(job["job_id"], "rejected", "channel_not_found", progress, consumed,
+        store.finish_job(job["job_id"], "rejected", "channel_not_found", {}, {},
                          [{"scenario": s, "round": r, "reason": "channel_not_found"} for r, s in steps], owner=owner)
         return "rejected"
     for index, (round_number, scenario) in enumerate(steps):
-        stop = None
-        beat = store.heartbeat(job["job_id"], owner, progress, consumed)
-        if beat == "lost":
-            return "lost"
-        if beat == "cancel":
-            stop = ("cancelled", "cancel_requested")
-        elif time.time() >= job["expires_at"]:
-            stop = ("expired", "expired_during_run")
-        elif (consumed["requests"] + 1 > job["budget"]["max_requests"]
-              or consumed["output_tokens_reserved"] + output_reservation(job["protocol"], scenario) > job["budget"]["max_output_tokens"]):
-            stop = ("partially_completed", "budget_exhausted")
-        if stop:
-            status, reason = stop
-            skipped.extend({"scenario": s, "round": r, "reason": reason} for r, s in steps[index:])
-            break
         probe = {"id": f"monitor-{scenario}", "name": scenario, **{k: v for k, v in SCENARIOS[scenario].items() if k != "input_cap"}}
         started = time.time()
+        attempt = {}
+
+        async def before_send():
+            if attempt:
+                raise SendNotPermitted("failed", "attempt_already_permitted")
+            attempt.update(store.permit_attempt(job["job_id"], owner, channel, scenario, round_number))
+            job["_ledger"]["next_index"] = index + 1
+
+        async def request():
+            request_channel = {**channel, "model": job["model"], "protocol": job["protocol"]}
+            try:
+                if "before_send" in inspect.signature(send).parameters:
+                    return await send(request_channel, probe, before_send=before_send)
+                await before_send()
+                return await send(request_channel, probe)
+            except SendNotPermitted:
+                raise
+            except Exception:
+                if not attempt:
+                    raise
+                return {"status": "platform_error"}
+
+        task = None
         try:
-            raw = await send({**channel, "model": job["model"], "protocol": job["protocol"]}, probe)
-        except Exception:  # never let one request crash the job; the error type is not user content
-            raw = {"status": "platform_error"}
-        consumed["requests"] += 1
-        job["_ledger"]["next_index"] = index + 1
-        consumed["input_tokens_reserved"] += SCENARIOS[scenario]["input_cap"]
-        consumed["output_tokens_reserved"] += output_reservation(job["protocol"], scenario)
-        if isinstance(raw.get("output_tokens"), int):
-            consumed["output_tokens_reported"] += raw["output_tokens"]
-        body = to_result(job, scenario, round_number, raw, started, time.time())
+            store.check_running(job["job_id"], owner)
+            if store.heartbeat(job["job_id"], owner) == "lost":
+                raise SendNotPermitted("lost", "executor_lease_lost")
+            task = asyncio.create_task(request())
+            interval = min(.1, store.LEASE_SECONDS / 3)
+            while not task.done():
+                await asyncio.wait({task}, timeout=interval)
+                if task.done():
+                    break
+                store.check_running(job["job_id"], owner, before_send=not bool(attempt))
+                if store.heartbeat(job["job_id"], owner) == "lost":
+                    raise SendNotPermitted("lost", "executor_lease_lost")
+            raw = await task
+            if not attempt:
+                if raw.get("status") == "egress_denied":
+                    raise SendNotPermitted("rejected", "eval_egress_denied")
+                if raw.get("status") in {"network_error", "timeout"}:
+                    raise SendNotPermitted("failed", _CLASSIFY[raw["status"]][2])
+                raise RuntimeError("transport returned without send authorization")
+        except SendNotPermitted as exc:
+            status, reason = exc.status, exc.reason
+            if status == "lost":
+                store.recover_expired_leases()
+                return "lost"
+            skipped.extend({"scenario": s, "round": r, "reason": reason} for r, s in steps[index:])
+            break
+        finally:
+            if task is not None and not task.done():
+                task.cancel()
+                await asyncio.gather(task, return_exceptions=True)
+        body = to_result(job, scenario, round_number, raw, started, time.time(), keys=(channel["api_key"],))
+        body.update(attempt_id=attempt["attempt_id"], target_snapshot=attempt["target_snapshot"])
         result_id = store.append_result(job["job_id"], owner, body)
         if result_id is None:
             return "lost"
         body["result_id"] = result_id
         results.append(body)
-        progress["completed_requests"] += 1
     # Cancel keeps "cancelled" even with earlier results; expiry after partial work is partial.
     if status == "expired" and results:
         status, reason = "partially_completed", "expired_during_run"
-    if not store.finish_job(job["job_id"], status, reason, progress, consumed, skipped, reproduced_event(job, results), owner=owner):
+    if not store.finish_job(job["job_id"], status, reason, {}, {}, skipped, reproduced_event(job, results), owner=owner):
         return "lost"
     return status

@@ -19,7 +19,7 @@ ps:
 	docker compose ps
 
 test:
-	docker compose run --rm workbench python scripts/test_all.py
+	docker compose run --rm workbench sh -ec 'test_artifact_root=$$(mktemp -d /tmp/eval-tests.XXXXXX); export EVAL_TEST_ARTIFACT_ROOT="$$test_artifact_root" PYTHONDONTWRITEBYTECODE=1; exec python scripts/test_all.py --output "$$test_artifact_root/evidence"'
 
 prod-up:
 	docker compose -f compose.prod.yml pull
