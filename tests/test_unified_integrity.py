@@ -10,7 +10,6 @@ from unittest.mock import patch
 from shared.registry import Registry, RegistryError, Conflict
 from features.integrity.unified import UnifiedService
 from features.integrity.strategies import get_strategy, load_bank
-from tests.integrity_fixtures import production_binding
 
 
 class UnifiedIntegrityTests(unittest.IsolatedAsyncioTestCase):
@@ -18,8 +17,7 @@ class UnifiedIntegrityTests(unittest.IsolatedAsyncioTestCase):
         self.temp = tempfile.TemporaryDirectory(prefix="unified-synthetic-")
         self.registry = Registry(Path(self.temp.name))
         self.channel = self.registry.save({"name":"Synthetic zero history", "base_url":"https://synthetic.example/v1",
-            "api_key":"synthetic-unified-credential", "multiplier":1, "status":"online"})
-        production_binding(self.registry, self.channel["id"])
+            "api_key":"synthetic-unified-credential", "multiplier":1, "status":"recorded"})
         self.svc = UnifiedService(self.registry)
         self.env = patch.dict(os.environ, {"EVAL_INTEGRITY_EXECUTOR":"live"});self.env.start()
         self.sent = []
@@ -36,7 +34,11 @@ class UnifiedIntegrityTests(unittest.IsolatedAsyncioTestCase):
         return {"status":"completed", "text":text, "input_tokens_reported":10, "output_tokens_reported":10}
 
     async def test_one_first_use_task_has_three_independent_results_and_eight_attempts(self):
+        with self.registry.connect() as conn:
+            self.assertFalse(conn.execute("SELECT 1 FROM sqlite_master WHERE name IN ('production_coverage_snapshots','monitor_channel_identities')").fetchone())
         task=self.submit();self.assertEqual(task["limits"]["max_requests"],8)
+        self.assertEqual(self.registry.get(self.channel["id"])["status"], "recorded")
+        self.assertFalse(set(task["target_snapshot"]) & {"channel_identity", "inventory_version", "production_hash"})
         self.assertTrue(self.svc.choices()[0]["available"])
         self.assertEqual(self.submit()["job_id"],task["job_id"])
         await self.svc.run_pending(self.send)
@@ -102,18 +104,18 @@ class UnifiedIntegrityTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(final["reports"][2]["valid"],3)
         self.assertEqual(self.svc.list()[0]["job_id"],task["job_id"])
 
-    async def test_sol_unsupported_modeltrace_and_production_drift_rejected(self):
+    async def test_sol_unsupported_modeltrace_and_connection_drift_rejected(self):
         task=self.submit(model="gpt-6.1-sol")
         self.assertEqual(task["reports"][1]["status"],"unsupported")
         self.assertEqual(task["limits"]["max_requests"],5)
         await self.svc.run_pending(self.send)
         self.assertEqual(len(self.sent),5)
         task=self.submit(key="changed-source")
-        production_binding(self.registry,self.channel["id"],version="synthetic-v2",status="offline")
+        self.registry.save({**self.registry.get(self.channel["id"]), "base_url":"https://changed.synthetic.example/v1", "api_key":""}, self.channel["id"], self.registry.get(self.channel["id"])["version"])
         await self.svc.run_pending(self.send)
         self.assertEqual(self.svc.get(task["job_id"])["status"],"rejected")
         self.assertEqual(len(self.sent),5)
-        self.assertFalse(self.svc.choices()[0]["available"])
+        self.assertTrue(self.svc.choices()[0]["available"])
 
     async def test_noisy_and_oversized_projections_never_abort_other_methods(self):
         for case in ("noise", "rows", "numbers", "huge_integer", "deep_json"):
@@ -137,3 +139,24 @@ class UnifiedIntegrityTests(unittest.IsolatedAsyncioTestCase):
                 self.assertEqual(final["consumed"]["unknown_requests"], 0)
                 expected = [1,3,3] if case == "noise" else [1,0,0] if case == "numbers" else [0,0,0] if case == "huge_integer" else [0,3,3]
                 self.assertEqual([r["valid"] for r in final["reports"]], expected)
+
+    async def test_invalid_registry_connections_and_protocol_cannot_submit(self):
+        from features.model_coverage.catalog import Catalog
+        with self.assertRaises(RegistryError): self.submit(protocol="openai")
+        with self.assertRaises(RegistryError): self.svc.submit(registry_channel_id=True, idempotency_key="bad-id", confirm_live=True)
+        with self.assertRaises(RegistryError): self.submit(target_snapshot={})
+        for field, value in (("enabled",0),("key_enc",""),("key_enc","synthetic-unreadable"),("base_url","https://synthetic.example/v1?invalid=1")):
+            with self.subTest(field=field,value=value):
+                with self.registry.connect() as conn:
+                    old = conn.execute(f"SELECT {field} FROM channels WHERE id=?", (self.channel["id"],)).fetchone()[0]
+                    conn.execute(f"UPDATE channels SET {field}=? WHERE id=?", (value,self.channel["id"]))
+                self.assertFalse(self.svc.choices()[0]["available"])
+                with self.assertRaises(RegistryError): self.submit(key="invalid-"+field)
+                with self.registry.connect() as conn:
+                    conn.execute(f"UPDATE channels SET {field}=? WHERE id=?", (old,self.channel["id"]))
+        task=self.submit(key="mapping-change")
+        catalog=Catalog(self.registry);model=next(m for m in catalog.models() if m["model"]=="gpt-6-astra")
+        catalog.bind(self.channel["id"],model["id"],"synthetic-astra-alias","responses")
+        await self.svc.run_pending(self.send)
+        self.assertEqual(self.svc.get(task["job_id"])["status"],"rejected")
+        self.assertEqual(self.sent,[])

@@ -135,10 +135,8 @@ const upstream = http.createServer(async (req,res) => {
     if (width === 1440) assert.ok(await page.locator('.record').first().evaluate(el=>el.getBoundingClientRect().width > 1000), 'Expanded models use the whole content width');
     await page.screenshot({path:path.join(data,`coverage-${width}.png`),fullPage:true});
   }
-  page.once('dialog',dialog=>dialog.accept('newapi-channel-ui-1'));
-  await page.getByRole('button',{name:'绑定 NewAPI 渠道身份',exact:true}).first().click();
-  await page.getByRole('button',{name:'NewAPI 渠道身份：newapi-channel-ui-1',exact:true}).first().waitFor();
-  assert.equal((await request('/api/model-coverage/monitor/identities')).identities[String(channel.id)],'newapi-channel-ui-1');
+  assert.equal(await page.getByRole('button',{name:/NewAPI 渠道身份/}).count(),0,'Channel identity binding UI is removed');
+  assert.deepEqual((await request('/api/model-coverage/monitor/identities')).identities,{});
   await page.locator('#monitor-refresh').click();
   await page.waitForFunction(()=>document.getElementById('monitor-status').textContent==='已刷新');
   assert.match(await page.locator('#monitor-list').innerText(),/尚无复测任务/);

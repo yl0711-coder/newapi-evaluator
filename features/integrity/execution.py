@@ -42,6 +42,47 @@ class ResolvedTarget:
     snapshot: dict[str, Any]
 
 
+def resolve_registry_target(registry, channel_id, model, protocol, *, require_online=False, conn=None):
+    from shared.registry import RegistryError
+    from features.model_coverage.catalog import Catalog, model_name, validate_protocol
+    if type(channel_id) is not int or channel_id < 1:
+        raise RegistryError("请选择精确的公共渠道 ID")
+    model = model_name(model)
+    if conn is None:
+        Catalog(registry)
+        with registry.connect() as current:
+            return resolve_registry_target(registry, channel_id, model, protocol,
+                                           require_online=require_online, conn=current)
+    row = conn.execute("SELECT * FROM channels WHERE id=?", (channel_id,)).fetchone()
+    if row is None:
+        raise RegistryError("公共渠道不存在")
+    channel = registry.public(row)
+    try:
+        channel["api_key"] = registry._cipher.decrypt(row["key_enc"].encode()).decode()
+    except Exception:
+        raise RegistryError("渠道密钥缺失或无法解密，请替换密钥") from None
+    registry.validate_connection(channel, require_online=require_online)
+    row = conn.execute("""SELECT c.*, COALESCE(b.upstream_model,c.model) AS upstream_model,
+        COALESCE(b.protocol,c.protocol) AS request_protocol FROM model_catalog c
+        LEFT JOIN channel_model_bindings b ON b.model_id=c.id AND b.channel_id=? WHERE c.model=?""",
+                       (channel_id, model)).fetchone()
+    if row is None:
+        raise RegistryError("请选择已登记的模型")
+    binding = dict(row)
+    if binding["request_protocol"] != protocol:
+        raise RegistryError("协议与当前模型映射不一致")
+    upstream = model_name(binding["upstream_model"])
+    if channel["api_key"] in upstream:
+        raise RegistryError("模型 ID 不能包含凭据")
+    validate_protocol(protocol, model, upstream)
+    snapshot = {"registry_channel_id": channel_id, "connection_fingerprint": registry.connection_fingerprint(channel),
+                "model": upstream, "canonical_model": model, "protocol": protocol,
+                "mapping_revision": canonical_hash(binding)}
+    if require_online:
+        snapshot["registry_status"] = "online"
+    return ResolvedTarget({**channel, "model": upstream, "protocol": protocol}, snapshot)
+
+
 def estimate_input_tokens(probe: dict[str, Any]) -> int:
     """Conservative byte bound plus framing overhead, not measured tokenizer usage."""
     content = {k: probe[k] for k in ("prompt", "system_prompt") if k in probe}

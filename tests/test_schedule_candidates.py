@@ -15,7 +15,6 @@ from features.model_coverage.catalog import Catalog
 from features.model_coverage import service
 from features.stability.app import storage, scheduler, integrity
 from features.stability.app.main import app, ScheduleInput
-from tests.integrity_fixtures import production_binding
 
 
 class ScheduleCandidateTests(unittest.IsolatedAsyncioTestCase):
@@ -30,7 +29,6 @@ class ScheduleCandidateTests(unittest.IsolatedAsyncioTestCase):
         self.catalog = Catalog(self.registry)
         self.channel = self.registry.save({"name": "Synthetic new online", "base_url": "https://synthetic.example/v1",
             "api_key": "synthetic-schedule-credential", "multiplier": 1, "status": "online"})
-        production_binding(self.registry, self.channel["id"])
         self.client = httpx.AsyncClient(transport=httpx.ASGITransport(app=app), base_url="http://testserver")
 
     async def asyncTearDown(self):
@@ -105,8 +103,7 @@ class ScheduleCandidateTests(unittest.IsolatedAsyncioTestCase):
     async def test_duplicate_plan_failure_rolls_back_new_targets(self):
         data = ScheduleInput(**self.payload()).model_dump()
         original = storage.save_schedule_targets(data, data["targets"])
-        other = self.registry.save({"name": "Second synthetic", "base_url": "https://other.synthetic.example/v1", "api_key": "other-synthetic-credential", "multiplier": 1})
-        production_binding(self.registry, other["id"], source="synthetic-second-source")
+        other = self.registry.save({"name": "Second synthetic", "base_url": "https://other.synthetic.example/v1", "api_key": "other-synthetic-credential", "multiplier": 1, "status":"online"})
         changed = [{**t, "registry_channel_id": other["id"]} for t in data["targets"]]
         with self.assertRaises(Exception):
             storage.save_schedule_targets(data, changed)
@@ -129,22 +126,33 @@ class ScheduleCandidateTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(response.status_code, 422)
         self.assertEqual(storage.list_channels(), [])
 
-    async def test_explicit_production_identity_source_freshness_and_online_required(self):
-        from features.model_coverage.monitor import MonitorStore
+    async def test_user_online_and_enable_required_without_external_binding(self):
         from features.stability.app import layered
-        MonitorStore(self.registry).bind_identity(self.channel["id"], None)
-        self.assertEqual(layered.production_gate(self.registry, self.channel["id"], "gpt-6-astra", "responses")[1], "production_identity_unbound")
-        production_binding(self.registry, self.channel["id"], version="synthetic-offline", status="offline")
-        self.assertEqual((await self.client.post("/api/schedules", json=self.payload())).status_code, 400)
-        production_binding(self.registry, self.channel["id"], source="different-source", version="other-v1")
-        self.assertEqual(layered.production_gate(self.registry, self.channel["id"], "gpt-6-astra", "responses")[1], "production_source_conflict")
+        for changes in ({"status":"recorded"}, {"status":"online","enabled":False}):
+            self.registry.save({**self.registry.get(self.channel["id"]), **changes, "api_key":""}, self.channel["id"], self.registry.get(self.channel["id"])["version"])
+            row=layered.candidates()[0]
+            self.assertFalse(any(m["eligible"] for m in row["models"]))
+            self.assertEqual((await self.client.post("/api/schedules",json=self.payload())).status_code,400)
+            self.assertEqual(storage.list_channels(),[])
+            self.assertEqual(self.registry.get(self.channel["id"])["status"],changes["status"])
+        self.registry.save({**self.registry.get(self.channel["id"]), "status":"online", "enabled":True, "api_key":""}, self.channel["id"], self.registry.get(self.channel["id"])["version"])
+        self.assertEqual((await self.client.post("/api/schedules",json=self.payload())).status_code,200)
         with self.registry.connect() as conn:
-            conn.execute("DELETE FROM production_coverage_snapshots")
-        production_binding(self.registry, self.channel["id"], generated_at=time.time()-49*3600)
-        self.assertEqual(layered.production_gate(self.registry, self.channel["id"], "gpt-6-astra", "responses")[1], "production_snapshot_stale")
-        production_binding(self.registry, self.channel["id"], version="identity-wrong", eval_channel_id=9999)
-        self.assertEqual(layered.production_gate(self.registry, self.channel["id"], "gpt-6-astra", "responses")[1], "production_identity_conflict")
-        self.assertEqual(storage.list_channels(), [])
+            self.assertFalse(conn.execute("SELECT 1 FROM sqlite_master WHERE name='production_coverage_snapshots'").fetchone())
+
+    async def test_exact_mapping_and_connection_frozen_at_plan_save(self):
+        from features.stability.app import layered
+        astra=next(m for m in self.catalog.models() if m["model"]=="gpt-6-astra")
+        self.catalog.bind(self.channel["id"],astra["id"],"synthetic-astra-alias","responses")
+        saved=await self.client.post("/api/schedules",json=self.payload())
+        self.assertEqual(saved.status_code,200,saved.text)
+        plan=storage.get_schedule(saved.json()["id"])
+        slot={"registry_channel_id":self.channel["id"],"model":"gpt-6-astra","protocol":"responses"}
+        snapshot={**plan,"targets":storage.list_channels(ids=plan["channel_ids"])}
+        resolved=integrity.resolve_target(slot,snapshot)
+        self.assertEqual(resolved.channel["model"],"synthetic-astra-alias")
+        self.catalog.bind(self.channel["id"],astra["id"],"synthetic-astra-alias-2","responses")
+        self.assertIsNone(integrity.resolve_target(slot,snapshot))
 
 
 if __name__ == "__main__":

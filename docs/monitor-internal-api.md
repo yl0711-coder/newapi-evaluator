@@ -15,7 +15,7 @@
 - 两个凭据变量都不设置时，`/internal/v1/*` 全部返回 `503 monitor_access_disabled`；只设置一个或密钥过短返回 `503 monitor_access_misconfigured`。
 - 权限隔离：Monitor 凭据只能调用 `/internal/v1/*`，不能打开工作台页面或 `/api/*`；工作台登录账号（`PLATFORM_USERNAME`）不能调用 `/internal/v1/*`。
 - Monitor 能做的事：同步生产清单、创建/查询/取消复测任务、拉取结果和事件。它不能读取渠道密钥或 Base URL，不能增删改公共渠道、计划或身份绑定，不能指定任意提示词或任意 URL。
-- 渠道身份绑定只能由工作台用户在公共渠道页完成（每个渠道卡片的「绑定 NewAPI 渠道身份」）。未绑定的 `channel_identity` 一律拒绝。
+- 旧 v1 渠道身份由工作台管理 API `/api/model-coverage/monitor/identities/{registry_channel_id}` 维护，公共渠道页已移除绑定控件。旧 v1 未绑定的 `channel_identity` 一律拒绝；新的完整性 v2 使用 Registry ID，详见独立 v2 契约。
 - 执行器只在完整工作台或定时测试模式运行，与定时测试共享单调度器锁和全局请求并发上限（2）。
 
 ## 签名

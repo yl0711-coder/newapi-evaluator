@@ -21,7 +21,7 @@ from .execution import ExecutionStopped, ProbeRequest, ResolvedTarget, budget_al
 _ID = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._:/@+\-]{0,199}$")
 _SHA = re.compile(r"^[a-f0-9]{64}$")
 SNAPSHOT_FIELDS = {"registry_channel_id", "connection_fingerprint", "model", "protocol", "target_id",
-                   "mapping_revision", "channel_identity", "inventory_version", "production_source", "production_version", "production_hash"}
+                   "mapping_revision", "canonical_model", "registry_status", "channel_identity", "inventory_version", "production_source", "production_version", "production_hash"}
 PROJECTION_FIELDS = {"request_id", "status", "valid", "invalid_reason", "vector", "parsed", "correct", "item_id",
                      "family", "input_tokens_reported", "output_tokens_reported", "reasoning_tokens_reported", "latency_ms", "duration_ms",
                      "started_at", "finished_at", "calibration_status", "metadata_status", "observation_schema",
@@ -119,6 +119,8 @@ def clean_snapshot(value: dict) -> dict:
         raise ValueError("invalid target snapshot")
     if not _SHA.fullmatch(value["connection_fingerprint"]) or value["protocol"] not in {"openai", "responses", "anthropic"}:
         raise ValueError("invalid target connection identity")
+    if "registry_status" in value and value["registry_status"] != "online":
+        raise ValueError("invalid target Registry status")
     return {k: v if k == "registry_channel_id" else None if v is None else _identifier(str(v)) for k, v in value.items()}
 
 
@@ -441,12 +443,17 @@ class IntegritySession:
                 raise ExecutionStopped("rejected", "connection_changed")
             if target.channel.get("model") != snapshot["model"] or target.channel.get("protocol") != snapshot["protocol"]:
                 raise ExecutionStopped("rejected", "target_mapping_changed")
-            if snapshot.get("production_hash"):
-                from features.model_coverage.production import executable_binding
-                current_binding, reason = executable_binding(conn, snapshot["registry_channel_id"], snapshot["model"], snapshot["protocol"])
-                frozen = {k: snapshot[k] for k in ("channel_identity", "production_source", "production_version", "production_hash")}
-                if reason or current_binding != frozen:
-                    raise ExecutionStopped("rejected", "production_binding_changed")
+            try:
+                registry.validate_connection(channel, require_online=snapshot.get("registry_status") == "online")
+                if snapshot.get("canonical_model"):
+                    from .execution import resolve_registry_target
+                    resolved = resolve_registry_target(registry, snapshot["registry_channel_id"],
+                        snapshot["canonical_model"], snapshot["protocol"],
+                        require_online=snapshot.get("registry_status") == "online", conn=conn)
+                    if any(resolved.snapshot[k] != snapshot[k] for k in resolved.snapshot):
+                        raise ValueError("mapping changed")
+            except ValueError:
+                raise ExecutionStopped("rejected", "target_mapping_changed") from None
             if monitor_store is not None:
                 from features.model_coverage.monitor import ContractError
                 try:

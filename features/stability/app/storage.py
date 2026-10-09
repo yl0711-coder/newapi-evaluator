@@ -343,12 +343,14 @@ def upsert_schedule(data: dict[str, Any]) -> int:
 def save_schedule_targets(data: dict[str, Any], targets: list[dict[str, Any]]) -> int:
     """Targets and plan are committed together; disabled targets require explicit editing."""
     registry = get_registry()
-    from features.model_coverage.catalog import model_name, validate_protocol
+    from features.model_coverage.catalog import Catalog, model_name, validate_protocol
+    from features.integrity.execution import resolve_registry_target
+    Catalog(registry)
     with registry.connect() as guard, cursor() as cur:
         guard.execute("BEGIN IMMEDIATE")
         cur.execute("BEGIN IMMEDIATE")
         ids = []
-        production_bindings = {}
+        target_bindings = {}
         for selected in targets:
             registry_id = int(selected["registry_channel_id"])
             registry.resolve(registry_id)
@@ -356,11 +358,8 @@ def save_schedule_targets(data: dict[str, Any], targets: list[dict[str, Any]]) -
             protocol = selected["protocol"]
             validate_protocol(protocol, model)
             if data.get("plan_version") == "layered-integrity-v1":
-                from .layered import production_gate
-                production, reason = production_gate(registry, registry_id, model, protocol)
-                if reason:
-                    raise ValueError(reason)
-                production_bindings[f"{registry_id}:{model}:{protocol}"] = production
+                resolved = resolve_registry_target(registry, registry_id, model, protocol, require_online=True, conn=guard)
+                target_bindings[f"{registry_id}:{model}:{protocol}"] = resolved.snapshot
             matches = cur.execute("SELECT id,enabled FROM channels WHERE registry_channel_id=? AND model=? AND protocol=? ORDER BY id",
                                   (registry_id, model, protocol)).fetchall()
             if matches and not any(row["enabled"] for row in matches):
@@ -379,7 +378,8 @@ def save_schedule_targets(data: dict[str, Any], targets: list[dict[str, Any]]) -
         config = dict(data.get("layered_config") or {})
         if data.get("plan_version") == "layered-integrity-v1":
             config["registry_channel_ids"] = list(dict.fromkeys(t["registry_channel_id"] for t in targets))
-            config["production_bindings"] = production_bindings
+            config.pop("production_bindings", None)
+            config["target_bindings"] = target_bindings
         return _upsert_schedule(cur, {**data, "channel_ids": list(dict.fromkeys(ids)), "layered_config": config})
 
 

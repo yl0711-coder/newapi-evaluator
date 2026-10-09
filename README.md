@@ -55,7 +55,7 @@ python3 -m venv .venv
 
 ## 分层巡检与模型完整性复核
 
-定时计划默认新增分层 v1：五渠道短探活、TraceOne Astra/6.1 Sol 日常指纹，工作日一条健康 Astra 渠道轮转 ModelTrace 与独立完整 192 题 canary，最多 230/35 次工作日/非工作日尝试。新录入生产渠道可首次选择，不要求历史测试；稳定生产身份、来源快照、模型/协议和凭据必须可执行。旧 ins-v2 计划、历史和导出保留。canary baseline 由用户显式锁定，缺参照只有当前成绩，同条件完整配对才比较。
+定时计划默认新增分层 v1：五渠道短探活、TraceOne Astra/6.1 Sol 日常指纹，工作日一条健康 Astra 渠道轮转 ModelTrace 与独立完整 192 题 canary，最多 230/35 次工作日/非工作日尝试。使用者标记为已上线且启用的公共 Registry 渠道可首次选择，不要求历史测试；地址、凭据和模型/协议映射须有效，计划冻结连接和映射，发送前再次核验。旧 ins-v2 计划、历史和导出保留。canary baseline 由用户显式锁定，缺参照只有当前成绩，同条件完整配对才比较。
 
 `/integrity/` 提供不限合格渠道的一次启动三项 API 测试，默认 Astra：健康1次、TraceOne1次、ModelTrace最多3次、nerfed-api最多3次，独立采样、分别报告，最多8尝试、零重试。可查询、取消/恢复、打开历史与导出。另保留授权参考导入、HLwY/KBF主动复核和官方账号nerfed白名单证据离线分析。Monitor 使用 [HMAC v2 任务接口](docs/integrity-monitor-api.md)，普通登录不能替代。新日常及主动执行默认 `EVAL_INTEGRITY_EXECUTOR=off`，显式 live 才运行；账号离线分析不出站。费用只记录，不设每日金额上限；未知价格/usage不停止有限采样，请求/token/time与unknown不重发仍受约束。
 

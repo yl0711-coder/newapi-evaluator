@@ -227,7 +227,7 @@ function renderChannelPicker(selected = [], registrySelected = []) {
       row.append(text("span", model), select);
     }
     input.disabled = !eligible;
-    if (!eligible) row.append(text("p", `不可执行：${reason || channel.models.filter(m => ["gpt-6-astra","gpt-6.1-sol"].includes(m.catalog_model)).map(m => m.reason).filter(Boolean).join(" / ") || "模型未登记"}；请核对生产来源、身份、清单时效及目标状态`, "form-error"));
+    if (!eligible) row.append(text("p", `不可执行：${reason || channel.models.filter(m => ["gpt-6-astra","gpt-6.1-sol"].includes(m.catalog_model)).map(m => m.reason).filter(Boolean).join(" / ") || "模型未登记"}；请核对公共渠道的已上线状态、启用、凭据及模型/协议映射`, "form-error"));
     return row;
   }));
   if (!state.candidates.length) root.append(text("p", "公共库暂无候选渠道。先在公共渠道页新增，再刷新。"));

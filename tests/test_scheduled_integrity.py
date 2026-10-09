@@ -16,7 +16,6 @@ from shared.registry import Registry
 from features.integrity.strategies import get_strategy
 from features.stability.app import storage, layered, integrity, scheduler
 from features.stability.app.main import ScheduleInput, app
-from tests.integrity_fixtures import production_binding
 
 
 class ScheduledIntegrityTests(unittest.IsolatedAsyncioTestCase):
@@ -29,8 +28,7 @@ class ScheduledIntegrityTests(unittest.IsolatedAsyncioTestCase):
         registry_module._registry = self.registry
         storage.DB_PATH = self.directory / "stability.db"
         self.channel = self.registry.save({"name": "Synthetic channel", "base_url": "https://synthetic.example/v1",
-            "api_key": "synthetic-layered-credential", "multiplier": 1})
-        production_binding(self.registry, self.channel["id"])
+            "api_key": "synthetic-layered-credential", "multiplier": 1, "status":"online"})
         self.targets = [{"registry_channel_id": self.channel["id"], "model": model, "protocol": "responses"}
                         for model in ("gpt-6-astra", "gpt-6.1-sol")]
         data = ScheduleInput(name="Synthetic layered", daily_times="09:30", targets=self.targets,
@@ -209,10 +207,10 @@ class ScheduledIntegrityTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(len(sent), 1)
         self.assertEqual(self.row("health-0")["summary"]["attempted"], 1)
 
-    async def test_production_snapshot_change_rejects_frozen_plan_without_send(self):
-        production_binding(self.registry, self.channel["id"], version="synthetic-new-version")
+    async def test_user_recorded_status_rejects_frozen_plan_without_send(self):
+        self.registry.save({**self.registry.get(self.channel["id"]), "status":"recorded", "api_key":""}, self.channel["id"], self.registry.get(self.channel["id"])["version"])
         async def forbidden(*args, **kwargs):
-            self.fail("changed production binding sent a request")
+            self.fail("user offline Registry target sent a request")
         with patch.object(integrity, "send_probe", forbidden):
             await integrity.execute_slot(self.row("health-0"))
         row = self.row("health-0")

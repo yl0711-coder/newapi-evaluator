@@ -10,7 +10,6 @@ import time
 
 from shared.registry import Conflict, RegistryError, get_registry
 from features.model_coverage.catalog import Catalog
-from features.model_coverage.production import executable_binding
 from .durable import IntegrityStore, default_pricing
 from .execution import ResolvedTarget, build_requests, execute_requests
 from .scoring import project_observation, score_strategy
@@ -28,12 +27,7 @@ class UnifiedService:
         self.store = IntegrityStore(registry)
 
     def target(self, channel_id, model, protocol):
-        target = service.ReviewService(self.registry)._target(channel_id, model, protocol)
-        with self.registry.connect() as conn:
-            binding, reason = executable_binding(conn, channel_id, target.snapshot["model"], protocol)
-        if reason:
-            raise RegistryError(reason)
-        return ResolvedTarget(target.channel, {**target.snapshot, **binding})
+        return service.ReviewService(self.registry)._target(channel_id, model, protocol)
 
     def choices(self):
         catalog = Catalog(self.registry)
@@ -76,7 +70,7 @@ class UnifiedService:
         if principal == "monitor":
             from .monitor_adapter import resolve_monitor_target
             target = resolve_monitor_target({"target_snapshot": target_snapshot})
-            if not isinstance(target, ResolvedTarget) or target.snapshot["registry_channel_id"] != registry_channel_id:
+            if not isinstance(target, ResolvedTarget) or target.snapshot["registry_channel_id"] != registry_channel_id or target.snapshot["canonical_model"] != model or target.snapshot["protocol"] != protocol:
                 raise RegistryError("Monitor 目标绑定失效")
         else:
             if target_snapshot is not None:

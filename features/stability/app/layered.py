@@ -33,7 +33,7 @@ def canonical_hash(value):
 
 def validate_config(value):
     from .scheduler import parse_daily_times
-    if not isinstance(value, dict) or set(value) - (set(DEFAULTS) | {"registry_channel_ids", "production_bindings"}):
+    if not isinstance(value, dict) or set(value) - (set(DEFAULTS) | {"registry_channel_ids", "production_bindings", "target_bindings"}):
         raise ValueError("分层配置含未知字段")
     config = {**DEFAULTS, **value}
     if len(config["health_times"]) != 4 or len(config["astra_times"]) != 2:
@@ -60,12 +60,6 @@ def validate_config(value):
     return config
 
 
-def production_gate(registry, channel_id, model, protocol):
-    """Explicit identity plus fresh, unambiguous source; no name/ID guessing."""
-    from features.model_coverage.production import executable_binding
-    with registry.connect() as conn:
-        return executable_binding(conn, channel_id, model, protocol)
-
 
 def candidates():
     registry = get_registry()
@@ -81,8 +75,10 @@ def candidates():
             binding = mappings.get((channel["id"], model["id"]), {})
             actual = binding.get("upstream_model", model["model"])
             protocol = binding.get("protocol", model["protocol"])
-            matching = [t for t in targets if (t["registry_channel_id"], t["model"], t["protocol"]) == (channel["id"], actual, protocol)]
+            matching = [t for t in targets if (t["registry_channel_id"], t["model"], t["protocol"]) == (channel["id"], model["model"], protocol)]
             reason = "" if channel["enabled"] else "registry_disabled"
+            if channel["status"] != "online":
+                reason = reason or "registry_not_online"
             if credential != "available":
                 reason = "credential_" + credential
             if matching and not any(t["enabled"] for t in matching):
@@ -91,11 +87,14 @@ def candidates():
                 validate_protocol(protocol, model["model"], actual)
             except RegistryError:
                 reason = "protocol_invalid"
-            production, production_reason = production_gate(registry, channel["id"], actual, protocol)
-            reason = reason or production_reason
-            entries.append({"model_id": model["id"], "model": actual, "catalog_model": model["model"],
+            try:
+                from features.integrity.execution import resolve_registry_target
+                resolve_registry_target(registry, channel["id"], model["model"], protocol, require_online=True)
+            except RegistryError as exc:
+                reason = reason or str(exc)
+            entries.append({"model_id": model["id"], "model": model["model"], "upstream_model": actual, "catalog_model": model["model"],
                             "label": model["label"], "protocol": protocol, "eligible": not reason,
-                            "reason": reason, "production_binding": production,
+                            "reason": reason,
                             "eval_coverage": "configured" if matching else "not_enrolled",
                             "target_ids": [t["id"] for t in matching]})
         rows.append({"registry_channel_id": channel["id"], "name": channel["name"],

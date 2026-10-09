@@ -1,4 +1,4 @@
-"""Monitor target gates and durable, offline official-account evidence analysis."""
+"""Monitor Registry targets and durable, offline official-account evidence analysis."""
 from __future__ import annotations
 
 import asyncio
@@ -17,41 +17,25 @@ EXECUTOR_ID = "evidence-" + secrets.token_hex(8)
 
 
 def resolve_monitor_target(metadata):
-    from features.model_coverage.monitor import MonitorStore, ContractError
+    from .execution import resolve_registry_target
     snapshot = metadata.get("target_snapshot")
-    if not isinstance(snapshot, dict) or not snapshot.get("channel_identity") or not snapshot.get("inventory_version"):
+    if not isinstance(snapshot, dict) or not snapshot.get("canonical_model"):
         return None
-    registry, store = get_registry(), MonitorStore(get_registry())
     try:
-        store._check_inventory(snapshot["inventory_version"], snapshot["channel_identity"], snapshot["model"])
-        inventory = store.inventory_channel(snapshot["inventory_version"], snapshot["channel_identity"])
-        if inventory is None or inventory["enabled_status"] != "enabled":
-            return None
-        channel = registry.resolve(snapshot["registry_channel_id"])
-        job = {**snapshot, "expected_inventory_version": snapshot["inventory_version"]}
-        with registry.connect() as conn:
-            store._verify_target(conn, job, channel=channel)
-        return ResolvedTarget({**channel, "model": snapshot["model"], "protocol": snapshot["protocol"]}, snapshot)
-    except (KeyError, RegistryError, ContractError):
-        return None
-
-
-def monitor_target_snapshot(identity, inventory_version, model, protocol):
-    from features.model_coverage.monitor import MonitorStore, ContractError
-    registry, store = get_registry(), MonitorStore(get_registry())
-    store._check_inventory(inventory_version, identity, model)
-    channel_id = store.resolve_identity(identity)
-    if channel_id is None:
-        raise ContractError(422, "target_channel_not_verified", "production channel identity requires explicit binding")
-    try:
-        channel = registry.resolve(channel_id)
+        target = resolve_registry_target(get_registry(), snapshot["registry_channel_id"],
+                                         snapshot["canonical_model"], snapshot["protocol"])
+        return target if target.snapshot == snapshot else None
     except (KeyError, RegistryError):
-        raise ContractError(409, "connection_unavailable", "target connection is unavailable") from None
-    snapshot = {"registry_channel_id": channel_id, "connection_fingerprint": registry.connection_fingerprint(channel),
-                "model": model, "protocol": protocol, "channel_identity": identity, "inventory_version": inventory_version}
-    if resolve_monitor_target({"target_snapshot": snapshot}) is None:
-        raise ContractError(409, "target_identity_changed", "production target binding or inventory changed")
-    return snapshot
+        return None
+
+
+def monitor_target_snapshot(registry_channel_id, model, protocol):
+    from .execution import resolve_registry_target
+    from features.model_coverage.monitor import ContractError
+    try:
+        return resolve_registry_target(get_registry(), registry_channel_id, model, protocol).snapshot
+    except (KeyError, RegistryError):
+        raise ContractError(422, "target_connection_invalid", "Registry channel, credentials or model mapping are invalid") from None
 
 
 def _owned(job_id, principal, administrative=False):

@@ -30,17 +30,15 @@ def resolve_target(slot, snapshot):
         current = storage.get_channel(target["id"], include_secret=True)
         if not current or not current["enabled"] or any(current[k] != target[k] for k in ("registry_channel_id", "model", "protocol")):
             return None
-        production, reason = layered.production_gate(registry, current["registry_channel_id"], current["model"], current["protocol"])
-        bound = snapshot["layered_config"].get("production_bindings", {}).get(
+        from features.integrity.execution import resolve_registry_target
+        resolved = resolve_registry_target(registry, current["registry_channel_id"], current["model"],
+                                           current["protocol"], require_online=True)
+        bound = snapshot["layered_config"].get("target_bindings", {}).get(
             f"{current['registry_channel_id']}:{current['model']}:{current['protocol']}")
-        if reason or production != bound:
+        if bound is None or resolved.snapshot != bound:
             return None
-        mapping = layered.canonical_hash({k: target[k] for k in ("registry_channel_id", "model", "protocol")})
-        identity = {"registry_channel_id": current["registry_channel_id"],
-                    "connection_fingerprint": current["connection_fingerprint"],
-                    "model": current["model"], "protocol": current["protocol"],
-                    "target_id": str(current["id"]), "mapping_revision": mapping, **production}
-        return ResolvedTarget(current, identity)
+        return ResolvedTarget({**resolved.channel, "id": current["id"]},
+                              {**resolved.snapshot, "target_id": str(current["id"])})
     except (RegistryError, KeyError):
         return None
 

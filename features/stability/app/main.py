@@ -24,7 +24,7 @@ class ChannelInput(BaseModel):
     model_config = ConfigDict(extra="forbid", str_strip_whitespace=True)
     id: int | None = Field(default=None, ge=1)
     name: str = Field(min_length=1, max_length=80)
-    registry_channel_id: int = Field(ge=1)
+    registry_channel_id: int = Field(ge=1, strict=True)
     model: str = Field(min_length=1, max_length=160)
     protocol: Literal["openai", "anthropic", "responses"] = "openai"
     enabled: bool = True
@@ -37,7 +37,7 @@ class ChannelInput(BaseModel):
 
 class TargetInput(BaseModel):
     model_config = ConfigDict(extra="forbid", str_strip_whitespace=True)
-    registry_channel_id: int = Field(ge=1)
+    registry_channel_id: int = Field(ge=1, strict=True)
     model: str = Field(min_length=1, max_length=160)
     protocol: Literal["openai", "anthropic", "responses"]
     model_id: int | None = Field(default=None, ge=1)
@@ -223,7 +223,7 @@ async def save_schedule(body: ScheduleInput) -> JSONResponse:
             for target in body.targets:
                 if target.model_id:
                     bound = catalog.binding(target.registry_channel_id, target.model_id)
-                    if (target.model, target.protocol) != (bound["upstream_model"], bound["request_protocol"]):
+                    if (target.model, target.protocol) != (bound["model"] if body.plan_version == layered.VERSION else bound["upstream_model"], bound["request_protocol"]):
                         raise ValueError("model_mapping_changed: 模型或协议映射已变更")
                 elif not any(m["model"] == target.model and m["protocol"] == target.protocol for m in catalog.models()):
                     raise ValueError("catalog_model_required: 请先添加合法常用模型或显式映射")

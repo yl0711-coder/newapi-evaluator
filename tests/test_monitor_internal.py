@@ -164,12 +164,13 @@ class MonitorContractTests(unittest.IsolatedAsyncioTestCase):
 
     # ---- probe jobs -------------------------------------------------------------------------
     async def test_same_idempotency_key_creates_one_job(self):
-        first = await self.call("POST", "/internal/v1/probe-jobs", self.job())
-        second = await self.call("POST", "/internal/v1/probe-jobs", self.job())
+        body = self.job()
+        first = await self.call("POST", "/internal/v1/probe-jobs", body)
+        second = await self.call("POST", "/internal/v1/probe-jobs", body)
         self.assertEqual((first.status_code, second.status_code), (201, 200))
         self.assertEqual(first.json()["job_id"], second.json()["job_id"])
         self.assertEqual(first.json()["status"], "queued")
-        conflict = await self.call("POST", "/internal/v1/probe-jobs", self.job(rounds=1))
+        conflict = await self.call("POST", "/internal/v1/probe-jobs", {**body, "rounds":1})
         self.assertEqual((conflict.status_code, conflict.json()["error"]["code"]), (409, "idempotency_conflict"))
         mismatch = await self.call("POST", "/internal/v1/probe-jobs", self.job(idempotency_key="other-key"), idempotency="header-key")
         self.assertEqual(mismatch.json()["error"]["code"], "idempotency_key_mismatch")

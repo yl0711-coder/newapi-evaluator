@@ -169,24 +169,30 @@ class IntegrityExecutionTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(sent, ["probe-1"])
         self.assertEqual(self.store.job(job["job_id"])["consumed"]["requests"], 2)
 
-    async def test_production_change_after_resolution_is_rejected_by_atomic_permit(self):
-        from tests.integrity_fixtures import production_binding
-        from features.stability.app.layered import production_gate
-        production_binding(self.registry, self.channel["id"])
-        self.target["protocol"] = "responses"
-        binding, reason = production_gate(self.registry, self.channel["id"], "gpt-6-astra", "responses")
-        self.assertFalse(reason)
-        self.target.update(binding)
-        cached = self.resolve()
-        job = self.enqueue()
-        production_binding(self.registry, self.channel["id"], version="synthetic-after-resolve")
-        sent = []
-        async def send(channel, probe, *, before_send):
-            await before_send(); sent.append(probe["id"])
-            return {"status": "completed"}
-        self.assertEqual(await execute_requests(self.session(job), self.requests, lambda: cached, send, self.project), "rejected")
-        self.assertEqual(sent, [])
-        self.assertEqual(self.store.job(job["job_id"])["consumed"]["requests"], 0)
+    async def test_registry_status_and_mapping_changes_after_resolution_rejected_atomically(self):
+        from features.integrity.execution import resolve_registry_target
+        from features.model_coverage.catalog import Catalog
+        self.registry.save({**self.registry.get(self.channel["id"]),"status":"online","enabled":True,"api_key":""}, self.channel["id"], self.registry.get(self.channel["id"])["version"])
+        catalog=Catalog(self.registry)
+        for case in ("status","mapping","disabled","mapping_manual"):
+            self.registry.save({**self.registry.get(self.channel["id"]),"status":"online","enabled":True,"api_key":""}, self.channel["id"], self.registry.get(self.channel["id"])["version"])
+            cached=resolve_registry_target(self.registry,self.channel["id"],"gpt-6-astra","responses",require_online=case in {"status","mapping"})
+            self.target=cached.snapshot
+            job=self.enqueue(key=case,budget_key=case)
+            if case=="status":
+                self.registry.save({**self.registry.get(self.channel["id"]),"status":"recorded","api_key":""}, self.channel["id"], self.registry.get(self.channel["id"])["version"])
+            elif case=="disabled":
+                self.registry.save({**self.registry.get(self.channel["id"]),"enabled":False,"api_key":""},self.channel["id"],self.registry.get(self.channel["id"])["version"])
+            else:
+                model=next(m for m in catalog.models() if m["model"]=="gpt-6-astra")
+                catalog.bind(self.channel["id"],model["id"],"synthetic-new-alias-"+case,"responses")
+            sent=[]
+            async def send(channel,probe,*,before_send):
+                await before_send();sent.append(probe["id"])
+                return {"status":"completed"}
+            self.assertEqual(await execute_requests(self.session(job),self.requests,lambda:cached,send,self.project),"rejected")
+            self.assertEqual(sent,[])
+            self.assertEqual(self.store.job(job["job_id"])["consumed"]["requests"],0)
 
     async def test_connection_credentials_mapping_and_enable_are_revalidated_at_send(self):
         for case in ("credential", "disabled", "mapping"):

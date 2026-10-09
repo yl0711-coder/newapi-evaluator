@@ -32,15 +32,11 @@ async function until(fn,message,timeout=30000){const end=performance.now()+timeo
   appExit=new Promise(r=>{app.once('exit',r);app.once('error',r);});app.stderr.on('data',c=>logs+=c.toString());
   await until(async()=>{try{return(await fetch(base+'/api/health')).ok;}catch{return false;}},'owned server startup');
   async function request(url,body,method='POST'){const res=await fetch(base+url,body===undefined?{}:{method,headers:{'Content-Type':'application/json'},body:JSON.stringify(body)});check(res.ok,`API ${url}: ${res.status}`);return res.json();}
-  const channel=await request('/api/registry/channels',{name:'Synthetic first online',base_url:`http://127.0.0.1:${upstream.address().port}/v1`,api_key:'synthetic-integrity-ui-credential',multiplier:1,status:'online'});
-  await request(`/api/model-coverage/monitor/identities/${channel.id}`,{channel_identity:'synthetic-ui-stable'},'PUT');
-  await request('/api/model-coverage/production/import',{source:'synthetic-ui-source',version:'synthetic-ui-v1',generated_at:Date.now()/1000,
-    items:['gpt-6-astra','gpt-6.1-sol'].map(model=>({channel_identity:'synthetic-ui-stable',model,protocol:'responses',production_status:'online',eval_channel_id:channel.id}))});
-  browser=await chromium.launch({headless:true,...(process.env.PLAYWRIGHT_CHANNEL?{channel:process.env.PLAYWRIGHT_CHANNEL}:{})});
-  const page=await browser.newPage({viewport:{width:1440,height:1000}}),errors=[];page.on('pageerror',e=>errors.push(e.message));
+  const channel=await request('/api/registry/channels',{name:'Synthetic first recorded',base_url:`http://127.0.0.1:${upstream.address().port}/v1`,api_key:'synthetic-integrity-ui-credential',multiplier:1,status:'recorded'});
+  browser=await chromium.launch({headless:true,channel:process.env.PLAYWRIGHT_CHANNEL||undefined});const page=await browser.newPage({viewport:{width:1440,height:1000}}),errors=[];page.on('pageerror',e=>errors.push(e.message));
   await page.goto(base+'/');await page.getByRole('link',{name:/模型完整性复核/}).first().waitFor();
   await page.goto(base+'/integrity/');await page.locator('#unified-channel option').nth(1).waitFor({state:'attached'});
-  check((await request('/stability/api/channels')).channels.length===0,'new online channel has zero existing targets');
+  check((await request('/stability/api/channels')).channels.length===0,'recorded channel has zero existing targets');
   await page.locator('#unified-channel').selectOption(String(channel.id));
   check(await page.locator('#unified-model').inputValue()==='gpt-6-astra','unified default Astra');
   async function unifiedSubmit(){await page.locator('#unified-confirm').check();const accepted=page.waitForResponse(r=>r.url()===base+'/api/integrity/tests'&&r.request().method()==='POST');await page.locator('#unified-submit').click();const res=await accepted;check(res.status()===202,'one click creates async unified task');return(await res.json()).task_id;}
@@ -60,9 +56,12 @@ async function until(fn,message,timeout=30000){const end=performance.now()+timeo
   check(unifiedResult.consumed.requests===8&&unifiedResult.consumed.unknown_requests===1,'unified unknown retains cap, no resend');
   check(unifiedResult.reports[2].valid===3,'later method completes after earlier unknown');
   await page.reload();await page.locator(`[data-unified-id="${unifiedFirst}"]`).waitFor();check(true,'unified historical three reports survive reload');
+  const currentChannel=(await request('/api/registry/channels')).channels.find(c=>c.id===channel.id);
+  const edited=Object.fromEntries(['name','base_url','scope','multiplier','note','enabled','version','protocol_profile'].map(k=>[k,currentChannel[k]]));
+  await request(`/api/registry/channels/${channel.id}`,{...edited,status:'online',api_key:''},'PUT');
   await page.goto(base+'/stability/');await page.getByRole('button',{name:'定时计划',exact:true}).click();await page.getByRole('button',{name:'新增计划',exact:true}).click();
-  await page.locator('#schedule-dialog').waitFor();check(await page.getByRole('checkbox',{name:'选择公共渠道 Synthetic first online'}).isEnabled(),'zero target production channel selectable');
-  await page.locator('#schedule-name').fill('Synthetic layered browser');await page.getByRole('checkbox',{name:'选择公共渠道 Synthetic first online'}).check();await page.locator('#schedule-enabled').uncheck();
+  await page.locator('#schedule-dialog').waitFor();check(await page.getByRole('checkbox',{name:'选择公共渠道 Synthetic first recorded'}).isEnabled(),'zero target user-defined online Registry channel selectable');
+  await page.locator('#schedule-name').fill('Synthetic layered browser');await page.getByRole('checkbox',{name:'选择公共渠道 Synthetic first recorded'}).check();await page.locator('#schedule-enabled').uncheck();
   const saved=page.waitForResponse(r=>r.url()===base+'/stability/api/schedules'&&r.request().method()==='POST');
   await page.locator('#schedule-form button[type=submit]').click();check((await saved).ok(),'layered plan saved');await page.locator('#schedule-dialog').waitFor({state:'hidden'});
   const planId=(await request('/stability/api/schedules')).schedules[0].id;

@@ -34,7 +34,7 @@ Monitor 复测使用独立的 `monitor_probe_jobs` / `monitor_probe_attempts` �
 
 ## 前端入口
 
-公共渠道页 `/channels/` 提供生产覆盖导入、任务创建、刷新和取消，以及 NewAPI 渠道身份绑定和 Monitor 复测任务状态。所有新建后端用户能力都必须同步提供可见操作和状态反馈。
+公共渠道页 `/channels/` 提供生产覆盖导入、任务创建、刷新和取消，以及 Monitor 旧 v1 复测任务状态。渠道身份绑定 UI 已移除；v1 数据与 API 合同保留，新的完整性 v2 使用 Registry 精确 ID。所有新建后端用户能力都必须同步提供可见操作和状态反馈。
 
 ## 放权与门禁
 

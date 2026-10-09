@@ -24,7 +24,7 @@ class ReferenceInput(Input):
 
 
 class ReviewInput(Input):
-    registry_channel_id: int = Field(ge=1)
+    registry_channel_id: int = Field(ge=1, strict=True)
     model: str = Field(min_length=1, max_length=160)
     protocol: Literal["openai", "responses", "anthropic"]
     strategy_id: Literal["hlwy", "kbf"]
@@ -45,7 +45,7 @@ class EvidenceInput(Input):
 
 
 class UnifiedInput(Input):
-    registry_channel_id: int = Field(ge=1)
+    registry_channel_id: int = Field(ge=1, strict=True)
     model: Literal["gpt-6-astra", "gpt-6.1-sol"] = "gpt-6-astra"
     protocol: Literal["responses"] = "responses"
     idempotency_key: str = Field(min_length=1, max_length=200)

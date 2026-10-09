@@ -156,10 +156,18 @@ class Registry:
                 raise RegistryError("渠道密钥无法解密，请检查配套密钥文件") from exc
         return result
 
-    def resolve(self, channel_id: int) -> dict:
+    def resolve(self, channel_id: int, *, require_online: bool = False) -> dict:
         result = self.get(channel_id, secret=True)
+        return self.validate_connection(result, require_online=require_online)
+
+    def validate_connection(self, result: dict, *, require_online: bool = False) -> dict:
         if not result["enabled"]:
             raise RegistryError("该公共渠道已停用")
+        clean = normalize(result)
+        if any(clean[k] != result[k] for k in ("base_url", "api_key")):
+            raise RegistryError("渠道连接格式无效，请编辑后重新保存")
+        if require_online and result["status"] != "online":
+            raise RegistryError("registry_not_online: 请先由使用者将公共渠道标记为已上线")
         return result
 
     def connection_fingerprint(self, channel: dict) -> str:

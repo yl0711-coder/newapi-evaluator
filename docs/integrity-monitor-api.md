@@ -1,6 +1,6 @@
 # Monitor 完整性任务 v2
 
-复用 [v1 HMAC](monitor-internal-api.md) 的签名、nonce、4 MiB 读体上限、时间窗与权限。URL 仍 `/internal/v1`，完整性任务 body/response `schema_version="2.0"`；v1 probe-jobs、历史结果和原执行器保留。
+复用 [v1 HMAC](monitor-internal-api.md) 的签名、nonce、4 MiB 读体上限、时间窗与权限。URL 仍 `/internal/v1`，完整性任务 body/response `schema_version="2.0"`；v1 probe-jobs、历史结果和原执行器保留原 schema 与身份/清单合同。新的 v2 主动任务使用 Registry ID；已有 v2 旧身份快照可查询，恢复需创建具有新 Registry 条件的新任务，unknown 不补发。
 
 | 接口 | 返回 |
 | --- | --- |
@@ -33,14 +33,14 @@ provenance 是调用方声明，结果 `evidence_authenticity=not_verified`。�
 
 ```json
 {"schema_version":"2.0","job_type":"active-review",
- "target":{"channel_identity":"newapi-owned-channel","inventory_version":"inventory-v1","model":"gpt-6-astra","protocol":"responses"},
+ "target":{"registry_channel_id":123,"model":"gpt-6-astra","protocol":"responses"},
  "review":{"strategy_id":"kbf","reference_hash":"<64位已导入哈希>","source_ref":"incident:1","incident_id":"incident:1",
  "limits":{"max_requests":4,"max_input_tokens":16384,"max_output_tokens":1024},"budget_seconds":120,
  "conditions":{"provider":"<参考绑定provider>","protocol":"responses","model":"gpt-6-astra",
  "parameters":"<完整参考parameters对象>","budget":"<完整参考budget对象>"},"confirm_live":true}}
 ```
 
-上例占位字段应替换成已授权参考元数据中的实际对象；实际 budgets 必须与参考绑定一致。review 不接受目标、凭据、幂等键覆盖。生产 identity 必须由工作台明确绑定，inventory 必须有效且模型/协议可用，生产 enabled；发送前再核验连接/identity/inventory。只请求选定候选，reference 不自动在线采集。`EVAL_INTEGRITY_EXECUTOR=live`、持有定时锁的 all/stability 服务才消费主动任务；默认off。费用只记录，无每日金额准入或停止；有限请求/token/time约束仍执行。
+上例占位字段应替换成已授权参考元数据中的实际对象；实际 budgets 必须与参考绑定一致。review 不接受目标、凭据、幂等键覆盖。target 只接受严格正整数 registry_channel_id 与已登记的 model/protocol，服务端解析 Registry 凭据和精确模型映射；允许已记录和已上线的启用渠道，不需要外部身份或生产清单。发送许可在同一 Registry 事务内重新核验冻结连接和映射。只请求选定候选，reference 不自动在线采集。`EVAL_INTEGRITY_EXECUTOR=live`、持有定时锁的 all/stability 服务才消费主动任务；默认off。费用只记录，无每日金额准入或停止；有限请求/token/time约束仍执行。
 
 ## 调用代码
 
@@ -65,7 +65,7 @@ async def submit(base_url, key_id, secret, payload, idempotency_key):
         return await client.post(base_url+path, content=raw, headers=headers)
 ```
 
-错误 envelope 为 `{schema_version:"2.0",error:{code,message,retryable,request_id}}`。400 invalid_field/schema_version_unsupported 是输入错误；401/403沿用签名/nonce/principal错误；404 job_not_found 隔离其他principal任务；409 idempotency_conflict/target_identity_changed 等是身份或输入冲突；422 integrity_contract_rejected 是参考/条件/证据/预算不成立，job_type_unsupported为未实现方法。旧主动nerfed在两路入口明确422 strategy_contract_changed，指向v2离线契约。503 monitor_access_disabled/misconfigured 不自动重试；eval_unavailable按retryable/Retry-After处理。无任务内长时同步探测，不回调、不通知、不改生产路由。
+错误 envelope 为 `{schema_version:"2.0",error:{code,message,retryable,request_id}}`。400 invalid_field/schema_version_unsupported 是输入错误；401/403沿用签名/nonce/principal错误；404 job_not_found 隔离其他principal任务；409 idempotency_conflict 是任务输入冲突；422 target_connection_invalid 是 Registry 连接或映射无效，integrity_contract_rejected 是参考/条件/证据/预算不成立，job_type_unsupported为未实现方法。旧主动nerfed在两路入口明确422 strategy_contract_changed，指向v2离线契约。503 monitor_access_disabled/misconfigured 不自动重试；eval_unavailable按retryable/Retry-After处理。无任务内长时同步探测，不回调、不通知、不改生产路由。
 
 ## 新增 API 数字指纹 nerfed-api-v1
 
@@ -73,10 +73,10 @@ async def submit(base_url, key_id, secret, payload, idempotency_key):
 
 ```json
 {"schema_version":"2.0","job_type":"nerfed-api","confirm_live":true,
- "target":{"channel_identity":"newapi-owned-channel","inventory_version":"inventory-v1",
+ "target":{"registry_channel_id":123,
  "model":"gpt-6-astra","protocol":"responses"}}
 ```
 
 202仅创建nerfed-api-v1任务；真实消费者异步执行指定channel/model的1次健康和最多3次独立16类bank探针，重试0、总窗600秒、长探针各60秒。沿用查询/result/cancel/resume。返回reports[0]含method/version、planned/attempted/valid/invalid/unknown/not_run、conditions、duration_ms、usage和score。至少2有效答才能评分；top>=.8、expected<=.2、fused margin>=.5sigma才上游MISMATCH，其他SUSPICIOUS，未列UNLISTED。普通API始终unvalidated/unavailable，不读取Codex文件、运行上游入口或伪造会话环境。
 
-工作台另有 `/api/integrity/tests` 的three-method-api-v1八尝试统一任务；普通登录仅工作台范围，HMAC不授予渠道管理权限。新API类型仅接受明确target和confirm_live，不接受路径、证据、reference或预算覆盖。错误语义沿用2.0 envelope；无健康证据长探针skipped，identity/inventory/连接变化拒绝续发，unknown不重发。原旧主动nerfed别名仍报strategy_contract_changed，不静默转为新类型。
+工作台另有 `/api/integrity/tests` 的three-method-api-v1八尝试统一任务；普通登录仅工作台范围，HMAC不授予渠道管理权限。新API类型仅接受明确target和confirm_live，不接受路径、证据、reference或预算覆盖。错误语义沿用2.0 envelope；无健康证据长探针skipped，Registry 停用、连接或模型映射变化拒绝续发，unknown不重发。原旧主动nerfed别名仍报strategy_contract_changed，不静默转为新类型。

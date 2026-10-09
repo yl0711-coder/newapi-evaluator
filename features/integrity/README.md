@@ -1,6 +1,6 @@
 # 分层巡检与异常复核
 
-定时页选择「分层完整性 v1」，从生产身份已绑定、清单新鲜、凭据可用的公共渠道首次建计划。最多五条渠道；保存计划幂等创建两个模型的本地巡检目标，不要求历史准入或历史观测。生产 online、Eval 配置覆盖和检测结果分别展示。执行前重新核验冻结的连接、模型、协议和生产来源；变化后拒绝发送。
+定时页选择「分层完整性 v1」，从使用者标记为已上线、启用且地址与凭据有效的公共 Registry 渠道首次建计划。最多五条渠道；保存计划幂等创建两个模型的本地巡检目标，不要求历史准入或历史观测。Registry online、Eval 配置覆盖和检测结果分别展示。保存计划冻结 Registry 连接和模型/协议映射，发送许可在同一事务中再次核验；用户改为已记录、停用、连接或映射变化后拒绝发送。旧分层配置可读取，执行前需要显式重新保存以冻结 Registry 条件。
 
 ## 日常计划
 
@@ -50,7 +50,7 @@ fpverify 仅在合格官方同条件 reference 后的后续按需审计，本轮
 
 ## 三项统一 API 测试
 
-从 `/integrity/` 选择一次合格渠道，默认 `gpt-6-astra` / Responses / low，点击「开始三项测试」。可选范围不限制五条渠道；不要求历史target或通过记录，但须有明确稳定生产身份、新鲜且单一来源的online清单、模型/协议绑定和可用凭据。一次持久任务分别执行健康1次、TraceOne1次、ModelTrace最多3次、nerfed-api最多3次，总计最多8次尝试、零重试，每种方法独立发送与评分。健康失败跳过长探针；子项invalid不阻止其他子项。
+从 `/integrity/` 选择一次合格渠道，默认 `gpt-6-astra` / Responses / low，点击「开始三项测试」。可选范围不限制五条渠道；不要求历史target或通过记录，允许已记录和已上线渠道，但须启用且地址、凭据及模型/协议映射有效；保存渠道不自动测试。一次持久任务分别执行健康1次、TraceOne1次、ModelTrace最多3次、nerfed-api最多3次，总计最多8次尝试、零重试，每种方法独立发送与评分。健康失败跳过长探针；子项invalid不阻止其他子项。
 
 POST `/api/integrity/tests` 请求 `{registry_channel_id,model,protocol,idempotency_key,confirm_live:true}` 返回202统一任务。GET `/api/integrity/tests`、GET `/api/integrity/tests/{id}` 和 `/export` 提供历史/状态/三份报告；POST同路径 `/cancel`、`/resume` 仅续原窗内未发送项。任务 `three-method-api-v1`、600秒总窗；长探针各60秒，固定输出上限和token总预留。重复幂等键保留原任务和期限，改变目标/版本409。「新一轮测试」明确重新采样。
 

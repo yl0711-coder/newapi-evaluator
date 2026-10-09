@@ -14,7 +14,10 @@ from features.model_coverage.monitor import MonitorStore
 
 
 class IntegrityMonitorTests(unittest.IsolatedAsyncioTestCase):
-    asyncSetUp = monitor_fixture.MonitorContractTests.asyncSetUp
+    async def asyncSetUp(self):
+        await monitor_fixture.MonitorContractTests.asyncSetUp(self)
+        MonitorStore(self.registry).bind_identity(self.channel["id"],None)
+
     call = monitor_fixture.MonitorContractTests.call
     inventory = monitor_fixture.MonitorContractTests.inventory
 
@@ -29,13 +32,14 @@ class IntegrityMonitorTests(unittest.IsolatedAsyncioTestCase):
 
     async def test_nerfed_api_is_new_async_type_and_preserves_offline_contract(self):
         from features.integrity.unified import UnifiedService
-        inventory=self.inventory();inventory["channels"][0]["models"]=["gpt-6-astra"]
-        MonitorStore(self.registry).import_inventory("cfg-1",inventory,{})
         body={"schema_version":"2.0","job_type":"nerfed-api","confirm_live":True,
-              "target":{"channel_identity":"newapi-channel-96","inventory_version":"cfg-1","model":"gpt-6-astra","protocol":"responses"}}
+              "target":{"registry_channel_id":self.channel["id"],"model":"gpt-6-astra","protocol":"responses"}}
         response=await self.call("POST","/internal/v1/integrity-jobs",body,idempotency="nerfed-api-synthetic")
         self.assertEqual(response.status_code,202,response.text)
         job=response.json()["job"];self.assertEqual(job["consumed"]["requests"],0)
+        self.assertEqual(MonitorStore(self.registry).identities(),{})
+        self.assertEqual(self.registry.get(self.channel["id"])["status"],"recorded")
+        self.assertNotIn("inventory_version",job["target_snapshot"])
         calls=[]
         async def send(channel,probe,*,before_send):
             await before_send();calls.append(probe["id"])
@@ -105,15 +109,13 @@ class IntegrityMonitorTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(await monitor_adapter.run_offline_pending(),1)
         self.assertEqual(await monitor_adapter.run_offline_pending(),0)
 
-    async def test_active_review_binds_inventory_and_uses_real_consumer(self):
-        inventory=self.inventory();inventory["channels"][0]["models"]=["gpt-6-astra"]
-        store=MonitorStore(self.registry);store.import_inventory("cfg-1",inventory,{})
+    async def test_active_review_binds_registry_and_uses_real_consumer(self):
         package=synthetic_reference(count=4)
         svc=service.ReviewService(self.registry)
         svc.import_reference(package,package["package_hash"],principal="monitor",confirm_authorized=True)
         b=package["budget"]
         body={"schema_version":"2.0","job_type":"active-review",
-              "target":{"channel_identity":"newapi-channel-96","inventory_version":"cfg-1","model":"gpt-6-astra","protocol":"responses"},
+              "target":{"registry_channel_id":self.channel["id"],"model":"gpt-6-astra","protocol":"responses"},
               "review":{"strategy_id":"kbf","reference_hash":package["package_hash"],"source_ref":"synthetic-monitor-incident", "incident_id":"synthetic-v2",
                         "limits":{k:b[k] for k in ("max_requests","max_input_tokens","max_output_tokens")},
                         "budget_seconds":b["total_timeout_seconds"],"conditions":package["self_test"]["conditions"],"confirm_live":True}}
@@ -133,3 +135,18 @@ class IntegrityMonitorTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual((await self.call("POST","/internal/v1/integrity-jobs",bad)).status_code,400)
         overridden=copy.deepcopy(body);overridden["review"]["registry_channel_id"]=999
         self.assertEqual((await self.call("POST","/internal/v1/integrity-jobs",overridden)).status_code,400)
+
+    async def test_v2_strict_registry_target_and_overrides_rejected(self):
+        body={"schema_version":"2.0","job_type":"nerfed-api","confirm_live":True,
+              "target":{"registry_channel_id":self.channel["id"],"model":"gpt-6-astra","protocol":"responses"}}
+        for value in (True,"1",0,-1,{},None):
+            invalid=copy.deepcopy(body);invalid["target"]["registry_channel_id"]=value
+            self.assertEqual((await self.call("POST","/internal/v1/integrity-jobs",invalid)).status_code,400)
+        for changes in ({"registry_channel_id":9999},{"model":"synthetic-unknown"},{"protocol":"openai"}):
+            invalid=copy.deepcopy(body);invalid["target"].update(changes)
+            self.assertEqual((await self.call("POST","/internal/v1/integrity-jobs",invalid)).status_code,422)
+        for changes in ({"channel_identity":"old-v1"},{"inventory_version":"old-v1"},{"api_key":"synthetic-override"},{"base_url":"https://synthetic.example"}):
+            invalid=copy.deepcopy(body);invalid["target"].update(changes)
+            self.assertEqual((await self.call("POST","/internal/v1/integrity-jobs",invalid)).status_code,400)
+        self.registry.save({**self.registry.get(self.channel["id"]),"enabled":False,"api_key":""}, self.channel["id"], self.registry.get(self.channel["id"])["version"])
+        self.assertEqual((await self.call("POST","/internal/v1/integrity-jobs",body)).status_code,422)

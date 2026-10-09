@@ -280,12 +280,11 @@ async def create_integrity_job(request: Request):
             if set(body) != {"schema_version", "job_type", "target", "confirm_live"}:
                 raise ContractError(400, "invalid_field", "nerfed-api requires explicit target and confirmation")
             target = body["target"]
-            if not isinstance(target, dict) or set(target) != {"channel_identity", "inventory_version", "model", "protocol"}:
-                raise ContractError(400, "invalid_field", "explicit production target is required")
-            if any(not isinstance(target[k], str) or not target[k] or len(target[k]) > 160 for k in target):
+            if not isinstance(target, dict) or set(target) != {"registry_channel_id", "model", "protocol"}:
+                raise ContractError(400, "invalid_field", "explicit Registry target is required")
+            if type(target["registry_channel_id"]) is not int or target["registry_channel_id"] < 1 or any(not isinstance(target[k], str) or not target[k] or len(target[k]) > 160 for k in ("model", "protocol")):
                 raise ContractError(400, "invalid_field", "target identifiers are invalid")
-            snapshot = adapter.monitor_target_snapshot(identity=target["channel_identity"], inventory_version=target["inventory_version"],
-                model=target["model"], protocol=target["protocol"])
+            snapshot = adapter.monitor_target_snapshot(**target)
             job = _integrity_call(get_service().submit, registry_channel_id=snapshot["registry_channel_id"],
                 model=target["model"], protocol=target["protocol"], idempotency_key=key,
                 confirm_live=body["confirm_live"], principal="monitor", kind="nerfed-api-v1", target_snapshot=snapshot)
@@ -293,15 +292,14 @@ async def create_integrity_job(request: Request):
             if set(body) != {"schema_version", "job_type", "target", "review"}:
                 raise ContractError(400, "invalid_field", "active review fields are invalid")
             target = body["target"]
-            if not isinstance(target, dict) or set(target) != {"channel_identity", "inventory_version", "model", "protocol"}:
-                raise ContractError(400, "invalid_field", "explicit production target is required")
-            if any(not isinstance(target[k], str) or not target[k] or len(target[k]) > 160 for k in target) or target["protocol"] not in {"openai", "responses", "anthropic"}:
+            if not isinstance(target, dict) or set(target) != {"registry_channel_id", "model", "protocol"}:
+                raise ContractError(400, "invalid_field", "explicit Registry target is required")
+            if type(target["registry_channel_id"]) is not int or target["registry_channel_id"] < 1 or any(not isinstance(target[k], str) or not target[k] or len(target[k]) > 160 for k in ("model", "protocol")) or target["protocol"] not in {"openai", "responses", "anthropic"}:
                 raise ContractError(400, "invalid_field", "target identifiers or protocol are invalid")
             if not isinstance(body["review"], dict) or set(body["review"]) != {
                     "strategy_id", "reference_hash", "source_ref", "incident_id", "limits", "budget_seconds", "conditions", "confirm_live"}:
                 raise ContractError(400, "invalid_field", "review fields are invalid; target and idempotency come from the server")
-            snapshot = adapter.monitor_target_snapshot(**{ "identity": target["channel_identity"],
-                "inventory_version": target["inventory_version"], "model": target["model"], "protocol": target["protocol"]})
+            snapshot = adapter.monitor_target_snapshot(**target)
             try:
                 validated = ReviewInput.model_validate({**body["review"], "registry_channel_id": snapshot["registry_channel_id"],
                     "model": target["model"], "protocol": target["protocol"], "idempotency_key": key})

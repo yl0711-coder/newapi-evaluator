@@ -71,7 +71,7 @@
   function unifiedConditions() {
     const channel=metadata.unified?.channels.find(c=>String(c.id)===$('unified-channel').value);
     const model=channel?.models.find(m=>m.model===$('unified-model').value);
-    $('unified-condition').textContent=model ? `Responses · low · 映射 ${model.upstream_model} · ${model.eligible?'可执行':model.reason}` : '请选择具有新鲜稳定生产身份、模型/协议绑定和可用凭据的渠道；不要求旧 target 或历史通过。';
+    $('unified-condition').textContent=model ? `Responses · low · 映射 ${model.upstream_model} · ${model.eligible?'可执行':model.reason}` : '请选择已启用且具有有效地址、凭据及模型/协议映射的公共渠道；已记录渠道也可手动测试。';
     $('unified-submit').disabled=!model?.eligible;
   }
   async function unifiedDetail(id) {

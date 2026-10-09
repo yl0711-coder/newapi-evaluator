@@ -32,11 +32,9 @@ window.ModelCoverage = (() => {
     }
   }
   const jobState = {queued:'排队中', running:'执行中', completed:'已完成', partially_completed:'部分完成', cancelled:'已取消', expired:'已过期', rejected:'已拒绝', failed:'失败'};
-  let identities = {};
   async function renderMonitor() {
     const root = $('monitor-list'); root.replaceChildren();
-    const [bound, result] = await Promise.all([api('/monitor/identities'), api('/monitor/jobs')]);
-    identities = bound.identities;
+    const result = await api('/monitor/jobs');
     if (!result.jobs.length) { root.textContent = '尚无复测任务。'; return; }
     for (const job of result.jobs) {
       const done = job.progress.completed_requests || 0, planned = job.progress.planned_requests;
@@ -131,15 +129,7 @@ window.ModelCoverage = (() => {
       details.append(node('summary', `常用模型 ${info.models.length} 个 · 上游已列出 ${listed} · 已排期 ${scheduled}`));
       details.open = expanded.has(channel.id) || Boolean($('coverage-filter').value || $('model-search').value.trim());
       details.addEventListener('toggle', () => details.open ? expanded.add(channel.id) : expanded.delete(channel.id));
-      const identity = identities[String(channel.id)];
-      const bind = action(identity ? `NewAPI 渠道身份：${identity}` : '绑定 NewAPI 渠道身份', async () => {
-        const value = window.prompt('填写 Monitor 使用的 NewAPI 渠道身份（例如 newapi-channel-96）；留空解除绑定', identity || '');
-        if (value === null) return;
-        await api(`/monitor/identities/${channel.id}`, {channel_identity:value.trim() || null}, 'PUT');
-        $('coverage-message').textContent = value.trim() ? '已绑定 NewAPI 渠道身份' : '已解除 NewAPI 渠道身份绑定';
-        await reload();
-      });
-      details.append(bind, node('p', `凭据 ${channel.credential_status || 'unknown'} · 生产身份仅显式绑定；在线状态与实测结果分开`, 'hint'));
+      details.append(node('p', `凭据 ${channel.credential_status || 'unknown'} · 已上线状态由使用者定义；保存渠道不会自动测试`, 'hint'));
       const fetch = action('获取模型', () => openFetch([channel.id])); fetch.disabled = !channel.enabled;
       details.append(fetch, node('p', `上次成功获取：${time(info.discovery?.succeeded_at)}${info.discovery?.error ? ' · 最近获取失败或未完成，保留上次清单' : ''}`, 'hint'));
       const scroll = node('div', '', 'coverage-scroll'), table = node('table', '', 'coverage-table');

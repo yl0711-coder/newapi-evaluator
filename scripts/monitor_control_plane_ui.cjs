@@ -157,12 +157,10 @@ const stamp = seconds => new Date(seconds * 1000).toISOString();
   await page.locator('#workflow-list').getByRole('button', {name:'取消',exact:true}).click();
   await page.waitForFunction(() => document.getElementById('workflow-list').textContent.includes('cancelled'));
   check((await api('/api/model-coverage/workflow/tasks')).tasks[0].id===local.id, 'Task cancellation preserves identity');
-  phase('monitor-identity');
-  await page.locator(`details.model-coverage[data-channel="${channel.id}"] > summary`).click();
-  page.once('dialog', dialog => dialog.accept(identity));
-  await page.getByRole('button', {name:'绑定 NewAPI 渠道身份',exact:true}).first().click();
-  await page.getByRole('button', {name:`NewAPI 渠道身份：${identity}`,exact:true}).waitFor();
-  check((await api('/api/model-coverage/monitor/identities')).identities[String(channel.id)]===identity, 'Visible identity binding persists');
+  phase('legacy-monitor-contract');
+  check(await page.getByRole('button',{name:/NewAPI 渠道身份/}).count()===0,'Channel binding UI is removed');
+  await api(`/api/model-coverage/monitor/identities/${channel.id}`,{channel_identity:identity},'PUT');
+  check((await api('/api/model-coverage/monitor/identities')).identities[String(channel.id)]===identity,'Legacy v1 fixture remains API-compatible');
   const now = Date.now()/1000;
   const job = (id, start) => ({schema_version:'1.0', idempotency_key:id, source_event_id:id, job_type:'incident', priority:'p1',
     channel_identity:identity, model:'gpt-5.5', protocol:'openai', probe_path:'direct', scenarios:['short_stream'], rounds:1,

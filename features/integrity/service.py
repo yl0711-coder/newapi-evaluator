@@ -15,7 +15,7 @@ from zoneinfo import ZoneInfo
 from typing import Callable
 
 from shared.registry import Conflict, RegistryError, get_registry
-from features.model_coverage.catalog import Catalog, validate_protocol
+from features.model_coverage.catalog import Catalog
 from .durable import IntegrityStore, default_pricing
 from .execution import ProbeRequest, ResolvedTarget, execute_requests, estimate_input_tokens
 from .strategies import canonical_json
@@ -141,18 +141,8 @@ class ReviewService:
         return channels
 
     def _target(self, channel_id, model, protocol):
-        channel = self.registry.resolve(channel_id)
-        catalog = Catalog(self.registry)
-        canonical = next((m for m in catalog.models() if m["model"] == model), None)
-        if canonical is None:
-            raise RegistryError("请选择已登记的模型")
-        binding = catalog.binding(channel_id, canonical["id"])
-        if binding["request_protocol"] != protocol:
-            raise RegistryError("协议与当前模型映射不一致")
-        validate_protocol(protocol, model, binding["upstream_model"])
-        snapshot = {"registry_channel_id": channel_id, "connection_fingerprint": self.registry.connection_fingerprint(channel),
-                    "model": binding["upstream_model"], "protocol": protocol, "mapping_revision": _hash(binding)}
-        return ResolvedTarget({**channel, "model": binding["upstream_model"], "protocol": protocol}, snapshot)
+        from .execution import resolve_registry_target
+        return resolve_registry_target(self.registry, channel_id, model, protocol)
 
     def enqueue(self, *, principal, registry_channel_id, model, protocol, strategy_id, reference_hash,
                 source_ref, incident_id="", idempotency_key, limits, budget_seconds, confirm_live,
@@ -173,11 +163,11 @@ class ReviewService:
         target = self._target(registry_channel_id, model, protocol)
         if principal == "monitor":
             if target_snapshot is None or _monitor_resolver is None:
-                raise RegistryError("Monitor 目标缺少明确生产身份绑定")
+                raise RegistryError("Monitor 目标缺少服务端 Registry 快照")
             metadata = {"target_snapshot": target_snapshot, "model": model, "protocol": protocol,
                         "registry_channel_id": registry_channel_id, "principal": principal}
             target = _monitor_resolver(metadata)
-            if not isinstance(target, ResolvedTarget):
+            if not isinstance(target, ResolvedTarget) or target.snapshot.get("canonical_model") != model or target.snapshot["protocol"] != protocol or target.snapshot["registry_channel_id"] != registry_channel_id:
                 raise RegistryError("Monitor 目标绑定或凭据失效")
         elif target_snapshot is not None:
             raise RegistryError("工作台不能覆盖服务端目标快照")

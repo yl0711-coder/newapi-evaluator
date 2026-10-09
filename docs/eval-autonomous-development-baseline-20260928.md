@@ -55,7 +55,7 @@
 
 - `features/model_coverage/monitor.py`：签名、错误体、清单、复测任务、执行器、结果/事件映射，数据在 `monitor_*` 表。
 - `features/model_coverage/internal_api.py`：`/internal/v1` 路由与后台执行器；`shared/access.py` 让该路径只认 Monitor 签名。
-- 公共渠道页可绑定 NewAPI 渠道身份，查看 Monitor 复测任务。
+- 公共渠道页查看 Monitor 旧 v1 复测任务；身份绑定 UI 已移除，旧 v1 管理 API 和数据保留，新完整性 v2 使用 Registry ID。
 - 执行器默认关闭（`EVAL_MONITOR_EXECUTOR=live` 才请求上游），只用 Mock 验证过。
 - 契约测试：`tests/test_monitor_internal.py`；控制面门禁已包含该文件。
 - 未做：真实 Monitor/上游联调、`end_to_end` 隔离身份、JSON 金样、密钥轮换、审计查询接口。
