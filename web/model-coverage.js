@@ -139,7 +139,7 @@ window.ModelCoverage = (() => {
         $('coverage-message').textContent = value.trim() ? '已绑定 NewAPI 渠道身份' : '已解除 NewAPI 渠道身份绑定';
         await reload();
       });
-      details.append(bind);
+      details.append(bind, node('p', `凭据 ${channel.credential_status || 'unknown'} · 生产身份仅显式绑定；在线状态与实测结果分开`, 'hint'));
       const fetch = action('获取模型', () => openFetch([channel.id])); fetch.disabled = !channel.enabled;
       details.append(fetch, node('p', `上次成功获取：${time(info.discovery?.succeeded_at)}${info.discovery?.error ? ' · 最近获取失败或未完成，保留上次清单' : ''}`, 'hint'));
       const scroll = node('div', '', 'coverage-scroll'), table = node('table', '', 'coverage-table');
@@ -149,7 +149,7 @@ window.ModelCoverage = (() => {
       const body = node('tbody');
       for (const item of info.models.filter(matches)) {
         const row = node('tr'); row.dataset.model = item.model;
-        const checkbox = document.createElement('input'); checkbox.type = 'checkbox'; checkbox.checked = selected.has(key(item)); checkbox.disabled = !channel.enabled;
+        const checkbox = document.createElement('input'); checkbox.type = 'checkbox'; checkbox.checked = selected.has(key(item)); checkbox.disabled = !channel.enabled || channel.credential_status !== 'available';
         checkbox.setAttribute('aria-label', `选择 ${channel.name} ${item.label}`);
         checkbox.addEventListener('change', () => { checkbox.checked ? selected.set(key(item), item) : selected.delete(key(item)); counts(); });
         const selectCell = node('td'); selectCell.append(checkbox);

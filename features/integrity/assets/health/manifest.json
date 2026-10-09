@@ -1,0 +1,33 @@
+{
+  "assets": [
+    {
+      "path": "health/probes.json",
+      "sha256": "fb3fa8cac9fbb6f6a75968c1d98166d162c8a3a945cce4d8c52fa0b43dd5778b"
+    }
+  ],
+  "execution_mode": "api",
+  "max_output_tokens": 32,
+  "max_requests": 1,
+  "max_retries": 0,
+  "method": "health",
+  "minimum_valid_answers": 1,
+  "normal_valid_answers": 1,
+  "probes_path": "health/probes.json",
+  "probes_sha256": "fb3fa8cac9fbb6f6a75968c1d98166d162c8a3a945cce4d8c52fa0b43dd5778b",
+  "request_timeout_seconds": 15,
+  "runtime_hashes": {
+    "evidence.py": "cdb679031b13df547337882f5ed8d7d2e580c606e938d70d4c072bd40af94e20",
+    "hlwy.py": "7c7dfdd6edf68aa8d3439d6a0c5eacb0510500e063d6286f55042a2c626b466e",
+    "reference.py": "e71c29082ce1c9b0daa8d8918f4d3b766ac6f9f920062ada081839229883a545",
+    "scoring.py": "bef0597ae29b5ff10ee95bade04dd2340f5281184cb4c8bccb2d9135e2b15276",
+    "traceone.py": "5957d96e65bf8b6fa8ed2619849c8d2bfdf5440b3026d3d403d971d37c4ad7b1"
+  },
+  "sampling": {
+    "calibration": "unvalidated",
+    "output_cap": 32,
+    "retry": 0,
+    "stream": false
+  },
+  "total_timeout_seconds": 30,
+  "version": "health-v1"
+}

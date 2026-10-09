@@ -18,6 +18,38 @@ _PROTOCOLS = {"openai", "anthropic", "responses"}
 _STATES = {"online", "offline", "unknown"}
 
 
+def executable_binding(conn, channel_id, model, protocol):
+    """Read an explicit, fresh production binding inside the caller's snapshot.
+
+    No constructors or writes: callers may already hold a reservation transaction.
+    """
+    tables = {r[0] for r in conn.execute("SELECT name FROM sqlite_master WHERE type='table'")}
+    if not {"monitor_channel_identities", "production_coverage_snapshots"} <= tables:
+        return None, "production_identity_unbound"
+    bound = conn.execute("SELECT channel_identity FROM monitor_channel_identities WHERE registry_channel_id=?", (channel_id,)).fetchone()
+    if not bound:
+        return None, "production_identity_unbound"
+    identity = bound[0]
+    sources = {}
+    for row in conn.execute("SELECT * FROM production_coverage_snapshots ORDER BY source, generated_at DESC, id DESC"):
+        sources.setdefault(row["source"], dict(row))
+    matches = [(source, item) for source in sources.values() for item in json.loads(source["items_json"])
+               if item["channel_identity"] == identity and item["model"] == model and item["protocol"] == protocol]
+    if not matches:
+        return None, "production_target_missing"
+    if len(matches) != 1:
+        return None, "production_source_conflict"
+    source, item = matches[0]
+    if item["eval_channel_id"] != channel_id:
+        return None, "production_identity_conflict"
+    if time.time() - source["generated_at"] > 48 * 3600:
+        return None, "production_snapshot_stale"
+    if item["production_status"] != "online":
+        return None, "production_not_online"
+    return {"channel_identity": identity, "production_source": source["source"],
+            "production_version": source["version"], "production_hash": source["content_hash"]}, ""
+
+
 def _clean_text(value: Any, field: str, pattern: re.Pattern[str]) -> str:
     text = str(value or "").strip()
     if not text or not pattern.fullmatch(text) or re.search(r"(?i)(sk-|bearer|https?://|cookie|token=)", text):

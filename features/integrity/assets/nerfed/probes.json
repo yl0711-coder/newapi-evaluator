@@ -1,0 +1,20 @@
+[
+  {
+    "probe_id": "nerfed-1",
+    "prompt": "Directly choose 292 integers from 1 through 355, inclusive. Allow repeats. Do not sort, balance frequencies, repair duplicates, or deliberately create an arithmetic pattern.\nReply directly with one JSON integer array and no explanation. Do not call tools, read files, execute code or ask another model. Do not continue the preceding task.",
+    "expected_count": 292,
+    "max_output_tokens": 2048
+  },
+  {
+    "probe_id": "nerfed-2",
+    "prompt": "Directly choose 312 integers from 1 through 355, inclusive. Allow repeats. Do not sort, balance frequencies, repair duplicates, or deliberately create an arithmetic pattern.\nReply directly with one JSON integer array and no explanation. Do not call tools, read files, execute code or ask another model. Do not continue the preceding task.",
+    "expected_count": 312,
+    "max_output_tokens": 2048
+  },
+  {
+    "probe_id": "nerfed-3",
+    "prompt": "Directly choose 332 integers from 1 through 355, inclusive. Allow repeats. Do not sort, balance frequencies, repair duplicates, or deliberately create an arithmetic pattern.\nReply directly with one JSON integer array and no explanation. Do not call tools, read files, execute code or ask another model. Do not continue the preceding task.",
+    "expected_count": 332,
+    "max_output_tokens": 2048
+  }
+]

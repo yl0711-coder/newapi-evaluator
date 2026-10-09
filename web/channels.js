@@ -8,11 +8,11 @@ async function refresh() {
 function render() {
   const query = $('search').value.trim().toLowerCase(), state = $('status-filter').value;
   const visible = channels.filter(c => ModelCoverage.matchesChannel(c.id) && (!state || c.status === state) && `${c.name} ${c.base_url} ${c.scope}`.toLowerCase().includes(query));
-  $('count').textContent = `共 ${channels.length} 条连接记录，当前显示 ${visible.length} 条`;
+  $('count').textContent = `共 ${channels.length} 条连接记录，当前显示 ${visible.length} 条${channels.length > visible.length ? ' · 其余被状态、搜索或模型覆盖筛选隐藏；清除筛选可查看新录入渠道' : ''}`;
   $('list').replaceChildren(...visible.map(c => {
     const card = Workbench.node('article', '', 'panel record');
     card.append(Workbench.node('h3', c.name), Workbench.node('span', c.enabled ? (c.status === 'online' ? '已上线' : '已记录') : '已停用', 'badge'),
-      Workbench.node('p', `${c.scope || '通用'} · ${c.multiplier}x · #${c.id}`), Workbench.node('p', c.base_url, 'muted'), Workbench.node('p', '密钥已保存', 'hint'));
+      Workbench.node('p', `${c.scope || '通用'} · ${c.multiplier}x · #${c.id}`), Workbench.node('p', c.base_url, 'muted'), Workbench.node('p', `凭据 ${c.credential_status || (c.has_key ? 'available' : 'missing')}`, 'hint'));
     if (c.note) card.append(Workbench.node('p', c.note, 'hint'));
     const actions = Workbench.node('div', '', 'actions'); const edit = Workbench.node('button', '编辑', 'secondary'); edit.addEventListener('click', () => open(c)); actions.append(edit); if(protocolAvailable){const protocol=Workbench.node('a','模型与协议检测');protocol.href='/admission/protocol/?channel='+c.id;actions.append(protocol);} card.append(actions, ModelCoverage.render(c)); return card;
   }));

@@ -1,0 +1,44 @@
+{
+  "assets": [
+    {
+      "path": "modeltrace/LICENSE",
+      "sha256": "238afb57e498990742f84b9ce6167b4e256ac06104a9938ce953bc41c14bea51"
+    },
+    {
+      "path": "modeltrace/bank.json",
+      "sha256": "e514c76928ea38d23bc0f14d3935f23c97b1efb6d96b18a19bdc88ad2d830536"
+    },
+    {
+      "path": "modeltrace/probes.json",
+      "sha256": "3ac5c6e298f762134321ea539e676b378edf16567a1cb75b465b1a076ce292e9"
+    }
+  ],
+  "bank_path": "modeltrace/bank.json",
+  "bank_sha256": "e514c76928ea38d23bc0f14d3935f23c97b1efb6d96b18a19bdc88ad2d830536",
+  "classes": 17,
+  "execution_mode": "api",
+  "max_output_tokens": 2048,
+  "max_requests": 3,
+  "max_retries": 0,
+  "method": "modeltrace",
+  "minimum_valid_answers": 2,
+  "normal_valid_answers": 3,
+  "probes_path": "modeltrace/probes.json",
+  "probes_sha256": "3ac5c6e298f762134321ea539e676b378edf16567a1cb75b465b1a076ce292e9",
+  "request_timeout_seconds": 60,
+  "runtime_hashes": {
+    "evidence.py": "cdb679031b13df547337882f5ed8d7d2e580c606e938d70d4c072bd40af94e20",
+    "hlwy.py": "7c7dfdd6edf68aa8d3439d6a0c5eacb0510500e063d6286f55042a2c626b466e",
+    "reference.py": "e71c29082ce1c9b0daa8d8918f4d3b766ac6f9f920062ada081839229883a545",
+    "scoring.py": "bef0597ae29b5ff10ee95bade04dd2340f5281184cb4c8bccb2d9135e2b15276",
+    "traceone.py": "5957d96e65bf8b6fa8ed2619849c8d2bfdf5440b3026d3d403d971d37c4ad7b1"
+  },
+  "sampling": {
+    "calibration": "unvalidated",
+    "output_cap": 2048,
+    "retry": 0,
+    "stream": false
+  },
+  "total_timeout_seconds": 180,
+  "version": "modeltrace17-d4131b30"
+}

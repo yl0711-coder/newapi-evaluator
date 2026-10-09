@@ -71,10 +71,15 @@ def coverage():
         indexed.setdefault(key, []).append(observation)
     rows = []
     for channel in registry.list():
-        secret = registry.get(channel["id"], secret=True)
-        stamp = registry.connection_fingerprint(secret)
+        # Damaged credentials must remain visible as an unavailable candidate,
+        # without making the entire coverage page fail or reusing old evidence.
+        try:
+            secret = registry.get(channel["id"], secret=True)
+            stamp = registry.connection_fingerprint(secret) if secret.get("api_key") else None
+        except RegistryError:
+            stamp = None
         discovery = discoveries.get(channel["id"])
-        valid_list = bool(discovery and discovery["succeeded_at"] and discovery["connection_fingerprint"] == stamp)
+        valid_list = bool(stamp and discovery and discovery["succeeded_at"] and discovery["connection_fingerprint"] == stamp)
         ids = set(discovery["models"]) if valid_list else set()
         known = set()
         entries = []
@@ -99,6 +104,7 @@ def coverage():
                             "measurement": measured_state(indexed.get((channel["id"], actual, protocol), []), stamp, time.time())})
         public_discovery = {k: discovery[k] for k in ("attempted_at", "succeeded_at", "error", "auth_kind")} if discovery else None
         rows.append({"channel_id": channel["id"], "models": entries, "discovery": public_discovery,
+                     "credential_status": channel.get("credential_status", "available" if stamp else "unreadable"),
                      "discovered_models": sorted(ids), "new_models": sorted(ids - known)})
     return {"models": models, "channels": rows, "schedules": schedules,
             "rules": {"fresh_seconds": FRESH_SECONDS, "minimum_batches": MIN_BATCHES, "recent_batches": RECENT_BATCHES,
@@ -134,6 +140,9 @@ def plan_preview(schedule_id, selections, *, cursor=None):
         if schedule:
             schedule["channel_ids"] = [row[0] for row in cursor.execute(
                 "SELECT channel_id FROM schedule_channels WHERE schedule_id=? ORDER BY channel_id", (schedule_id,))]
+            # Hash the same public schedule representation as the read-only preview.
+            schedule["plan_version"] = schedule.get("plan_version", "ins-v2")
+            schedule["layered_config"] = storage.loads(schedule.pop("layered_config_json", "{}"), {})
         targets = [dict(row) for row in cursor.execute("SELECT * FROM channels ORDER BY name")]
     if not schedule:
         raise KeyError("定时计划不存在")

@@ -1,5 +1,5 @@
 const state = {
-  inventory: [], channels: [], schedules: [], runs: [], reportGroups: [],
+  inventory: [], channels: [], candidates: [], baselines: [], schedules: [], runs: [], reportGroups: [],
   maxConcurrentProbes: 2,
 };
 const $ = (selector) => document.querySelector(selector);
@@ -54,6 +54,9 @@ async function loadHealth() {
     $("#health-card").classList.toggle("bad", !okay);
     $("#health-label").textContent = okay ? "服务正常" : "服务降级";
     $("#health-detail").textContent = `${data.scheduler.active_runs} 个任务运行中 · 请求最多 ${state.maxConcurrentProbes} 并发`;
+    $("#layered-executor-status").textContent = data.layered_executor?.enabled
+      ? "分层巡检执行已启用；按已保存计划的有限采样运行。"
+      : "分层巡检执行默认关闭；可保存计划和查看历史。管理员显式设置 EVAL_INTEGRITY_EXECUTOR=live 后才执行。";
   } catch {
     $("#health-card").classList.add("bad");
     $("#health-label").textContent = "无法连接";
@@ -159,14 +162,22 @@ function renderSchedules() {
   root.replaceChildren(...state.schedules.map((schedule) => {
     const card = text("article", "", "panel");
     card.append(text("h3", schedule.name));
-    const reportDelay = Number(schedule.notification_delay_seconds || 0) / 60;
-    card.append(text("p", `${schedule.daily_times} · ${schedule.timezone} · ${schedule.rounds} 轮 · 请求全局最多 ${state.maxConcurrentProbes} 并发 · 开始后 ${reportDelay} 分钟发报告`));
+    if (schedule.plan_version === "layered-integrity-v1") {
+      const config = schedule.layered_config;
+      const n = config.registry_channel_ids.length;
+      card.append(text("p", `分层 v1 · ${n} 渠道 · 工作日 ${n * 7 + 195} / 非工作日 ${n * 7} 次上限 · Canary 192 独立能力项 · 无每日费用上限`));
+      card.append(text("p", `探活 ${config.health_model}/${config.health_protocol} · 指纹 Astra 与 Sol · 未校准 · metadata 缺证`));
+      card.append(text("p", `${schedule.timezone} · 分层请求在途最多 1 · 零补采 · 新报告不发送通知`));
+    } else {
+      const reportDelay = Number(schedule.notification_delay_seconds || 0) / 60;
+      card.append(text("p", `${schedule.daily_times} · ${schedule.timezone} · ${schedule.rounds} 轮 · 请求全局最多 ${state.maxConcurrentProbes} 并发 · 开始后 ${reportDelay} 分钟发报告`));
+      const speedRule = schedule.speed_threshold_mode === "adaptive"
+        ? `P95 > 历史中位数 × ${schedule.speed_slow_ratio}（${schedule.speed_baseline_min_runs} 批后生效）`
+        : schedule.speed_threshold_mode === "off" ? "不判定速度" : `P95 ≤ ${schedule.max_p95_ms} ms`;
+      card.append(text("p", `成功率 ≥ ${percent(schedule.min_success_rate)} · 超时率 ≤ ${percent(schedule.max_timeout_rate)} · ${speedRule}`));
+    }
     const names = schedule.channel_ids.map((id) => state.channels.find((item) => item.id === id)?.name || `#${id}`);
     card.append(text("p", `渠道：${names.join("、")} · ${schedule.enabled ? "已启用" : "已停用"}`));
-    const speedRule = schedule.speed_threshold_mode === "adaptive"
-      ? `P95 > 历史中位数 × ${schedule.speed_slow_ratio}（${schedule.speed_baseline_min_runs} 批后生效）`
-      : schedule.speed_threshold_mode === "off" ? "不判定速度" : `P95 ≤ ${schedule.max_p95_ms} ms`;
-    card.append(text("p", `成功率 ≥ ${percent(schedule.min_success_rate)} · 超时率 ≤ ${percent(schedule.max_timeout_rate)} · ${speedRule}`));
     const actions = text("div", "", "actions");
     actions.append(action("立即运行", () => runNow(schedule)));
     actions.append(action("编辑", () => openSchedule(schedule)));
@@ -176,7 +187,7 @@ function renderSchedules() {
   }));
 }
 
-function renderChannelPicker(selected = []) {
+function renderLegacyPicker(selected = []) {
   const root = $("#channel-picker");
   root.replaceChildren(...state.channels.map((channel) => {
     const label = text("label", "");
@@ -189,7 +200,74 @@ function renderChannelPicker(selected = []) {
   }));
 }
 
-function openSchedule(schedule = null) {
+function renderChannelPicker(selected = [], registrySelected = []) {
+  const layered = $("#schedule-pack").value === "layered-integrity-v1";
+  $("#layered-fields").hidden = $("#layered-budget-hint").hidden = !layered;
+  for (const id of ["times","rounds","interval","notify-delay","concurrency","success","timeout","break","speed-mode","baseline-runs","slow-ratio","p95"]) $(`#schedule-${id}`).closest("label").hidden = layered;
+  if (!layered) { renderLegacyPicker(selected); return; }
+  const root = $("#channel-picker");
+  root.replaceChildren(...state.candidates.map(channel => {
+    const row = text("article", "", "panel");
+    const label = text("label", "");
+    const input = document.createElement("input"); input.type = "checkbox";
+    input.dataset.registry = channel.registry_channel_id;
+    input.checked = registrySelected.includes(channel.registry_channel_id);
+    input.setAttribute("aria-label", `选择公共渠道 ${channel.name}`);
+    const reason = !channel.enabled ? "registry_disabled" : channel.credential_status !== "available" ? `credential_${channel.credential_status}` : "";
+    input.disabled = Boolean(reason);
+    label.append(input, document.createTextNode(`${channel.name} · Registry #${channel.registry_channel_id} · ${channel.status} · 凭据 ${channel.credential_status} · ${channel.discovery_status}`));
+    row.append(label);
+    let eligible = !reason;
+    for (const model of ["gpt-6-astra", "gpt-6.1-sol"]) {
+      const select = document.createElement("select"); select.dataset.model = model; select.setAttribute("aria-label", `${channel.name} ${model} 模型与协议`);
+      const choices = channel.models.filter(item => item.catalog_model === model);
+      select.replaceChildren(...choices.map(item => new Option(`${item.model} / ${item.protocol}${item.reason ? " · " + item.reason : ""}`, JSON.stringify(item))));
+      if (!choices.some(item => item.eligible)) eligible = false;
+      select.disabled = !choices.length || choices.every(item => !item.eligible);
+      row.append(text("span", model), select);
+    }
+    input.disabled = !eligible;
+    if (!eligible) row.append(text("p", `不可执行：${reason || channel.models.filter(m => ["gpt-6-astra","gpt-6.1-sol"].includes(m.catalog_model)).map(m => m.reason).filter(Boolean).join(" / ") || "模型未登记"}；请核对生产来源、身份、清单时效及目标状态`, "form-error"));
+    return row;
+  }));
+  if (!state.candidates.length) root.append(text("p", "公共库暂无候选渠道。先在公共渠道页新增，再刷新。"));
+}
+
+function renderLayeredRun(root, run) {
+  const summary = run.summary || {};
+  root.append(text("p", `计划 ${summary.plan_version || "layered-integrity-v1"} · planned ${summary.planned ?? "-"} · attempted ${summary.attempted ?? 0} · valid ${summary.valid ?? 0} · invalid ${summary.invalid ?? 0} · unknown ${summary.unknown ?? 0} · skipped/not_run ${summary.not_run ?? 0}`));
+  root.append(text("p", "普通 API 未校准；metadata 缺证；能力仅覆盖轮转 Astra。探活成功只覆盖所测模型/协议。"));
+  root.append(text("p", `费用为配置价格估算，日账本：${JSON.stringify(summary.daily_usage || {})}`));
+  const controls = text("div", "", "actions");
+  if (["pending","running"].includes(run.status)) controls.append(action("取消", async () => { await api(`/api/runs/${run.id}/cancel`, {method:"POST"}); await showRun(run.id); }));
+  if (["cancelled","incomplete","failed"].includes(run.status)) controls.append(action("安全恢复", async () => { try { await api(`/api/runs/${run.id}/resume`, {method:"POST"}); await showRun(run.id); } catch (error) { toast(error.message); } }));
+  root.append(controls);
+  for (const slot of run.slots || []) {
+    const card = text("article", "", "panel"); const evidence = slot.summary || {}, score = evidence.score || {};
+    card.append(text("h3", `${slot.slot} · Registry #${slot.registry_channel_id ?? "待轮转"} · ${slot.model}/${slot.protocol}`));
+    card.append(text("p", `费用估算 USD ${evidence.fees?.estimated_usd ?? "unknown"} · reasoning 用量见导出；不设每日金额上限`));
+    card.append(text("p", `${slot.status}${slot.reason ? " · " + slot.reason : ""} · 计划 ${evidence.planned ?? (slot.method === "canary" ? 192 : slot.method === "modeltrace" ? 3 : 1)} · 尝试 ${evidence.attempted ?? 0} · 有效 ${evidence.valid ?? 0} · 无效 ${evidence.invalid ?? 0} · unknown ${evidence.unknown ?? 0} · not_run ${evidence.not_run ?? "未测"}`));
+    if (slot.method === "canary") {
+      card.append(text("p", `当前成绩 ${percent(score.score)}（${score.correct ?? 0}/${score.total ?? 192}）· ${score.status || "incomplete"} · baseline ${evidence.baseline_id ?? "未选定，能力未评估"}`));
+      if (score.comparison) card.append(text("p", JSON.stringify(score.comparison)));
+      if (slot.status === "completed" && evidence.attempted === 192) card.append(action("显式锁定可信 baseline", async () => {
+        const label = prompt("为这份完整同条件结果填写 baseline 名称（不会自动提升当前结果）", `Run ${run.id}`);
+        if (!label) return;
+        try { const result = await api("/api/baselines", {method:"POST", body:JSON.stringify({slot_key:slot.slot_key,label})}); toast(`baseline #${result.id} 已锁定；编辑计划可显式选择`); } catch (error) { toast(error.message); }
+      }));
+    } else if (score.source_verdict) card.append(text("p", `行为线索 ${score.source_verdict} · ${score.prediction || "证据不足"} · calibration unvalidated`));
+    if (evidence.review_suggestion) card.append(text("p", `${evidence.incident_id} · ${evidence.review_suggestion}`));
+    if (slot.registry_channel_id && slot.method !== "health") {
+      for (const strategy of ["hlwy","kbf"]) {
+        const link = text("a", `人工 ${strategy.toUpperCase()} 复核`);
+        link.href = "/integrity/?" + new URLSearchParams({source_ref:`stability-run:${run.id}`, strategy, registry_channel_id:slot.registry_channel_id, model:slot.model, protocol:slot.protocol}); card.append(link, document.createTextNode(" "));
+      }
+    }
+    root.append(card);
+  }
+}
+
+async function openSchedule(schedule = null) {
   $("#schedule-form").reset();
   $("#schedule-id").value = schedule?.id || "";
   $("#schedule-title").textContent = schedule ? "编辑计划" : "新增计划";
@@ -208,7 +286,16 @@ function openSchedule(schedule = null) {
   $("#schedule-slow-ratio").value = schedule?.speed_slow_ratio ?? 1.5;
   $("#schedule-p95").value = schedule?.max_p95_ms ?? 30000;
   $("#schedule-enabled").checked = schedule ? Boolean(schedule.enabled) : true;
-  renderChannelPicker(schedule?.channel_ids || []);
+  const [candidateData, baselineData] = await Promise.all([api("/api/candidates"), api("/api/baselines")]);
+  state.candidates = candidateData.candidates; state.baselines = baselineData.baselines;
+  $("#schedule-pack").value = schedule?.plan_version || "layered-integrity-v1";
+  const config = schedule?.layered_config || {};
+  for (const [id, key, fallback] of [["ttl","health_ttl_minutes",60],["health-times","health_times",["09:30","12:30","15:30","18:00"]],["astra-times","astra_times",["10:00","15:35"]],["sol-time","sol_time","15:50"],["mt-time","modeltrace_time","16:10"],["canary-time","canary_time","18:15"],["day-deadline","day_deadline","17:55"],["canary-deadline","canary_deadline","08:55"],["health-model","health_model","gpt-6-astra"],["health-protocol","health_protocol","responses"]]) {
+    const value = config[key] ?? fallback; $(`#layered-${id}`).value = Array.isArray(value) ? value.join(",") : value;
+  }
+  $("#layered-baseline").replaceChildren(new Option("未选定，仅当前成绩", ""), ...state.baselines.map(b => new Option(`#${b.id} ${b.label} · ${percent(b.score.score)}`, b.id)));
+  $("#layered-baseline").value = config.baseline_id || "";
+  renderChannelPicker(schedule?.channel_ids || [], config.registry_channel_ids || []);
   $("#schedule-error").textContent = "";
   $("#schedule-dialog").showModal();
 }
@@ -234,18 +321,46 @@ async function saveSchedule(event) {
     max_p95_ms: Number($("#schedule-p95").value),
     enabled: $("#schedule-enabled").checked,
   };
+  payload.plan_version = $("#schedule-pack").value;
+  if (payload.plan_version === "layered-integrity-v1") {
+    payload.channel_ids = [];
+    payload.layered_config = {
+      health_ttl_minutes:Number($("#layered-ttl").value),
+      health_times:$("#layered-health-times").value.split(",").map(x => x.trim()),
+      astra_times:$("#layered-astra-times").value.split(",").map(x => x.trim()),
+      sol_time:$("#layered-sol-time").value.trim(), modeltrace_time:$("#layered-mt-time").value.trim(),
+      canary_time:$("#layered-canary-time").value.trim(), day_deadline:$("#layered-day-deadline").value.trim(),
+      canary_deadline:$("#layered-canary-deadline").value.trim(),
+      health_model:$("#layered-health-model").value.trim(), health_protocol:$("#layered-health-protocol").value,
+      baseline_id:Number($("#layered-baseline").value) || null,
+    };
+    payload.targets = [];
+    for (const input of $$("#channel-picker input[data-registry]:checked")) {
+      const row = input.closest("article");
+      for (const select of row.querySelectorAll("select[data-model]")) {
+        const entry = JSON.parse(select.value);
+        payload.targets.push({registry_channel_id:Number(input.dataset.registry), model:entry.model, protocol:entry.protocol, model_id:entry.model_id});
+      }
+      const channel = state.candidates.find(c => c.registry_channel_id === Number(input.dataset.registry));
+      const health = channel.models.find(m => m.model === payload.layered_config.health_model && m.protocol === payload.layered_config.health_protocol);
+      if (health && !payload.targets.some(t => t.registry_channel_id === channel.registry_channel_id && t.model === health.model && t.protocol === health.protocol)) {
+        payload.targets.push({registry_channel_id:channel.registry_channel_id, model:health.model, protocol:health.protocol, model_id:health.model_id});
+      }
+    }
+  }
+  const submit = $("#schedule-form button[type=submit]"); submit.disabled = true;
   try {
     await api("/api/schedules", { method: "POST", body: JSON.stringify(payload) });
     $("#schedule-dialog").close();
     await loadSchedules();
     toast("计划已保存");
-  } catch (error) { $("#schedule-error").textContent = error.message; }
+  } catch (error) { $("#schedule-error").textContent = error.message; } finally { submit.disabled = false; }
 }
 
 async function runNow(schedule) {
   try {
     const data = await api(`/api/schedules/${schedule.id}/run`, { method: "POST" });
-    toast(`任务 #${data.run_id} 已排队`);
+    toast(`任务 #${data.run_id} 已排队${data.scope ? "，执行当日时刻与依赖，不额外补量" : ""}`);
     document.querySelector('[data-view="overview"]').click();
     await loadRuns();
   } catch (error) { toast(error.message); }
@@ -300,6 +415,10 @@ async function showRun(id) {
   const root = $("#run-detail");
   const summary = run.summary || {};
   root.replaceChildren(text("p", `${run.schedule_name} · ${formatDate(run.scheduled_for)} · ${run.status}`));
+  const exportLink = text("a", "导出 JSON"); exportLink.href = `./api/runs/${id}/export`; root.append(exportLink);
+  if (run.snapshot?.plan_version === "layered-integrity-v1") {
+    renderLayeredRun(root, run); $("#run-dialog").showModal(); return;
+  }
   if (summary.reasons?.length) root.append(text("p", `结论：${summary.reasons.join("、")}`, "form-error"));
   const table = document.createElement("table"); table.className = "detail-table";
   const head = document.createElement("thead"); const headRow = document.createElement("tr");
@@ -352,7 +471,8 @@ async function boot() {
   }));
   $$('[data-close]').forEach((button) => button.addEventListener("click", () => $(`#${button.dataset.close}`).close()));
   $("#new-channel").addEventListener("click", () => openChannel());
-  $("#new-schedule").addEventListener("click", () => openSchedule());
+  $("#new-schedule").addEventListener("click", () => openSchedule().catch(error => toast(error.message)));
+  $("#schedule-pack").addEventListener("change", () => renderChannelPicker());
   $("#channel-form").addEventListener("submit", saveChannel);
   $("#schedule-form").addEventListener("submit", saveSchedule);
   $("#refresh-runs").addEventListener("click", loadRuns);

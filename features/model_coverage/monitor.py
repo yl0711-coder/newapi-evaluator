@@ -415,6 +415,8 @@ class MonitorStore:
                 "estimated_start_at": rfc3339(start) if row["status"] == "queued" else None}
 
     def _validate_job(self, body: dict[str, Any], resolve_channel, egress_check) -> dict[str, Any]:
+        if body.get("strategy") in ("nerfed", "is-gpt-nerfed") or body.get("job_type") in ("nerfed", "is-gpt-nerfed", "nerfed-evidence-analysis"):
+            raise ContractError(422, "strategy_contract_changed", "nerfed is offline official-account evidence analysis; use schema_version 2.0 at /internal/v1/integrity-jobs")
         job_type = _enum(body.get("job_type"), "job_type", JOB_TYPES)
         priority = _enum(body.get("priority", "p2"), "priority", PRIORITIES)
         protocol = _enum(body.get("protocol"), "protocol", PROTOCOLS, status=422, code="protocol_not_supported")

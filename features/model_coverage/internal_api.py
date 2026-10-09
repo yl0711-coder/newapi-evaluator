@@ -29,8 +29,8 @@ _dns_limiter: asyncio.Semaphore | None = None
 _dns_loop: asyncio.AbstractEventLoop | None = None
 
 
-def _error(exc: ContractError, request_id: str) -> JSONResponse:
-    return JSONResponse({"schema_version": SCHEMA_VERSION, "error": {"code": exc.code, "message": exc.message,
+def _error(exc: ContractError, request_id: str, *, schema_version=SCHEMA_VERSION) -> JSONResponse:
+    return JSONResponse({"schema_version": schema_version, "error": {"code": exc.code, "message": exc.message,
                          "retryable": exc.retryable, "request_id": request_id}},
                         status_code=exc.status, headers={**exc.headers, "X-Request-Id": request_id})
 
@@ -148,7 +148,7 @@ async def _bounded_egress(channel: dict, protocol: str) -> None:
         raise ContractError(503, "egress_check_timeout", "target validation timed out", retryable=True) from None
 
 
-async def _handle(request: Request, action):
+async def _handle(request: Request, action, *, schema_version=SCHEMA_VERSION):
     request_id = "eval-" + secrets.token_hex(8)
     try:
         raw = await _authenticate(request)
@@ -156,13 +156,13 @@ async def _handle(request: Request, action):
     except ContractError as exc:
         # Log code and path only: never headers, bodies or channel data.
         logger.info("monitor internal %s -> %s", request.method, exc.code)
-        return _error(exc, request_id)
+        return _error(exc, request_id, schema_version=schema_version)
     except RegistryError:
-        return _error(ContractError(400, "invalid_request", "request was rejected by validation"), request_id)
+        return _error(ContractError(400, "invalid_request", "request was rejected by validation"), request_id, schema_version=schema_version)
     except Exception:
         logger.error("monitor internal request failed: eval_unavailable")
         return _error(ContractError(503, "eval_unavailable", "Eval could not process the request", retryable=True,
-                                    headers={"Retry-After": "30"}), request_id)
+                                    headers={"Retry-After": "30"}), request_id, schema_version=schema_version)
     return JSONResponse(payload, status_code=status, headers={"X-Request-Id": request_id})
 
 
@@ -235,6 +235,137 @@ async def probe_events(request: Request):
     async def action(_raw):
         return 200, MonitorStore(get_registry()).events(request.query_params.get("cursor", ""), _limit(request))
     return await _handle(request, action)
+
+
+def _integrity_body(raw):
+    try:
+        body = json.loads(raw)
+    except ValueError:
+        raise ContractError(400, "invalid_request", "body must be JSON") from None
+    if not isinstance(body, dict):
+        raise ContractError(400, "invalid_request", "body must be an object")
+    if body.get("strategy") in {"nerfed", "is-gpt-nerfed"} or body.get("job_type") in {"nerfed", "is-gpt-nerfed"}:
+        raise ContractError(422, "strategy_contract_changed", "nerfed now analyzes explicit official-account evidence with schema_version 2.0")
+    if body.get("schema_version") != "2.0":
+        raise ContractError(400, "schema_version_unsupported", "integrity jobs require schema_version 2.0")
+    return body
+
+
+def _integrity_call(function, *args, **kwargs):
+    from shared.registry import Conflict
+    try:
+        return function(*args, **kwargs)
+    except Conflict:
+        raise ContractError(409, "idempotency_conflict", "task identity or conditions changed") from None
+    except KeyError:
+        raise ContractError(404, "job_not_found", "integrity task or reference not found") from None
+    except (ValueError, RegistryError):
+        raise ContractError(422, "integrity_contract_rejected", "target, reference, evidence or execution conditions are invalid") from None
+
+
+@internal_router.post("/integrity-jobs")
+async def create_integrity_job(request: Request):
+    async def action(raw):
+        from features.integrity import service as reviews, monitor_adapter as adapter
+        from features.integrity.api import ReviewInput
+        from pydantic import ValidationError
+        key, body = _idempotency_key(request), _integrity_body(raw)
+        if body.get("job_type") == "nerfed-evidence-analysis":
+            if set(body) != {"schema_version", "job_type", "evidence", "confirm_authorized"}:
+                raise ContractError(400, "invalid_field", "evidence jobs accept only explicit whitelisted evidence")
+            job = _integrity_call(adapter.submit_evidence, body["evidence"], principal="monitor", idempotency_key=key,
+                                  confirm_authorized=body["confirm_authorized"])
+        elif body.get("job_type") == "nerfed-api":
+            from features.integrity.unified import get_service
+            if set(body) != {"schema_version", "job_type", "target", "confirm_live"}:
+                raise ContractError(400, "invalid_field", "nerfed-api requires explicit target and confirmation")
+            target = body["target"]
+            if not isinstance(target, dict) or set(target) != {"channel_identity", "inventory_version", "model", "protocol"}:
+                raise ContractError(400, "invalid_field", "explicit production target is required")
+            if any(not isinstance(target[k], str) or not target[k] or len(target[k]) > 160 for k in target):
+                raise ContractError(400, "invalid_field", "target identifiers are invalid")
+            snapshot = adapter.monitor_target_snapshot(identity=target["channel_identity"], inventory_version=target["inventory_version"],
+                model=target["model"], protocol=target["protocol"])
+            job = _integrity_call(get_service().submit, registry_channel_id=snapshot["registry_channel_id"],
+                model=target["model"], protocol=target["protocol"], idempotency_key=key,
+                confirm_live=body["confirm_live"], principal="monitor", kind="nerfed-api-v1", target_snapshot=snapshot)
+        elif body.get("job_type") == "active-review":
+            if set(body) != {"schema_version", "job_type", "target", "review"}:
+                raise ContractError(400, "invalid_field", "active review fields are invalid")
+            target = body["target"]
+            if not isinstance(target, dict) or set(target) != {"channel_identity", "inventory_version", "model", "protocol"}:
+                raise ContractError(400, "invalid_field", "explicit production target is required")
+            if any(not isinstance(target[k], str) or not target[k] or len(target[k]) > 160 for k in target) or target["protocol"] not in {"openai", "responses", "anthropic"}:
+                raise ContractError(400, "invalid_field", "target identifiers or protocol are invalid")
+            if not isinstance(body["review"], dict) or set(body["review"]) != {
+                    "strategy_id", "reference_hash", "source_ref", "incident_id", "limits", "budget_seconds", "conditions", "confirm_live"}:
+                raise ContractError(400, "invalid_field", "review fields are invalid; target and idempotency come from the server")
+            snapshot = adapter.monitor_target_snapshot(**{ "identity": target["channel_identity"],
+                "inventory_version": target["inventory_version"], "model": target["model"], "protocol": target["protocol"]})
+            try:
+                validated = ReviewInput.model_validate({**body["review"], "registry_channel_id": snapshot["registry_channel_id"],
+                    "model": target["model"], "protocol": target["protocol"], "idempotency_key": key})
+            except (ValidationError, TypeError):
+                raise ContractError(400, "invalid_field", "review fields or budgets are invalid") from None
+            reviews.configure_monitor_resolver(adapter.resolve_monitor_target)
+            job = _integrity_call(reviews.enqueue_review, principal="monitor", target_snapshot=snapshot,
+                                  **validated.model_dump(mode="json"))
+        else:
+            raise ContractError(422, "job_type_unsupported", "supported types: active-review, nerfed-api, nerfed-evidence-analysis")
+        return 202, {"schema_version": "2.0", "job": job}
+    return await _handle(request, action, schema_version="2.0")
+
+
+def _integrity_job(job_id, operation="get"):
+    from features.integrity import service as reviews, monitor_adapter as adapter
+    from features.integrity.durable import IntegrityStore
+    job = _integrity_call(IntegrityStore(get_registry()).public, job_id)
+    if job["principal"] != "monitor":
+        raise ContractError(404, "job_not_found", "integrity task not found")
+    if job["strategy"].get("strategy_id") == "nerfed-api-v1":
+        from features.integrity.unified import get_service
+        function = {"get": get_service().get, "cancel": get_service().cancel, "resume": get_service().resume}[operation]
+        return _integrity_call(function, job_id, principal="monitor")
+    operations = {"get": (adapter.get_evidence, reviews.get_review),
+                  "cancel": (adapter.cancel_evidence, reviews.cancel_review),
+                  "resume": (adapter.resume_evidence, reviews.resume_review)}
+    function = operations[operation][0 if job["execution_mode"] == "offline" else 1]
+    return _integrity_call(function, job_id, principal="monitor")
+
+
+@internal_router.get("/integrity-jobs")
+async def list_integrity_jobs(request: Request):
+    async def action(_raw):
+        from features.integrity import service as reviews, monitor_adapter as adapter
+        from features.integrity.unified import get_service
+        return 200, {"schema_version": "2.0", "jobs": _integrity_call(reviews.list_reviews, principal="monitor") +
+                    _integrity_call(adapter.list_evidence, principal="monitor") +
+                    _integrity_call(get_service().list, principal="monitor")}
+    return await _handle(request, action, schema_version="2.0")
+
+
+@internal_router.get("/integrity-jobs/{job_id}")
+@internal_router.get("/integrity-jobs/{job_id}/result")
+async def get_integrity_job(job_id: str, request: Request):
+    async def action(_raw):
+        return 200, {"schema_version": "2.0", "job": _integrity_job(job_id)}
+    return await _handle(request, action, schema_version="2.0")
+
+
+@internal_router.post("/integrity-jobs/{job_id}/cancel")
+async def cancel_integrity_job(job_id: str, request: Request):
+    async def action(_raw):
+        _idempotency_key(request)
+        return 202, {"schema_version": "2.0", "job": _integrity_job(job_id, "cancel")}
+    return await _handle(request, action, schema_version="2.0")
+
+
+@internal_router.post("/integrity-jobs/{job_id}/resume")
+async def resume_integrity_job(job_id: str, request: Request):
+    async def action(_raw):
+        _idempotency_key(request)
+        return 202, {"schema_version": "2.0", "job": _integrity_job(job_id, "resume")}
+    return await _handle(request, action, schema_version="2.0")
 
 
 # ---- background executor --------------------------------------------------------------------

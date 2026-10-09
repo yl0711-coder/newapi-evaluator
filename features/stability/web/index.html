@@ -58,6 +58,7 @@
         <button class="primary" id="new-schedule">新增计划</button>
       </div>
       <div class="card-grid" id="schedule-list"></div>
+      <p id="layered-executor-status" role="status"></p>
     </section>
 
     <section class="view" id="view-settings">
@@ -110,6 +111,23 @@
         <label>最大 P95（毫秒）<input type="number" id="schedule-p95" value="30000" min="100" max="600000"></label>
         <label class="check"><input type="checkbox" id="schedule-enabled" checked> 启用计划</label>
       </div>
+      <fieldset><legend>套餐与采样上限</legend>
+        <label>套餐<select id="schedule-pack"><option value="layered-integrity-v1">分层完整性 v1（默认）</option><option value="ins-v2">旧 ins-v2 稳定性</option></select></label>
+        <div id="layered-fields" class="form-grid">
+          <label>健康有效期（分钟）<input id="layered-ttl" type="number" min="1" max="180" value="60"></label>
+          <label>探活时刻<input id="layered-health-times" value="09:30,12:30,15:30,18:00"></label>
+          <label>Astra 指纹时刻<input id="layered-astra-times" value="10:00,15:35"></label>
+          <label>Sol 指纹时刻<input id="layered-sol-time" value="15:50"></label>
+          <label>ModelTrace 工作日轮转<input id="layered-mt-time" value="16:10"></label>
+          <label>Canary 工作日开始<input id="layered-canary-time" value="18:15"></label>
+          <label>白天截止<input id="layered-day-deadline" value="17:55"></label>
+          <label>Canary 翌日截止<input id="layered-canary-deadline" value="08:55"></label>
+          <label>探活模型<input id="layered-health-model" value="gpt-6-astra"></label>
+          <label>探活协议<select id="layered-health-protocol"><option value="responses">Responses</option><option value="openai">Chat Completions</option><option value="anthropic">Messages</option></select></label>
+          <label>可信 Canary baseline<select id="layered-baseline"><option value="">未选定，仅当前成绩</option></select></label>
+        </div>
+        <p id="layered-budget-hint" class="hint">最多 5 渠道；工作日最多 230 次（轻量 38 + 独立 Canary 192），非工作日 35 次；全局在途 1、零补采。不设置每日费用上限；费用只作估算展示。探活只覆盖所选模型与协议；普通 API 未校准、metadata 缺证。</p>
+      </fieldset>
       <fieldset><legend>选择渠道</legend><div class="channel-picker" id="channel-picker"></div></fieldset>
       <p class="form-error" id="schedule-error"></p>
       <div class="actions"><button class="primary" type="submit">保存计划</button><button class="ghost" type="button" data-close="schedule-dialog">取消</button></div>

@@ -1,0 +1,52 @@
+{
+  "assets": [
+    {
+      "path": "nerfed/LICENSE",
+      "sha256": "3d8061c227dc21ff4636e701a54f98b695185bdf089c6611644a6739f5fdbaf5"
+    },
+    {
+      "path": "nerfed/LICENSE-ModelTrace.txt",
+      "sha256": "238afb57e498990742f84b9ce6167b4e256ac06104a9938ce953bc41c14bea51"
+    },
+    {
+      "path": "nerfed/bank.json",
+      "sha256": "1c2cb74d372f9f0f30d0dabbb7b7a838660d2f769a88d0c8489e4c662e088c21"
+    },
+    {
+      "path": "nerfed/probes.json",
+      "sha256": "058c9e8a6aae791b93c61e9ae1be3763c74566bed0482fde904bf38d0e114f2a"
+    },
+    {
+      "path": "nerfed/upstream-provenance.json",
+      "sha256": "aff6f146a901c64758778154b4035e27a2f874a2a055ce7d808283e6e857eff8"
+    }
+  ],
+  "bank_path": "nerfed/bank.json",
+  "bank_sha256": "1c2cb74d372f9f0f30d0dabbb7b7a838660d2f769a88d0c8489e4c662e088c21",
+  "classes": 16,
+  "execution_mode": "api",
+  "max_output_tokens": 2048,
+  "max_requests": 3,
+  "max_retries": 0,
+  "method": "nerfed-api",
+  "minimum_valid_answers": 2,
+  "normal_valid_answers": 3,
+  "probes_path": "nerfed/probes.json",
+  "probes_sha256": "058c9e8a6aae791b93c61e9ae1be3763c74566bed0482fde904bf38d0e114f2a",
+  "request_timeout_seconds": 60,
+  "runtime_hashes": {
+    "evidence.py": "cdb679031b13df547337882f5ed8d7d2e580c606e938d70d4c072bd40af94e20",
+    "hlwy.py": "7c7dfdd6edf68aa8d3439d6a0c5eacb0510500e063d6286f55042a2c626b466e",
+    "reference.py": "e71c29082ce1c9b0daa8d8918f4d3b766ac6f9f920062ada081839229883a545",
+    "scoring.py": "bef0597ae29b5ff10ee95bade04dd2340f5281184cb4c8bccb2d9135e2b15276",
+    "traceone.py": "5957d96e65bf8b6fa8ed2619849c8d2bfdf5440b3026d3d403d971d37c4ad7b1"
+  },
+  "sampling": {
+    "calibration": "unvalidated",
+    "output_cap": 2048,
+    "retry": 0,
+    "stream": false
+  },
+  "total_timeout_seconds": 180,
+  "version": "nerfed16-api-v1-ff0d7c0c"
+}

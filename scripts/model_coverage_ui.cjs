@@ -76,7 +76,7 @@ const upstream = http.createServer(async (req,res) => {
   await page.locator('.model-coverage summary').first().waitFor();
   assert.equal(listCalls,0,'Opening the page never fetches upstream models');
   await page.locator('.model-coverage summary').first().click();
-  assert.equal(await page.locator('.coverage-table tbody tr').count(),12);
+  assert.equal(await page.locator('.coverage-table tbody tr').count(),13);
   await page.getByRole('button',{name:'获取模型',exact:true}).click();
   await page.locator('#fetch-submit').click(); assert.equal(listCalls,0);
   await page.locator('#fetch-confirm').check(); await page.locator('#fetch-submit').click();

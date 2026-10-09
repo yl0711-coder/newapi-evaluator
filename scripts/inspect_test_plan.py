@@ -6,12 +6,12 @@ import sys
 
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT))
-from scripts.test_manifest import admission, diagnosis, image_quality, workflow_control_plane, manifest_dict
+from scripts.test_manifest import admission, diagnosis, image_quality, workflow_control_plane, integrity, manifest_dict
 
 
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("plan", choices=("admission", "diagnosis", "image-quality", "workflow-control-plane"))
+    parser.add_argument("plan", choices=("admission", "diagnosis", "image-quality", "workflow-control-plane", "integrity"))
     parser.add_argument("--sha", help="Include the detached-candidate legacy suite")
     args = parser.parse_args()
     output = Path("/EXTERNAL_TEST_EVIDENCE")
@@ -21,6 +21,8 @@ def main() -> int:
         suites = diagnosis(sys.executable, output, sha=args.sha)
     elif args.plan == "workflow-control-plane":
         suites = workflow_control_plane(sys.executable, output)
+    elif args.plan == "integrity":
+        suites = integrity(sys.executable, output, sha=args.sha)
     else:
         suites = image_quality(sys.executable, output)
     print(json.dumps(manifest_dict(suites, plan=args.plan), ensure_ascii=False, sort_keys=True))

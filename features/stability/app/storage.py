@@ -150,6 +150,8 @@ def init() -> None:
             "ALTER TABLE schedules ADD COLUMN speed_threshold_mode TEXT NOT NULL DEFAULT 'fixed'",
             "ALTER TABLE schedules ADD COLUMN speed_baseline_min_runs INTEGER NOT NULL DEFAULT 5",
             "ALTER TABLE schedules ADD COLUMN speed_slow_ratio REAL NOT NULL DEFAULT 1.5",
+            "ALTER TABLE schedules ADD COLUMN plan_version TEXT NOT NULL DEFAULT 'ins-v2'",
+            "ALTER TABLE schedules ADD COLUMN layered_config_json TEXT NOT NULL DEFAULT '{}'",
             "ALTER TABLE probe_results ADD COLUMN actual_model TEXT NOT NULL DEFAULT ''",
             "ALTER TABLE probe_results ADD COLUMN usage_complete INTEGER NOT NULL DEFAULT 0",
             "ALTER TABLE probe_results ADD COLUMN model_mismatch INTEGER NOT NULL DEFAULT 0",
@@ -282,6 +284,8 @@ def _schedule_out(row: dict[str, Any]) -> dict[str, Any]:
             "SELECT channel_id FROM schedule_channels WHERE schedule_id=? ORDER BY channel_id", (row["id"],)
         ).fetchall()]
     row["channel_ids"] = ids
+    row["plan_version"] = row.get("plan_version", "ins-v2")
+    row["layered_config"] = loads(row.pop("layered_config_json", "{}"), {})
     return row
 
 
@@ -298,7 +302,7 @@ def get_schedule(schedule_id: int) -> dict[str, Any] | None:
     return _schedule_out(dict(row)) if row else None
 
 
-def upsert_schedule(data: dict[str, Any]) -> int:
+def _upsert_schedule(cur: sqlite3.Cursor, data: dict[str, Any]) -> int:
     now = time.time()
     schedule_id = data.get("id")
     fields = (
@@ -309,26 +313,74 @@ def upsert_schedule(data: dict[str, Any]) -> int:
         data["speed_threshold_mode"], data["speed_baseline_min_runs"], data["speed_slow_ratio"],
         int(data["enabled"]), now,
     )
-    with cursor() as cur:
-        if schedule_id:
-            if not cur.execute("SELECT id FROM schedules WHERE id=?", (schedule_id,)).fetchone():
-                raise KeyError("计划不存在")
-            cur.execute(
-                "UPDATE schedules SET name=?,daily_times=?,timezone=?,rounds=?,round_interval_seconds=?,notification_delay_seconds=?,max_concurrency=?,min_success_rate=?,max_timeout_rate=?,max_stream_break_rate=?,max_p95_ms=?,speed_threshold_mode=?,speed_baseline_min_runs=?,speed_slow_ratio=?,enabled=?,updated_at=? WHERE id=?",
-                (*fields, schedule_id),
-            )
-        else:
-            cur.execute(
-                "INSERT INTO schedules(name,daily_times,timezone,rounds,round_interval_seconds,notification_delay_seconds,max_concurrency,min_success_rate,max_timeout_rate,max_stream_break_rate,max_p95_ms,speed_threshold_mode,speed_baseline_min_runs,speed_slow_ratio,enabled,created_at,updated_at) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
-                (*fields[:-1], now, now),
-            )
-            schedule_id = int(cur.lastrowid)
-        cur.execute("DELETE FROM schedule_channels WHERE schedule_id=?", (schedule_id,))
-        cur.executemany(
-            "INSERT INTO schedule_channels(schedule_id,channel_id) VALUES(?,?)",
-            ((schedule_id, channel_id) for channel_id in data["channel_ids"]),
+    if schedule_id:
+        if not cur.execute("SELECT id FROM schedules WHERE id=?", (schedule_id,)).fetchone():
+            raise KeyError("计划不存在")
+        cur.execute(
+            "UPDATE schedules SET name=?,daily_times=?,timezone=?,rounds=?,round_interval_seconds=?,notification_delay_seconds=?,max_concurrency=?,min_success_rate=?,max_timeout_rate=?,max_stream_break_rate=?,max_p95_ms=?,speed_threshold_mode=?,speed_baseline_min_runs=?,speed_slow_ratio=?,enabled=?,updated_at=? WHERE id=?",
+            (*fields, schedule_id),
         )
+    else:
+        cur.execute(
+            "INSERT INTO schedules(name,daily_times,timezone,rounds,round_interval_seconds,notification_delay_seconds,max_concurrency,min_success_rate,max_timeout_rate,max_stream_break_rate,max_p95_ms,speed_threshold_mode,speed_baseline_min_runs,speed_slow_ratio,enabled,created_at,updated_at) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
+            (*fields[:-1], now, now),
+        )
+        schedule_id = int(cur.lastrowid)
+    cur.execute("DELETE FROM schedule_channels WHERE schedule_id=?", (schedule_id,))
+    cur.executemany(
+        "INSERT INTO schedule_channels(schedule_id,channel_id) VALUES(?,?)",
+        ((schedule_id, channel_id) for channel_id in data["channel_ids"]),
+    )
+    cur.execute("UPDATE schedules SET plan_version=?,layered_config_json=? WHERE id=?",
+                (data.get("plan_version", "ins-v2"), dumps(data.get("layered_config", {})), schedule_id))
     return int(schedule_id)
+
+def upsert_schedule(data: dict[str, Any]) -> int:
+    with cursor() as cur:
+        return _upsert_schedule(cur, data)
+
+
+def save_schedule_targets(data: dict[str, Any], targets: list[dict[str, Any]]) -> int:
+    """Targets and plan are committed together; disabled targets require explicit editing."""
+    registry = get_registry()
+    from features.model_coverage.catalog import model_name, validate_protocol
+    with registry.connect() as guard, cursor() as cur:
+        guard.execute("BEGIN IMMEDIATE")
+        cur.execute("BEGIN IMMEDIATE")
+        ids = []
+        production_bindings = {}
+        for selected in targets:
+            registry_id = int(selected["registry_channel_id"])
+            registry.resolve(registry_id)
+            model = model_name(selected["model"])
+            protocol = selected["protocol"]
+            validate_protocol(protocol, model)
+            if data.get("plan_version") == "layered-integrity-v1":
+                from .layered import production_gate
+                production, reason = production_gate(registry, registry_id, model, protocol)
+                if reason:
+                    raise ValueError(reason)
+                production_bindings[f"{registry_id}:{model}:{protocol}"] = production
+            matches = cur.execute("SELECT id,enabled FROM channels WHERE registry_channel_id=? AND model=? AND protocol=? ORDER BY id",
+                                  (registry_id, model, protocol)).fetchall()
+            if matches and not any(row["enabled"] for row in matches):
+                raise ValueError("target_disabled: 请先显式启用巡检目标")
+            active = next((row for row in matches if row["enabled"]), None)
+            if active:
+                ids.append(int(active["id"]))
+                continue
+            now = time.time()
+            label = f"Registry {registry_id} / {model} / {protocol}"
+            cur.execute("INSERT INTO channels(name,base_url,model,protocol,api_key_enc,registry_channel_id,enabled,created_at,updated_at) VALUES(?,'',?,?,'',?,1,?,?)",
+                        (label, model, protocol, registry_id, now, now))
+            ids.append(int(cur.lastrowid))
+        if not ids:
+            raise ValueError("请选择巡检目标")
+        config = dict(data.get("layered_config") or {})
+        if data.get("plan_version") == "layered-integrity-v1":
+            config["registry_channel_ids"] = list(dict.fromkeys(t["registry_channel_id"] for t in targets))
+            config["production_bindings"] = production_bindings
+        return _upsert_schedule(cur, {**data, "channel_ids": list(dict.fromkeys(ids)), "layered_config": config})
 
 
 def delete_schedule(schedule_id: int) -> bool:
@@ -344,6 +396,11 @@ def create_run(schedule: dict[str, Any], scheduled_for: float, source: str = "sc
         "speed_baseline_min_runs", "speed_slow_ratio", "channel_ids",
     )}
     snapshot["report_groups"] = list_report_groups()
+    snapshot["plan_version"] = schedule.get("plan_version", "ins-v2")
+    if snapshot["plan_version"] == "layered-integrity-v1":
+        snapshot["layered_config"] = schedule["layered_config"]
+        snapshot["targets"] = [{k: target[k] for k in ("id", "registry_channel_id", "model", "protocol")}
+                               for target in list_channels(ids=snapshot["channel_ids"])]
     now = time.time()
     try:
         with cursor() as cur:
@@ -360,7 +417,7 @@ def recover_expired_runs(now: float) -> int:
     with cursor() as cur:
         return cur.execute(
             "UPDATE runs SET status='pending',error='上次执行中断，已重新排队',lease_until=NULL "
-            "WHERE status='running' AND COALESCE(lease_until,0)<?",
+            "WHERE status='running' AND COALESCE(json_extract(snapshot_json,'$.plan_version'),'ins-v2')!='layered-integrity-v1' AND COALESCE(lease_until,0)<?",
             (now,),
         ).rowcount
 
@@ -368,14 +425,14 @@ def recover_expired_runs(now: float) -> int:
 def recover_all_running() -> int:
     with cursor() as cur:
         return cur.execute(
-            "UPDATE runs SET status='pending',error='服务重启，任务已重新排队',lease_until=NULL WHERE status='running'"
+            "UPDATE runs SET status='pending',error='服务重启，任务已重新排队',lease_until=NULL WHERE status='running' AND COALESCE(json_extract(snapshot_json,'$.plan_version'),'ins-v2')!='layered-integrity-v1'"
         ).rowcount
 
 
 def pending_runs(limit: int) -> list[dict[str, Any]]:
     with cursor() as cur:
         return [dict(row) for row in cur.execute(
-            "SELECT * FROM runs WHERE status='pending' AND scheduled_for<=? ORDER BY scheduled_for LIMIT ?",
+            "SELECT * FROM runs WHERE status='pending' AND COALESCE(json_extract(snapshot_json,'$.plan_version'),'ins-v2')!='layered-integrity-v1' AND scheduled_for<=? ORDER BY scheduled_for LIMIT ?",
             (time.time(), limit),
         ).fetchall()]
 

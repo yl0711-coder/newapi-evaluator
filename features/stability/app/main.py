@@ -14,7 +14,7 @@ from pydantic import BaseModel, ConfigDict, Field, model_validator
 from shared.registry import RegistryError, get_registry
 from features.admission.main import required_protocol
 
-from . import scheduler, storage, transport
+from . import scheduler, storage, transport, layered, integrity
 from .config import TIMEZONE, WEB_DIR
 from .egress import EgressDenied, validate_url
 from .security import basic_auth_middleware
@@ -35,12 +35,23 @@ class ChannelInput(BaseModel):
         return self
 
 
+class TargetInput(BaseModel):
+    model_config = ConfigDict(extra="forbid", str_strip_whitespace=True)
+    registry_channel_id: int = Field(ge=1)
+    model: str = Field(min_length=1, max_length=160)
+    protocol: Literal["openai", "anthropic", "responses"]
+    model_id: int | None = Field(default=None, ge=1)
+
+
 class ScheduleInput(BaseModel):
     id: int | None = Field(default=None, ge=1)
     name: str = Field(min_length=1, max_length=80)
     daily_times: str = Field(min_length=1, max_length=200)
     timezone: str = Field(default=TIMEZONE, min_length=1, max_length=80)
-    channel_ids: list[int] = Field(min_length=1, max_length=100)
+    channel_ids: list[int] = Field(default_factory=list, max_length=100)
+    targets: list[TargetInput] = Field(default_factory=list, max_length=15)
+    plan_version: Literal["ins-v2", "layered-integrity-v1"] | None = None
+    layered_config: dict = Field(default_factory=dict)
     rounds: int = Field(default=3, ge=1, le=10)
     round_interval_seconds: int = Field(default=15, ge=0, le=3600)
     notification_delay_seconds: int = Field(default=0, ge=0, le=86400)
@@ -59,6 +70,23 @@ class ScheduleInput(BaseModel):
         scheduler.parse_daily_times(self.daily_times)
         scheduler.timezone(self.timezone)
         self.channel_ids = list(dict.fromkeys(self.channel_ids))
+        # channel_ids is the legacy caller contract; new target-based forms default to the layered plan.
+        self.plan_version = self.plan_version or (layered.VERSION if self.targets else "ins-v2")
+        if not self.channel_ids and not self.targets:
+            raise ValueError("请选择至少一个渠道")
+        if self.plan_version == layered.VERSION:
+            self.layered_config = layered.validate_config(self.layered_config)
+            if not self.targets:
+                raise ValueError("分层计划需要显式 Registry/model/protocol 目标")
+            ids = {t.registry_channel_id for t in self.targets}
+            if len(ids) > 5:
+                raise ValueError("分层计划最多五个公共渠道")
+            self.layered_config["registry_channel_ids"] = sorted(ids)
+            for channel_id in ids:
+                selected = {(t.model, t.protocol) for t in self.targets if t.registry_channel_id == channel_id}
+                required = {(self.layered_config[k + "_model"], self.layered_config[k + "_protocol"]) for k in ("health", "astra", "sol")}
+                if not required <= selected:
+                    raise ValueError("每个渠道必须显式选择探活、Astra 与 Sol 的模型/协议")
         return self
 
 
@@ -116,10 +144,12 @@ async def security_headers(request, call_next):
 
 @app.get("/api/health")
 async def health() -> JSONResponse:
+    from features.integrity.service import executor_enabled
     scheduler_status = scheduler.status()
     database_ok = storage.health()
     state = "ok" if database_ok and scheduler_status["running"] else "degraded"
-    return JSONResponse({"status": state, "database": database_ok, "scheduler": scheduler_status})
+    return JSONResponse({"status": state, "database": database_ok, "scheduler": scheduler_status,
+                         "layered_executor": {"enabled": executor_enabled(), "mode": "live" if executor_enabled() else "off"}})
 
 
 @app.get("/api/meta")
@@ -131,12 +161,20 @@ async def meta() -> JSONResponse:
             "max_concurrent_probes": scheduler.MAX_CONCURRENT_PROBES,
         },
         "default_timezone": TIMEZONE,
+        "default_plan_version": layered.VERSION,
+        "layered_defaults": layered.DEFAULTS,
+        "daily_limits": {"workday": 230, "weekend": 35, "canary_axis": 192, "inflight": 1},
     })
 
 
 @app.get("/api/channels")
 async def channels() -> JSONResponse:
     return JSONResponse({"channels": storage.list_channels()})
+
+
+@app.get("/api/candidates")
+async def candidates() -> JSONResponse:
+    return JSONResponse({"candidates": layered.candidates()})
 
 
 @app.get("/api/channel-inventory")
@@ -179,7 +217,21 @@ async def save_schedule(body: ScheduleInput) -> JSONResponse:
     data = body.model_dump()
     data["daily_times"] = ",".join(scheduler.parse_daily_times(body.daily_times))
     try:
-        schedule_id = storage.upsert_schedule(data)
+        if body.targets:
+            from features.model_coverage.catalog import Catalog
+            catalog = Catalog(get_registry())
+            for target in body.targets:
+                if target.model_id:
+                    bound = catalog.binding(target.registry_channel_id, target.model_id)
+                    if (target.model, target.protocol) != (bound["upstream_model"], bound["request_protocol"]):
+                        raise ValueError("model_mapping_changed: 模型或协议映射已变更")
+                elif not any(m["model"] == target.model and m["protocol"] == target.protocol for m in catalog.models()):
+                    raise ValueError("catalog_model_required: 请先添加合法常用模型或显式映射")
+            schedule_id = storage.save_schedule_targets(data, [t.model_dump() for t in body.targets])
+        else:
+            schedule_id = storage.upsert_schedule(data)
+    except (ValueError, RegistryError) as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
     except KeyError as exc:
         raise HTTPException(status_code=404, detail=str(exc)) from exc
     except sqlite3.IntegrityError as exc:
@@ -201,6 +253,12 @@ async def run_schedule(schedule_id: int) -> JSONResponse:
         raise HTTPException(status_code=404, detail="计划不存在")
     if storage.has_active_run(schedule_id):
         raise HTTPException(status_code=409, detail="该计划已有等待或运行中的任务")
+    if schedule.get("plan_version") == layered.VERSION:
+        from datetime import datetime
+        from zoneinfo import ZoneInfo
+        run_id = layered.create_day(schedule, datetime.now(ZoneInfo(schedule["timezone"])).date())
+        await integrity.tick()
+        return JSONResponse({"run_id": run_id, "status": "pending", "scope": "today_scheduled_slots"}, status_code=202)
     run_id = storage.create_run(schedule, time.time(), source="manual")
     if run_id is None:
         raise HTTPException(status_code=409, detail="该计划刚刚已经触发")
@@ -218,7 +276,57 @@ async def run_detail(run_id: int) -> JSONResponse:
     run = storage.get_run(run_id)
     if not run:
         raise HTTPException(status_code=404, detail="运行记录不存在")
+    if run["snapshot"].get("plan_version") == layered.VERSION:
+        run["slots"] = layered.slots(run_id)
     return JSONResponse(run)
+
+
+@app.get("/api/runs/{run_id}/export")
+async def export_run(run_id: int) -> JSONResponse:
+    result = await run_detail(run_id)
+    result.headers["Content-Disposition"] = f'attachment; filename="stability-run-{run_id}.json"'
+    return result
+
+
+@app.post("/api/runs/{run_id}/cancel")
+async def cancel_run(run_id: int) -> JSONResponse:
+    run = storage.get_run(run_id)
+    if not run or run["snapshot"].get("plan_version") != layered.VERSION:
+        raise HTTPException(status_code=400, detail="仅分层计划支持持久取消")
+    integrity.cancel_run(run_id)
+    return JSONResponse({"status": "cancelled"})
+
+
+@app.post("/api/runs/{run_id}/resume")
+async def resume_run(run_id: int) -> JSONResponse:
+    run = storage.get_run(run_id)
+    if not run or run["snapshot"].get("plan_version") != layered.VERSION:
+        raise HTTPException(status_code=400, detail="仅分层计划支持安全恢复")
+    try:
+        integrity.resume_run(run_id)
+    except ValueError as exc:
+        raise HTTPException(status_code=409, detail=str(exc)) from exc
+    await integrity.tick()
+    return JSONResponse({"status": "pending"})
+
+
+class BaselineInput(BaseModel):
+    slot_key: str = Field(min_length=1, max_length=200)
+    label: str = Field(min_length=1, max_length=80)
+
+
+@app.get("/api/baselines")
+async def baselines() -> JSONResponse:
+    return JSONResponse({"baselines": layered.list_baselines()})
+
+
+@app.post("/api/baselines")
+async def lock_baseline(body: BaselineInput) -> JSONResponse:
+    try:
+        baseline_id = layered.lock_baseline(body.slot_key, body.label)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    return JSONResponse({"id": baseline_id})
 
 
 @app.get("/api/settings/feishu")

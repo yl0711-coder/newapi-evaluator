@@ -1,0 +1,66 @@
+{
+  "artifact_path": "traceone/artifact.json",
+  "artifact_sha256": "9deaa49ce8ce46b43088b133afe36ee20a1f64a227e53df7cd96a1fb1514109b",
+  "assets": [
+    {
+      "path": "traceone/LICENSE",
+      "sha256": "1bd7f31c61e7d7b5d627351a206b6b6f7e5c10245431d3abed7dec80add4421e"
+    },
+    {
+      "path": "traceone/LICENSE-ModelTrace.txt",
+      "sha256": "238afb57e498990742f84b9ce6167b4e256ac06104a9938ce953bc41c14bea51"
+    },
+    {
+      "path": "traceone/artifact.json",
+      "sha256": "9deaa49ce8ce46b43088b133afe36ee20a1f64a227e53df7cd96a1fb1514109b"
+    },
+    {
+      "path": "traceone/bank.json",
+      "sha256": "1c2cb74d372f9f0f30d0dabbb7b7a838660d2f769a88d0c8489e4c662e088c21"
+    },
+    {
+      "path": "traceone/probes.json",
+      "sha256": "522d50c7ac04ee1a137bcf6d420a707acd08526306938563b28c63f68fde207c"
+    },
+    {
+      "path": "traceone/prompt.txt",
+      "sha256": "441797bb623cee418ae557bfb481232d0a2becef4dbcbdc366dd8d55e7c58992"
+    },
+    {
+      "path": "traceone/release.json",
+      "sha256": "75c004e50d6dd1dc124d2604284d644c230e5cf86503a6b7f89d8a054bc1e080"
+    },
+    {
+      "path": "traceone/upstream-NOTICE.md",
+      "sha256": "b21a95e7dcf20a4de452fb7857c57cde7ef918691588e167179456b1b0a1a8bf"
+    }
+  ],
+  "bank_path": "traceone/bank.json",
+  "bank_sha256": "1c2cb74d372f9f0f30d0dabbb7b7a838660d2f769a88d0c8489e4c662e088c21",
+  "classes": 16,
+  "execution_mode": "api",
+  "max_output_tokens": 2500,
+  "max_requests": 1,
+  "max_retries": 0,
+  "method": "traceone",
+  "minimum_valid_answers": 1,
+  "normal_valid_answers": 1,
+  "probes_path": "traceone/probes.json",
+  "probes_sha256": "522d50c7ac04ee1a137bcf6d420a707acd08526306938563b28c63f68fde207c",
+  "request_timeout_seconds": 60,
+  "runtime_hashes": {
+    "evidence.py": "cdb679031b13df547337882f5ed8d7d2e580c606e938d70d4c072bd40af94e20",
+    "hlwy.py": "7c7dfdd6edf68aa8d3439d6a0c5eacb0510500e063d6286f55042a2c626b466e",
+    "reference.py": "e71c29082ce1c9b0daa8d8918f4d3b766ac6f9f920062ada081839229883a545",
+    "scoring.py": "bef0597ae29b5ff10ee95bade04dd2340f5281184cb4c8bccb2d9135e2b15276",
+    "traceone.py": "5957d96e65bf8b6fa8ed2619849c8d2bfdf5440b3026d3d403d971d37c4ad7b1"
+  },
+  "sampling": {
+    "calibration": "unvalidated",
+    "output_cap": 2500,
+    "retry": 0,
+    "stream": false
+  },
+  "total_timeout_seconds": 60,
+  "version": "traceone-v12-9e070594"
+}

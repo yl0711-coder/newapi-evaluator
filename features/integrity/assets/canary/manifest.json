@@ -1,0 +1,50 @@
+{
+  "assets": [
+    {
+      "path": "canary/LICENSE",
+      "sha256": "1bd7f31c61e7d7b5d627351a206b6b6f7e5c10245431d3abed7dec80add4421e"
+    },
+    {
+      "path": "canary/canary.json",
+      "sha256": "f53419e510a36f7ed27ee26319d304bef8e3ad103319d7b170b6680595394911"
+    },
+    {
+      "path": "canary/power-plan.json",
+      "sha256": "bc5546b9586a12fa1f55d9425187530cca66bbda1d794eb0e72210ec70dbaffa"
+    },
+    {
+      "path": "canary/probes.json",
+      "sha256": "5f82b2c65f32933d5b81d750465b0999eac2b23c3e5ae607dd5c8e22b814a50a"
+    }
+  ],
+  "execution_mode": "api",
+  "max_output_tokens": 512,
+  "max_requests": 192,
+  "max_retries": 0,
+  "method": "canary",
+  "minimum_valid_answers": 192,
+  "normal_valid_answers": 192,
+  "probes_path": "canary/probes.json",
+  "probes_sha256": "5f82b2c65f32933d5b81d750465b0999eac2b23c3e5ae607dd5c8e22b814a50a",
+  "request_timeout_seconds": 30,
+  "runtime_hashes": {
+    "evidence.py": "cdb679031b13df547337882f5ed8d7d2e580c606e938d70d4c072bd40af94e20",
+    "hlwy.py": "7c7dfdd6edf68aa8d3439d6a0c5eacb0510500e063d6286f55042a2c626b466e",
+    "reference.py": "e71c29082ce1c9b0daa8d8918f4d3b766ac6f9f920062ada081839229883a545",
+    "scoring.py": "bef0597ae29b5ff10ee95bade04dd2340f5281184cb4c8bccb2d9135e2b15276",
+    "traceone.py": "5957d96e65bf8b6fa8ed2619849c8d2bfdf5440b3026d3d403d971d37c4ad7b1"
+  },
+  "sampling": {
+    "api_calibration": "unvalidated",
+    "effort": "low",
+    "families": "Holm-4",
+    "invalid": "fail",
+    "minimum_effect": 0.05,
+    "output_cap": 512,
+    "primary_alpha": 0.05,
+    "retry": 0,
+    "stream": false
+  },
+  "total_timeout_seconds": 36000,
+  "version": "canary192-9e070594-paired-v1"
+}

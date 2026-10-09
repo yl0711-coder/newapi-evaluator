@@ -68,6 +68,8 @@ def ensure_due_runs(now_epoch: float | None = None) -> int:
     now_epoch = time.time() if now_epoch is None else now_epoch
     created = 0
     for schedule in storage.list_schedules(enabled_only=True):
+        if schedule.get("plan_version") == "layered-integrity-v1":
+            continue
         zone = timezone(schedule.get("timezone") or TIMEZONE)
         now_local = datetime.fromtimestamp(now_epoch, zone)
         for day_offset in (0, -1):
@@ -421,6 +423,8 @@ async def execute_run(run_id: int) -> None:
     heartbeat = asyncio.create_task(keep_lease(), name=f"stability-lease-{run_id}")
     try:
         snapshot = run["snapshot"]
+        if snapshot.get("plan_version") == "layered-integrity-v1":
+            return
         storage.clear_probe_results(run_id)
         channels = [item for item in storage.list_channels(
             include_secrets=True, ids=[int(value) for value in snapshot["channel_ids"]]
@@ -467,6 +471,8 @@ async def execute_run(run_id: int) -> None:
 async def tick(now_epoch: float | None = None) -> None:
     global _last_retention_at, _last_tick_at
     now_epoch = time.time() if now_epoch is None else now_epoch
+    from . import integrity
+    await integrity.tick(now_epoch)
     if _last_retention_at is None or now_epoch - _last_retention_at >= 3600:
         storage.prune_run_history(now_epoch, RETENTION_DAYS)
         _last_retention_at = now_epoch
@@ -514,6 +520,8 @@ async def start() -> None:
 
 async def stop() -> None:
     global _loop_task
+    from . import integrity
+    await integrity.stop()
     if _loop_task:
         _loop_task.cancel()
         await asyncio.gather(_loop_task, return_exceptions=True)

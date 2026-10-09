@@ -1,0 +1,121 @@
+{
+  "schema": "eval-integrity-assets/v1",
+  "pins": {
+    "ModelTrace": "d4131b30243dfa05e70180b5eedde742103f1d73",
+    "is-gpt-nerfed": "ff0d7c0c8fdc8713273b6570b1ada1838eaad84c",
+    "TraceOne": "9e0705944153d7a4f01fffa82db854bf68661764",
+    "HLwY": "8629b9353fdeaa1a0fc6b36eaf0460fbba1d44b3",
+    "KBF": "68aefbbab879469152aaac9fd988a86c30ee4739"
+  },
+  "redistributed": [
+    {
+      "asset": "modeltrace/bank.json",
+      "source_project": "ModelTrace",
+      "source_path": "data/unified_bank.json",
+      "sha256": "e514c76928ea38d23bc0f14d3935f23c97b1efb6d96b18a19bdc88ad2d830536"
+    },
+    {
+      "asset": "modeltrace/LICENSE",
+      "source_project": "ModelTrace",
+      "source_path": "LICENSE",
+      "sha256": "238afb57e498990742f84b9ce6167b4e256ac06104a9938ce953bc41c14bea51"
+    },
+    {
+      "asset": "nerfed/bank.json",
+      "source_project": "is-gpt-nerfed",
+      "source_path": "plugin/assets/modeltrace/unified_bank.json",
+      "sha256": "1c2cb74d372f9f0f30d0dabbb7b7a838660d2f769a88d0c8489e4c662e088c21"
+    },
+    {
+      "asset": "nerfed/LICENSE",
+      "source_project": "is-gpt-nerfed",
+      "source_path": "LICENSE",
+      "sha256": "3d8061c227dc21ff4636e701a54f98b695185bdf089c6611644a6739f5fdbaf5"
+    },
+    {
+      "asset": "nerfed/LICENSE-ModelTrace.txt",
+      "source_project": "is-gpt-nerfed",
+      "source_path": "plugin/assets/modeltrace/LICENSE-ModelTrace.txt",
+      "sha256": "238afb57e498990742f84b9ce6167b4e256ac06104a9938ce953bc41c14bea51"
+    },
+    {
+      "asset": "nerfed/upstream-provenance.json",
+      "source_project": "is-gpt-nerfed",
+      "source_path": "plugin/assets/modeltrace/provenance.json",
+      "sha256": "aff6f146a901c64758778154b4035e27a2f874a2a055ce7d808283e6e857eff8"
+    },
+    {
+      "asset": "traceone/bank.json",
+      "source_project": "TraceOne",
+      "source_path": "src/traceone/data/unified_bank_v2_16.json",
+      "sha256": "1c2cb74d372f9f0f30d0dabbb7b7a838660d2f769a88d0c8489e4c662e088c21"
+    },
+    {
+      "asset": "traceone/artifact.json",
+      "source_project": "TraceOne",
+      "source_path": "src/traceone/data/codex_low_v8_optimized.json",
+      "sha256": "9deaa49ce8ce46b43088b133afe36ee20a1f64a227e53df7cd96a1fb1514109b"
+    },
+    {
+      "asset": "traceone/prompt.txt",
+      "source_project": "TraceOne",
+      "source_path": "prompts/identity-replacement-v1.txt",
+      "sha256": "441797bb623cee418ae557bfb481232d0a2becef4dbcbdc366dd8d55e7c58992"
+    },
+    {
+      "asset": "traceone/release.json",
+      "source_project": "TraceOne",
+      "source_path": "config/release-candidate-v12.json",
+      "sha256": "75c004e50d6dd1dc124d2604284d644c230e5cf86503a6b7f89d8a054bc1e080"
+    },
+    {
+      "asset": "traceone/LICENSE",
+      "source_project": "TraceOne",
+      "source_path": "LICENSE",
+      "sha256": "1bd7f31c61e7d7b5d627351a206b6b6f7e5c10245431d3abed7dec80add4421e"
+    },
+    {
+      "asset": "traceone/LICENSE-ModelTrace.txt",
+      "source_project": "TraceOne",
+      "source_path": "third_party/ModelTrace-LICENSE",
+      "sha256": "238afb57e498990742f84b9ce6167b4e256ac06104a9938ce953bc41c14bea51"
+    },
+    {
+      "asset": "traceone/upstream-NOTICE.md",
+      "source_project": "TraceOne",
+      "source_path": "third_party/NOTICE.md",
+      "sha256": "b21a95e7dcf20a4de452fb7857c57cde7ef918691588e167179456b1b0a1a8bf"
+    },
+    {
+      "asset": "canary/canary.json",
+      "source_project": "TraceOne",
+      "source_path": "benchmarks/canary-v2.json",
+      "sha256": "f53419e510a36f7ed27ee26319d304bef8e3ad103319d7b170b6680595394911"
+    },
+    {
+      "asset": "canary/power-plan.json",
+      "source_project": "TraceOne",
+      "source_path": "data/degradation-power-plan-v2.json",
+      "sha256": "bc5546b9586a12fa1f55d9425187530cca66bbda1d794eb0e72210ec70dbaffa"
+    },
+    {
+      "asset": "canary/LICENSE",
+      "source_project": "TraceOne",
+      "source_path": "LICENSE",
+      "sha256": "1bd7f31c61e7d7b5d627351a206b6b6f7e5c10245431d3abed7dec80add4421e"
+    },
+    {
+      "asset": "hlwy/LICENSE",
+      "source_project": "other-detectors/sources/hlwy-ai-checker",
+      "source_path": "LICENSE",
+      "sha256": "20c17d8b8c48a600800dfd14f95d5cb9ff47066a9641ddeab48dc54aec96e331"
+    }
+  ],
+  "excluded": [
+    "raw public responses",
+    "public KBF/HLwY references",
+    "Meow",
+    "Modivue executable",
+    "nerfed executable"
+  ]
+}

@@ -2,6 +2,8 @@
 
 实现《Monitor—Eval 内部接口契约 v1.0》的 Eval 侧。只有 Monitor 主动调用 Eval；Eval 不回调 Monitor，不修改生产路由、权重或渠道状态，只输出证据和“建议生产对比”，不输出禁用决定。
 
+新增分层异常复核使用独立 [完整性任务 v2](integrity-monitor-api.md)：同一 HMAC 边界，HLwY/KBF 异步主动复核，is-gpt-nerfed 改为官方账号白名单证据离线分析。旧主动nerfed请求明确返回422 strategy_contract_changed；本页其余v1 probe-jobs合同保留。新执行开关为 EVAL_INTEGRITY_EXECUTOR（默认off），新费用仅记录、没有每日金额上限，与旧v1执行器分开。
+
 ## 启用与权限
 
 | 环境变量 | 作用 |

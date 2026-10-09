@@ -32,7 +32,9 @@ def test_artifact_root(configured=None, *, repository=ROOT, environment=None, pl
         raise ValueError("test-artifact root must be absolute")
     path = path.resolve()
     repository = Path(repository).resolve()
-    if path == repository or repository in path.parents or path in repository.parents:
+    # A worktree can live below the device's shared evidence root. Actual output
+    # leaves are still independently required to be new and outside the repository.
+    if path == repository or repository in path.parents:
         raise ValueError("test-artifact root must be isolated from the repository")
     if not path.is_dir():
         raise ValueError("test-artifact root must be a prepared directory")
@@ -46,7 +48,7 @@ def validate_new_output(value, artifact_root, *, repository=ROOT):
     output = requested.resolve()
     repository = Path(repository).resolve()
     artifact_root = Path(artifact_root).resolve()
-    if output == repository or repository in output.parents:
+    if output == repository or repository in output.parents or output in repository.parents:
         raise ValueError("--output must be external to the repository")
     if artifact_root not in output.parents:
         raise ValueError("--output must be a new directory inside the configured test-artifact root")

@@ -1,0 +1,7 @@
+[
+  {
+    "probe_id": "health-1",
+    "prompt": "Reply with OK.",
+    "max_output_tokens": 32
+  }
+]

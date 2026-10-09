@@ -98,6 +98,16 @@ def main():
             features = json.loads(get("/api/platform"))["features"]
             assert any(item["id"] == "image-quality" for item in features)
             assert b"image-form" in get("/image-quality/")
+            if mode == "all":
+                assert any(item["id"] == "integrity" for item in features)
+                assert b"unified-form" in get("/integrity/")
+                assert len(get("/integrity/app.js")) > 100
+                integrity = json.loads(get("/api/integrity/meta"))
+                assert integrity["executor"]["mode"] == "off"
+                assert integrity["automatic_trigger"] is False
+                assert json.loads(get("/api/integrity/reviews"))["tasks"] == []
+                assert json.loads(get("/api/integrity/tests"))["tasks"] == []
+                assert json.loads(get("/api/health"))["evidence_executor"]["outbound_requests"] == 0
             assert len(get("/image-quality/assets/app.js")) > 100
             inspected = json.loads(command(["docker", "exec", active, "python", "-m",
                                              "features.image_quality", "inspect-config", "--config",

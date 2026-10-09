@@ -118,12 +118,23 @@ class Registry:
         payload = json.dumps([data[k] for k in ("base_url", "scope", "multiplier", "api_key")])
         return hmac.new(self._key, payload.encode(), hashlib.sha256).hexdigest()
 
-    @staticmethod
-    def public(row) -> dict:
+    def credential_status(self, row) -> str:
+        if not row["key_enc"]:
+            return "missing"
+        try:
+            value = self._cipher.decrypt(row["key_enc"].encode()).decode()
+        except (InvalidToken, UnicodeError, ValueError, TypeError, AttributeError):
+            return "unreadable"
+        return "available" if value.strip() else "missing"
+
+    def public(self, row) -> dict:
         result = {k: row[k] for k in ("id", "name", "base_url", "scope", "multiplier", "note",
                                       "enabled", "source_kind", "status", "version", "created_at", "updated_at")}
         result["enabled"] = bool(result["enabled"])
-        result.update(has_key=True, key_masked="***", protocol_profile=clean_profile(json.loads(row["protocol_profile"])))
+        status = self.credential_status(row)
+        result.update(has_key=status == "available", credential_status=status,
+                      key_masked="***" if status == "available" else "",
+                      protocol_profile=clean_profile(json.loads(row["protocol_profile"])))
         return result
 
     def list(self) -> list[dict]:
@@ -137,6 +148,8 @@ class Registry:
             raise KeyError("公共渠道不存在")
         result = self.public(row)
         if secret:
+            if result["credential_status"] != "available":
+                raise RegistryError("渠道密钥缺失或无法解密，请替换密钥")
             try:
                 result["api_key"] = self._cipher.decrypt(row["key_enc"].encode()).decode()
             except InvalidToken as exc:

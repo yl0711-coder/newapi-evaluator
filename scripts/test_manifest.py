@@ -128,6 +128,18 @@ def workflow_control_plane(python: str, output: Path) -> list[SuiteSpec]:
     ])
 
 
+def integrity(python: str, output: Path, *, sha: str | None = None) -> list[SuiteSpec]:
+    """Layered integrity changes exercise the whole workbench and new consumers."""
+    suites = admission(python, output, sha=sha)
+    suites.extend([
+        SuiteSpec("integrity-inspect", _python(python, "scripts/inspect_integrity.py"), 60, "inspect"),
+        SuiteSpec("integrity-browser", ("node", "scripts/integrity_ui.cjs"), 600, "browser"),
+        SuiteSpec("monitor-control-browser", ("node", "scripts/monitor_control_plane_ui.cjs"), 300, "browser"),
+        SuiteSpec("build-container", _python(python, "scripts/image_quality_container.py", "--output", _output_arg(output, "container")), 900, "container"),
+    ])
+    return _validate(suites)
+
+
 def manifest_dict(suites: Iterable[SuiteSpec], *, plan: str, rules_version: str = "1.0") -> dict:
     """Create the stable, JSON-serialisable inspection representation."""
     rows = [suite.as_dict() for suite in suites]

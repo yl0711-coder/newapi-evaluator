@@ -17,6 +17,7 @@ DEFAULT_MODELS = (
     ("gpt-5.6-terra", "GPT-5.6 Terra", "GPT", "openai"),
     ("gpt-5.6-sol", "GPT-5.6 Sol", "GPT", "openai"),
     ("gpt-6-astra", "GPT-6 Astra", "GPT", "responses"),
+    ("gpt-6.1-sol", "GPT-6.1 Sol", "GPT", "responses"),
     ("claude-fable-5.1", "Claude Fable 5.1", "Claude", "anthropic"),
     ("claude-fable-5", "Claude Fable 5", "Claude", "anthropic"),
     ("claude-opus-5", "Claude Opus 5", "Claude", "anthropic"),
@@ -61,6 +62,12 @@ class Catalog:
             if not conn.execute("SELECT 1 FROM registry_meta WHERE key='model_catalog_seeded'").fetchone():
                 conn.executemany("INSERT OR IGNORE INTO model_catalog(model,label,family,protocol) VALUES(?,?,?,?)", DEFAULT_MODELS)
                 conn.execute("INSERT INTO registry_meta VALUES('model_catalog_seeded','1')")
+            # Add the newly supported declared target once, preserving existing
+            # catalog edits and model IDs rather than reseeding the whole table.
+            if not conn.execute("SELECT 1 FROM registry_meta WHERE key='model_catalog_sol61'").fetchone():
+                conn.execute("INSERT OR IGNORE INTO model_catalog(model,label,family,protocol) VALUES(?,?,?,?)",
+                             ("gpt-6.1-sol", "GPT-6.1 Sol", "GPT", "responses"))
+                conn.execute("INSERT INTO registry_meta VALUES('model_catalog_sol61','1')")
 
     def models(self):
         with self.registry.connect() as conn:

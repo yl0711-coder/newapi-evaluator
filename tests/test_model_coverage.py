@@ -23,6 +23,21 @@ from workbench import create_app
 
 
 class CoverageTests(unittest.IsolatedAsyncioTestCase):
+    async def test_sol_catalog_upgrade_preserves_existing_ids_and_edits(self):
+        original = self.catalog.models()[0]
+        with self.registry.connect() as conn:
+            conn.execute("DELETE FROM model_catalog WHERE model='gpt-6.1-sol'")
+            conn.execute("DELETE FROM registry_meta WHERE key='model_catalog_sol61'")
+            conn.execute("UPDATE model_catalog SET label='Synthetic edited label' WHERE id=?", (original['id'],))
+        Catalog(self.registry)
+        upgraded = self.catalog.models()
+        sol = next(row for row in upgraded if row['model'] == 'gpt-6.1-sol')
+        self.assertEqual(sol['protocol'], 'responses')
+        self.assertEqual(next(row for row in upgraded if row['id'] == original['id'])['label'],
+                         'Synthetic edited label')
+        Catalog(self.registry)
+        self.assertEqual(sum(row['model'] == 'gpt-6.1-sol' for row in self.catalog.models()), 1)
+
     async def asyncSetUp(self):
         self.temp = tempfile.TemporaryDirectory(prefix='coverage-synthetic-')
         self.directory = Path(self.temp.name)
@@ -77,7 +92,7 @@ class CoverageTests(unittest.IsolatedAsyncioTestCase):
         return run_id
 
     async def test_seed_new_models_global_and_no_requests_on_reads(self):
-        self.assertEqual(len(self.catalog.models()),12)
+        self.assertEqual(len(self.catalog.models()),13)
         self.assertEqual([m['model'] for m in self.catalog.models()[:5]],
                          ['gpt-5.5','gpt-5.6-luna','gpt-5.6-terra','gpt-5.6-sol','gpt-6-astra'])
         with patch.object(discovery,'guarded_transport',side_effect=AssertionError('unexpected request')):
@@ -88,8 +103,8 @@ class CoverageTests(unittest.IsolatedAsyncioTestCase):
             self.assertEqual(self.row()['measurement']['status'],'untested')
         new = await self.client.post('/api/model-coverage/models',json={'model':'synthetic-new-model','label':'New model','family':'Synthetic','protocol':'openai'})
         self.assertEqual(new.status_code,200)
-        self.assertEqual(len(Catalog(self.registry).models()),13)
-        self.assertEqual(len(service.coverage()['channels'][0]['models']),13)
+        self.assertEqual(len(Catalog(self.registry).models()),14)
+        self.assertEqual(len(service.coverage()['channels'][0]['models']),14)
         self.assertEqual(storage.list_channels(),[])
         self.assertEqual(storage.list_schedules(),[])
 
@@ -412,7 +427,7 @@ class CoverageTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(before,after)
         self.assertEqual(result['requests_sent'],0)
         self.assertFalse(result['secrets_read'])
-        self.assertEqual(len(result['models']),12)
+        self.assertEqual(len(result['models']),13)
         encoded=json.dumps(result)
         self.assertNotIn('synthetic-coverage-credential',encoded)
         self.assertNotIn('synthetic.example',encoded)

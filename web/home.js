@@ -3,6 +3,7 @@
   const {channels} = await Workbench.api('/api/registry/channels');
   document.querySelector('#channel-count').textContent = `${channels.length} 条连接记录 · ${channels.filter(x => x.status === 'online').length} 条已标记上线`;
   const descriptions = {
+    'integrity':'手动 HLwY / KBF 异步复核、官方账号白名单证据分析；结果仅作行为线索。',
     'protocol-admission':'获取上游模型列表，选择模型检测 Chat Completions、Responses 和 Claude Messages，查看各协议的支持情况。',
     'image-quality':'手动填写连接与提示词，固定请求 gpt-image-2，并排查看画面、人工评分和脱敏响应证据。',
     diagnosis:'根据 Token、耗时、HTTP 状态与流式标记生成合成请求，做小样本单因素对照并导出排查报告。',

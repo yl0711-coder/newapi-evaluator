@@ -619,7 +619,10 @@ class IntegrationTests(unittest.IsolatedAsyncioTestCase):
                 async with httpx.AsyncClient(transport=httpx.ASGITransport(app=app),base_url="http://testserver") as client:
                     data = (await client.get("/api/platform")).json()
                     expected = [] if mode == "channels" else ["protocol-admission", "admission"] if mode == "admission" else [mode]
+                    if mode == "stability":
+                        expected.append("integrity")
                     self.assertEqual([f["id"] for f in data["features"]], expected)
+                    self.assertEqual((await client.get("/integrity/")).status_code, 200 if mode == "stability" else 404)
                     protocol = [f for f in data["features"] if f["id"] == "protocol-admission"]
                     if mode == "admission":
                         self.assertEqual(protocol, [{"id": "protocol-admission", "name": "模型与协议检测", "url": "/admission/protocol/"}])
@@ -639,7 +642,7 @@ class IntegrationTests(unittest.IsolatedAsyncioTestCase):
             self.assertEqual(response.json()["features"],
                              ["admission", "stability", "reasoning", "capacity", "diagnosis", "image-quality"])
             platform = (await self.client.get("/api/platform")).json()
-            self.assertEqual([item["id"] for item in platform["features"]], ["protocol-admission", *response.json()["features"]])
+            self.assertEqual([item["id"] for item in platform["features"]], ["protocol-admission", *response.json()["features"], "integrity"])
             for feature in platform["features"]:
                 self.assertEqual((await self.client.get(feature["url"])).status_code, 200)
             self.assertTrue(scheduler.status()["running"])

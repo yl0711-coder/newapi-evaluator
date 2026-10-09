@@ -1,0 +1,68 @@
+<!doctype html>
+<html lang="zh-CN">
+<head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1"><title>模型完整性复核</title><link rel="stylesheet" href="/assets/common.css"><link rel="stylesheet" href="styles.css"></head>
+<body>
+<main>
+<h1>模型完整性复核</h1>
+<section aria-labelledby="unified-title">
+<h2 id="unified-title">一次运行三项测试</h2>
+<p>选择一次渠道，分别实际运行 TraceOne、ModelTrace 和 is-gpt-nerfed API 数字指纹。默认 Astra / Responses / low；1 次探活、1 次 TraceOne、最多 3 次 ModelTrace 和 3 次 nerfed，总计最多 8 次尝试、零重试。普通 API 未校准，不能认证身份或实际权重。</p>
+<form id="unified-form"><div class="grid">
+<label>测试渠道<select id="unified-channel" required><option value="">请选择渠道</option></select></label>
+<label>模型条件<select id="unified-model"><option value="gpt-6-astra">GPT-6 Astra（默认）</option><option value="gpt-6.1-sol">GPT-6.1 Sol（高级；ModelTrace 不支持）</option></select></label>
+</div><p id="unified-condition" role="status"></p>
+<label class="check"><input id="unified-confirm" type="checkbox" required>确认本次有限主动请求；费用仅记录，无每日金额上限</label>
+<button id="unified-submit" type="submit">开始三项测试</button><button id="unified-new" type="button">新一轮测试</button><span id="unified-status" role="status"></span>
+</form><h3>统一任务与历史报告</h3><div id="unified-tasks"></div><div id="unified-detail" hidden></div>
+</section>
+<p>先排除模型、协议、provider 与参数漂移，再进行 HLwY 同条件数字分布复核。仍有疑点时可手动使用 KBF；也可明确直接选择 KBF。复核不会自动修改路由、权重或发送通知。</p>
+<p id="executor-status" role="status">正在读取消费者状态…</p>
+<p id="error" role="alert" hidden></p>
+<section aria-labelledby="reference-title">
+<h2 id="reference-title">导入授权参考</h2>
+<p>仅接受自有或有权使用的 immutable JSON。参考包含固定 probe/scorer 版本、同条件预算；KBF 还需同条件自测。页面不会采集官方 reference。</p>
+<form id="reference-form">
+<label>参考 JSON 文件<input id="reference-file" type="file" accept=".json,application/json" required></label>
+<label>预期 SHA256<input id="reference-sha" pattern="[a-f0-9]{64}" minlength="64" maxlength="64" required autocomplete="off"></label>
+<label class="check"><input id="reference-authorized" type="checkbox" required>我有权使用该参考资产，并确认其中的授权声明</label>
+<button type="submit">导入参考</button><span id="reference-status" role="status"></span>
+</form>
+</section>
+<section aria-labelledby="review-title">
+<h2 id="review-title">创建主动复核</h2>
+<form id="review-form">
+<div class="grid">
+<label>公共渠道<select id="review-channel" required><option value="">请选择渠道</option></select></label>
+<label>声明模型<select id="review-model" required><option value="">请选择模型</option></select></label>
+<label>协议<select id="review-protocol" required><option value="responses">Responses</option><option value="openai">Chat Completions</option><option value="anthropic">Messages</option></select></label>
+<label>复核方法<select id="review-strategy"><option value="hlwy">HLwY</option><option value="kbf">KBF</option></select></label>
+<label>授权参考<select id="review-reference" required><option value="">请选择匹配参考</option></select></label>
+<label>来源记录<input id="review-source" maxlength="200" required></label>
+<label>事件标识<input id="review-incident" maxlength="200" required></label>
+</div>
+<label>本次声明条件（必须与参考一致）<textarea id="review-conditions" rows="7" required spellcheck="false"></textarea></label>
+<div class="grid budgets">
+<label>请求尝试上限<input id="review-requests" type="number" min="1" max="256" required></label>
+<label>input token 预留上限<input id="review-input" type="number" min="1" required></label>
+<label>output token 预留上限<input id="review-output" type="number" min="1" required></label>
+<label>时间上限（秒）<input id="review-seconds" type="number" min="1" required></label>
+</div>
+<p>请求、token 与时间预算从参考绑定条件填写；重试为 0。费用只作估算记录，不设每日费用上限，未知显示 unknown，不是中转账单。review 与日常、reference 分别记账；同目标同条件复核有七天冷却。</p>
+<label class="check"><input id="review-confirm" type="checkbox" required>我明确确认本次主动请求及上述独立预算</label>
+<button id="review-submit" type="submit">创建异步复核任务</button><span id="review-status" role="status"></span>
+</form>
+</section>
+<section aria-labelledby="tasks-title"><h2 id="tasks-title">任务与报告</h2><button id="refresh" type="button">刷新任务</button><div id="tasks"></div><div id="task-detail" hidden></div></section>
+<section aria-labelledby="evidence-title">
+<h2 id="evidence-title">官方账号 nerfed 证据分析</h2>
+<p>显式导入用户选定的最小白名单 JSON；只分析官方账号范围，与 API 渠道分开。缺元数据时显示 unknown/unavailable。HMAC 认证只证明调用身份，不证明证据真实或完备。</p>
+<form id="evidence-form">
+<label>白名单证据 JSON 文件<input id="evidence-file" type="file" accept=".json,application/json" required></label>
+<label class="check"><input id="evidence-authorized" type="checkbox" required>我有权提供该官方账号证据</label>
+<button type="submit">创建离线分析任务</button><span id="evidence-status" role="status"></span>
+</form><div id="evidence-tasks"></div>
+</section>
+<section><h2>后续与旁路</h2><p>fpverify：等待合格官方同条件 reference 的后续按需审计，首期不采样或建库。Modivue：仅接受显式提供的安全摘要旁路证据；本轮不安装客户端、不配置代理、不扫描日志，不引入 Meow。</p></section>
+</main>
+<script src="/assets/common.js"></script><script src="app.js"></script>
+</body></html>

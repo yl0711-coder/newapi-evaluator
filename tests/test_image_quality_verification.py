@@ -8,6 +8,7 @@ import sys
 import tempfile
 import time
 import unittest
+from unittest.mock import patch
 
 from scripts.verify_image_quality import (ROOT, aggregate_status, classify, run_process,
                                           test_artifact_root, validate_new_output)
@@ -172,8 +173,26 @@ if args[0] == "port":
             output = root / "container"
             env = {**os.environ, "PATH": str(root) + os.pathsep + os.environ.get("PATH", ""),
                    "SYNTHETIC_DOCKER_LOG": str(log), "SYNTHETIC_DOCKER_SCENARIO": scenario}
-            code, text, timed_out = run_process(
-                [sys.executable, str(ROOT / "scripts/image_quality_container.py"), "--output", str(output)], env, 2)
+            # Start the timeout at the simulated blocked Docker operation. Python
+            # interpreter/import startup under a loaded full suite is unrelated
+            # to the cleanup behavior this test verifies.
+            real_popen = subprocess.Popen
+            def ready_process(*args, **kwargs):
+                process = real_popen(*args, **kwargs)
+                deadline = time.monotonic() + 5
+                while process.poll() is None:
+                    calls = [json.loads(line) for line in log.read_text().splitlines()] if log.exists() else []
+                    if any(row[0] == "port" for row in calls):
+                        return process
+                    if time.monotonic() >= deadline:
+                        os.killpg(process.pid, signal.SIGKILL)
+                        process.communicate(timeout=5)
+                        self.fail("synthetic Docker operation did not become ready")
+                    time.sleep(.02)
+                return process
+            with patch("scripts.verify_image_quality.subprocess.Popen", side_effect=ready_process):
+                code, text, timed_out = run_process(
+                    [sys.executable, str(ROOT / "scripts/image_quality_container.py"), "--output", str(output)], env, 2)
             self.assertEqual(timed_out, scenario != "unavailable")
             self.assertNotEqual(code, 0)
             calls = [json.loads(line) for line in log.read_text().splitlines()]
@@ -212,11 +231,16 @@ if args[0] == "port":
                 test_artifact_root(repository=ROOT, environment={}, platform="linux")
             with self.assertRaises(ValueError):
                 test_artifact_root(ROOT, environment={})
+            # A task worktree may be below the shared device evidence root;
+            # individual new output leaves must still be external to that worktree.
+            self.assertEqual(test_artifact_root(root, repository=root / "candidate", environment={}), root.resolve())
+            with self.assertRaises(ValueError):
+                validate_new_output(root / "candidate" / "evidence", root, repository=root / "candidate")
             with self.assertRaises(ValueError):
                 test_artifact_root("relative", environment={})
             with self.assertRaises(ValueError):
                 test_artifact_root(root / "missing", environment={})
-            self.assertEqual(validate_new_output(root / "new", root), root / "new")
+            self.assertEqual(validate_new_output(root / "new", root), (root / "new").resolve())
             for rejected in (root, ROOT / "evidence", root.parent / "outside"):
                 with self.subTest(rejected=rejected), self.assertRaises(ValueError):
                     validate_new_output(rejected, root)

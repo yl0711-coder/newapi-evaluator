@@ -12,14 +12,15 @@ sys.path.insert(0, str(ROOT))
 from scripts.verify_diagnosis import classify, snapshot
 from scripts.verify_image_quality import (aggregate_status, cancellation_signals,
                                           classify as classify_image, run_process)
-from scripts.test_manifest import admission
+from scripts.test_manifest import admission, integrity
 
 
-def main():
+def main(argv=None, *, default_plan="admission"):
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--output", type=Path, required=True)
     parser.add_argument("--sha", help="Require exact clean detached commit for independent acceptance")
-    args = parser.parse_args()
+    parser.add_argument("--plan", choices=("admission", "integrity"), default=default_plan)
+    args = parser.parse_args(argv)
     output = args.output.resolve()
     if output == ROOT or ROOT in output.parents:
         parser.error("output must be external")
@@ -32,21 +33,22 @@ def main():
     (output / "tmp").mkdir()
     allowed = {"PATH", "HOME", "LANG", "LC_ALL", "SYSTEMROOT", "SSL_CERT_FILE", "SSL_CERT_DIR",
                "PLAYWRIGHT_MODULE", "PLAYWRIGHT_CHANNEL", "PLAYWRIGHT_BROWSERS_PATH", "UI_TEST_PORT",
-               "EVAL_TEST_ARTIFACT_ROOT"}
+               "EVAL_TEST_ARTIFACT_ROOT", "DOCKER_HOST", "DOCKER_CONTEXT"}
     env = {key: value for key, value in os.environ.items() if key in allowed}
     env.update(PYTHONDONTWRITEBYTECODE="1", PYTHONPATH=str(ROOT), TMPDIR=str(output / "tmp"),
                PLATFORM_DATA_DIR=str(output / "platform"), RELAY_LAB_DATA_DIR=str(output),
                PYTHON_EXECUTABLE=sys.executable)
+    plan = integrity if args.plan == "integrity" else admission
     commands = [(suite.suite_id, list(suite.command), suite.timeout_seconds, suite.kind)
-                for suite in admission(sys.executable, output, sha=sha if args.sha else None)]
-    budget = 3000 if args.sha else 1800
+                for suite in plan(sys.executable, output, sha=sha if args.sha else None)]
+    budget = (4200 if args.sha else 3000) if args.plan == "integrity" else (3000 if args.sha else 1800)
     before = snapshot()
     rows = [{"suite_id": name, "command": command, "timeout_seconds": timeout, "status": "not_run"}
             for name, command, timeout, _ in commands]
     result = {"source_sha": sha, "source_files": before, "independent": bool(args.sha), "rules_version": "1.0",
               "python": sys.version, "expected_unittest_cases": 0, "results": rows, "status": "incomplete",
-              "real_upstream_tested": False, "execution_budget_seconds": budget, "cancelled": False,
-              "not_applicable": {"diagnosis-container": "No build, dependency, startup or container changes",
+              "plan": args.plan, "real_upstream_tested": False, "execution_budget_seconds": budget, "cancelled": False,
+              "not_applicable": {} if args.plan == "integrity" else {"diagnosis-container": "No build, dependency, startup or container changes",
                                  "image-container": "No build, dependency, startup or container changes"}}
     def save():
         (output / "verification.json").write_text(json.dumps(result, ensure_ascii=False, indent=2))
@@ -54,8 +56,8 @@ def main():
         log = output / (row["suite_id"] + ".log")
         log.write_text(text)
         effective_code = None if reason or code == 127 else code
-        if kind == "image-inspect":
-            counts = classify_image(effective_code, text, "inspect")
+        if kind in {"image-inspect", "container"}:
+            counts = classify_image(effective_code, text, "inspect" if kind == "image-inspect" else "container")
             counts.update(executed=counts.pop("case_count"), failed=counts.pop("failure_count"))
         else:
             counts = classify(effective_code, text, kind, result["expected_unittest_cases"])
