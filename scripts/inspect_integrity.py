@@ -12,7 +12,16 @@ def main() -> int:
     from features.integrity.strategies import list_strategies
 
     strategies = list_strategies()
-    contract = {"schema_version": "eval-integrity-inspect/v1", "strategies": strategies,
+    from features.stability.app.timetable_contract import DEFAULTS, VERSION, build_slots
+    from datetime import date
+    config = {**DEFAULTS, "registry_channel_ids": [1]}
+    graph = build_slots({"id": 1, "layered_config": config, "timezone": "Asia/Shanghai"}, date(2026, 10, 8))
+    timetable = {"plan_version": VERSION, "defaults": DEFAULTS, "channels": 1,
+                 "daily_request_formula": "N * (192*len(canary_times) + 3*len(modeltrace_times) + len(union))",
+                 "default_requests_per_channel": sum({"canary": 192, "modeltrace": 3, "health": 1}[r["method"]] for r in graph),
+                 "occurrences": len(graph), "windows_seconds": {"canary": 3600, "modeltrace": 600},
+                 "both_methods_empty_allowed": True, "dst": "skip_gap_first_fold", "inflight": 1}
+    contract = {"schema_version": "eval-integrity-inspect/v1", "strategies": strategies, "timetable": timetable,
                 "requests_sent": 0, "databases_opened": 0, "credentials_read": False,
                 "api_calibration": "unvalidated", "evidence_type": "source"}
     contract["configuration_fingerprint"] = hashlib.sha256(

@@ -369,8 +369,8 @@ class IntegrityStore:
             conn.execute("UPDATE integrity_jobs SET status='running',owner=?,lease_until=?,updated_at=? WHERE job_id=?", (owner, now + self.LEASE_SECONDS, now, row["job_id"]))
         return self.job(row["job_id"])
 
-    def session(self, job_id: str, owner: str):
-        return IntegritySession(self, job_id, owner)
+    def session(self, job_id: str, owner: str, *, reserve_guard=None):
+        return IntegritySession(self, job_id, owner, reserve_guard=reserve_guard)
 
     def cancel(self, job_id):
         with self.registry.connect() as conn:
@@ -379,8 +379,9 @@ class IntegrityStore:
 
 
 class IntegritySession:
-    def __init__(self, store, job_id, owner):
+    def __init__(self, store, job_id, owner, *, reserve_guard=None):
         self.store, self.job_id, self.owner = store, job_id, owner
+        self.reserve_guard = reserve_guard
         self.LEASE_SECONDS = store.LEASE_SECONDS
         self.deadline = store.job(job_id)["deadline"]
 
@@ -406,6 +407,20 @@ class IntegritySession:
                 raise ExecutionStopped("rejected", "request_identity_changed")
             return dict(row) if row else None
 
+    def existing_requests(self):
+        with self.store.registry.connect() as conn:
+            return {r["request_id"]: dict(r) for r in conn.execute("SELECT request_id,identity_hash FROM integrity_attempts WHERE job_id=?", (self.job_id,))}
+
+    def pause(self):
+        """Release a lease at a probe boundary without completing the immutable job."""
+        with self.store.registry.connect() as conn:
+            conn.execute("BEGIN IMMEDIATE")
+            row = conn.execute("SELECT * FROM integrity_jobs WHERE job_id=?", (self.job_id,)).fetchone()
+            self._control(row)
+            if conn.execute("SELECT 1 FROM integrity_attempts WHERE job_id=? AND status='permitted'", (self.job_id,)).fetchone():
+                raise ExecutionStopped("failed", "cannot_pause_permitted_request")
+            return conn.execute("UPDATE integrity_jobs SET status='queued',owner=NULL,lease_until=NULL,updated_at=? WHERE job_id=? AND owner=?", (time.time(), self.job_id, self.owner)).rowcount == 1
+
     def reserve(self, request: ProbeRequest, target: ResolvedTarget):
         registry, now = self.store.registry, time.time()
         monitor_store = None
@@ -417,6 +432,7 @@ class IntegritySession:
             conn.execute("BEGIN IMMEDIATE")
             row = conn.execute("SELECT * FROM integrity_jobs WHERE job_id=?", (self.job_id,)).fetchone()
             self._control(row)
+            guarded_limits = self.reserve_guard(conn, row, request) if self.reserve_guard else None
             if conn.execute("SELECT 1 FROM integrity_attempts WHERE job_id=? AND json_extract(result_json,'$.reservation_exceeded')=1", (self.job_id,)).fetchone():
                 raise ExecutionStopped("partially_completed", "reported_reservation_exceeded")
             snapshot = json.loads(row["target_json"])
@@ -481,7 +497,7 @@ class IntegritySession:
             daily = conn.execute("SELECT * FROM integrity_daily_budgets WHERE budget_scope=? AND budget_key=? AND budget_date=? AND timezone=?", daily_key).fetchone()
             daily_limits = json.loads(row["daily_limits_json"])
             for field in ("max_requests", "max_input_tokens", "max_output_tokens"):
-                daily_limits[field] = min(daily_limits[field], daily[field]) if daily[field] is not None else daily_limits[field]
+                daily_limits[field] = guarded_limits[field] if guarded_limits is not None else min(daily_limits[field], daily[field]) if daily[field] is not None else daily_limits[field]
             if not budget_allows(daily_limits, {"requests": daily["attempted_requests"], "input_tokens_reserved": daily["input_tokens_reserved"], "output_tokens_reserved": daily["output_tokens_reserved"]}, request.input_tokens_reserved, request.output_tokens_reserved):
                 raise ExecutionStopped("partially_completed", "daily_request_budget_exhausted")
             conn.execute("UPDATE integrity_daily_budgets SET max_requests=?,max_input_tokens=?,max_output_tokens=? WHERE budget_scope=? AND budget_key=? AND budget_date=? AND timezone=?", (*[daily_limits[k] for k in ("max_requests", "max_input_tokens", "max_output_tokens")], *daily_key))

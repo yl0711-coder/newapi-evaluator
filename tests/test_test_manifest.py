@@ -79,7 +79,7 @@ class TestManifestTests(unittest.TestCase):
         suites = integrity(sys.executable, OUTPUT)
         ids = {row.suite_id for row in suites}
         self.assertTrue({row.suite_id for row in admission(sys.executable, OUTPUT)} <= ids)
-        self.assertTrue({"integrity-inspect", "integrity-browser", "monitor-control-browser", "build-container"} <= ids)
+        self.assertTrue({"integrity-inspect", "integrity-browser", "integrity-timetable-browser", "monitor-control-browser", "build-container"} <= ids)
         completed = subprocess.run([sys.executable, "scripts/inspect_test_plan.py", "integrity"],
                                    cwd=ROOT, capture_output=True, text=True, timeout=30)
         self.assertEqual(completed.returncode, 0)

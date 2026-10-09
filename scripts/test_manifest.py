@@ -134,6 +134,7 @@ def integrity(python: str, output: Path, *, sha: str | None = None) -> list[Suit
     suites.extend([
         SuiteSpec("integrity-inspect", _python(python, "scripts/inspect_integrity.py"), 60, "inspect"),
         SuiteSpec("integrity-browser", ("node", "scripts/integrity_ui.cjs"), 600, "browser"),
+        SuiteSpec("integrity-timetable-browser", ("node", "scripts/integrity_timetable_ui.cjs"), 600, "browser"),
         SuiteSpec("monitor-control-browser", ("node", "scripts/monitor_control_plane_ui.cjs"), 300, "browser"),
         SuiteSpec("build-container", _python(python, "scripts/image_quality_container.py", "--output", _output_arg(output, "container")), 900, "container"),
     ])

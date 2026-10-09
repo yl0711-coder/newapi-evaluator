@@ -345,7 +345,11 @@ def save_schedule_targets(data: dict[str, Any], targets: list[dict[str, Any]]) -
     registry = get_registry()
     from features.model_coverage.catalog import Catalog, model_name, validate_protocol
     from features.integrity.execution import resolve_registry_target
+    from features.integrity.durable import IntegrityStore
+    from . import timetable
     Catalog(registry)
+    IntegrityStore(registry)
+    timetable.init_tables(registry)
     with registry.connect() as guard, cursor() as cur:
         guard.execute("BEGIN IMMEDIATE")
         cur.execute("BEGIN IMMEDIATE")
@@ -357,7 +361,7 @@ def save_schedule_targets(data: dict[str, Any], targets: list[dict[str, Any]]) -
             model = model_name(selected["model"])
             protocol = selected["protocol"]
             validate_protocol(protocol, model)
-            if data.get("plan_version") == "layered-integrity-v1":
+            if data.get("plan_version") in {"layered-integrity-v1", timetable.VERSION}:
                 resolved = resolve_registry_target(registry, registry_id, model, protocol, require_online=True, conn=guard)
                 target_bindings[f"{registry_id}:{model}:{protocol}"] = resolved.snapshot
             matches = cur.execute("SELECT id,enabled FROM channels WHERE registry_channel_id=? AND model=? AND protocol=? ORDER BY id",
@@ -376,15 +380,31 @@ def save_schedule_targets(data: dict[str, Any], targets: list[dict[str, Any]]) -
         if not ids:
             raise ValueError("请选择巡检目标")
         config = dict(data.get("layered_config") or {})
-        if data.get("plan_version") == "layered-integrity-v1":
+        if data.get("plan_version") in {"layered-integrity-v1", timetable.VERSION}:
             config["registry_channel_ids"] = list(dict.fromkeys(t["registry_channel_id"] for t in targets))
             config.pop("production_bindings", None)
             config["target_bindings"] = target_bindings
-        return _upsert_schedule(cur, {**data, "channel_ids": list(dict.fromkeys(ids)), "layered_config": config})
+        if data.get("plan_version") == timetable.VERSION:
+            config["channel_names"] = {str(t["registry_channel_id"]): registry.public(guard.execute("SELECT * FROM channels WHERE id=?", (t["registry_channel_id"],)).fetchone())["name"] for t in targets}
+            config["channel_multipliers"] = {str(t["registry_channel_id"]): registry.public(guard.execute("SELECT * FROM channels WHERE id=?", (t["registry_channel_id"],)).fetchone())["multiplier"] for t in targets}
+        schedule_id = _upsert_schedule(cur, {**data, "channel_ids": list(dict.fromkeys(ids)), "layered_config": config})
+        if data.get("plan_version") == timetable.VERSION:
+            revision = cur.execute("SELECT updated_at FROM schedules WHERE id=?", (schedule_id,)).fetchone()[0]
+            timetable.write_control(guard, schedule_id, revision, data["enabled"], data["timezone"], config)
+        else:
+            timetable.disable_control(guard, schedule_id)
+        return schedule_id
 
 
 def delete_schedule(schedule_id: int) -> bool:
-    with cursor() as cur:
+    from . import timetable
+    from features.integrity.durable import IntegrityStore
+    registry = get_registry()
+    IntegrityStore(registry)
+    timetable.init_tables(registry)
+    with registry.connect() as conn, cursor() as cur:
+        conn.execute("BEGIN IMMEDIATE")
+        timetable.disable_control(conn, schedule_id)
         return cur.execute("DELETE FROM schedules WHERE id=?", (schedule_id,)).rowcount > 0
 
 
@@ -397,7 +417,7 @@ def create_run(schedule: dict[str, Any], scheduled_for: float, source: str = "sc
     )}
     snapshot["report_groups"] = list_report_groups()
     snapshot["plan_version"] = schedule.get("plan_version", "ins-v2")
-    if snapshot["plan_version"] == "layered-integrity-v1":
+    if snapshot["plan_version"] in {"layered-integrity-v1", "layered-integrity-v2"}:
         snapshot["layered_config"] = schedule["layered_config"]
         snapshot["targets"] = [{k: target[k] for k in ("id", "registry_channel_id", "model", "protocol")}
                                for target in list_channels(ids=snapshot["channel_ids"])]
@@ -417,7 +437,7 @@ def recover_expired_runs(now: float) -> int:
     with cursor() as cur:
         return cur.execute(
             "UPDATE runs SET status='pending',error='上次执行中断，已重新排队',lease_until=NULL "
-            "WHERE status='running' AND COALESCE(json_extract(snapshot_json,'$.plan_version'),'ins-v2')!='layered-integrity-v1' AND COALESCE(lease_until,0)<?",
+            "WHERE status='running' AND COALESCE(json_extract(snapshot_json,'$.plan_version'),'ins-v2') NOT IN ('layered-integrity-v1','layered-integrity-v2') AND COALESCE(lease_until,0)<?",
             (now,),
         ).rowcount
 
@@ -425,14 +445,14 @@ def recover_expired_runs(now: float) -> int:
 def recover_all_running() -> int:
     with cursor() as cur:
         return cur.execute(
-            "UPDATE runs SET status='pending',error='服务重启，任务已重新排队',lease_until=NULL WHERE status='running' AND COALESCE(json_extract(snapshot_json,'$.plan_version'),'ins-v2')!='layered-integrity-v1'"
+            "UPDATE runs SET status='pending',error='服务重启，任务已重新排队',lease_until=NULL WHERE status='running' AND COALESCE(json_extract(snapshot_json,'$.plan_version'),'ins-v2') NOT IN ('layered-integrity-v1','layered-integrity-v2')"
         ).rowcount
 
 
 def pending_runs(limit: int) -> list[dict[str, Any]]:
     with cursor() as cur:
         return [dict(row) for row in cur.execute(
-            "SELECT * FROM runs WHERE status='pending' AND COALESCE(json_extract(snapshot_json,'$.plan_version'),'ins-v2')!='layered-integrity-v1' AND scheduled_for<=? ORDER BY scheduled_for LIMIT ?",
+            "SELECT * FROM runs WHERE status='pending' AND COALESCE(json_extract(snapshot_json,'$.plan_version'),'ins-v2') NOT IN ('layered-integrity-v1','layered-integrity-v2') AND scheduled_for<=? ORDER BY scheduled_for LIMIT ?",
             (time.time(), limit),
         ).fetchall()]
 
@@ -626,13 +646,33 @@ def prune_run_history(now: float, retention_days: int) -> int:
     probe_results are removed by the existing ON DELETE CASCADE relationship.
     """
     cutoff = float(now) - max(1, int(retention_days)) * 86400
+    settled = "status IN ('completed','failed') AND notify_status NOT IN ('pending','sending') AND COALESCE(finished_at,created_at)<?"
     with cursor() as cur:
-        return cur.execute(
+        has_timetable = cur.execute("SELECT 1 FROM runs WHERE source='timetable-v2' AND " + settled + " LIMIT 1", (cutoff,)).fetchone()
+    removed = 0
+    if has_timetable:
+        from . import timetable
+        registry = get_registry()
+        timetable.init_tables(registry)
+        # Keep the save/dispatch lock order (Registry, then stability). Archive
+        # commits first, so a crash before the report deletion cannot expose a
+        # table row whose detail/export has disappeared. Repeating is safe.
+        with registry.connect() as guard, cursor() as cur:
+            guard.execute("BEGIN IMMEDIATE")
+            cur.execute("BEGIN IMMEDIATE")
+            ids = [r[0] for r in cur.execute("SELECT id FROM runs WHERE source='timetable-v2' AND " + settled, (cutoff,))]
+            guard.executemany("UPDATE integrity_timetable_days SET archived=1,cancelled=1 WHERE run_id=?", ((i,) for i in ids))
+            guard.commit()
+            removed += cur.execute("DELETE FROM runs WHERE source='timetable-v2' AND " + settled, (cutoff,)).rowcount
+    with cursor() as cur:
+        removed += cur.execute(
             "DELETE FROM runs WHERE status IN ('completed','failed') "
+            "AND source!='timetable-v2' "
             "AND notify_status NOT IN ('pending','sending') "
             "AND COALESCE(finished_at,created_at)<?",
             (cutoff,),
         ).rowcount
+    return removed
 
 
 def set_setting(key: str, value: str) -> None:

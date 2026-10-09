@@ -1,6 +1,8 @@
 """Bounded integrity text transport. Answers are returned in memory only for projection."""
 from __future__ import annotations
 
+from contextlib import asynccontextmanager
+
 import asyncio
 import json
 from time import perf_counter
@@ -269,9 +271,20 @@ async def run_probe(client, channel, probe, *, before_send=None):
     return {**result, "latency_ms": round((perf_counter() - started) * 1000)}
 
 
-async def send_probe(channel, probe, *, before_send=None):
+@asynccontextmanager
+async def send_capacity():
     from features.stability.app.scheduler import probe_semaphore
     async with integrity_semaphore(), probe_semaphore():
-        async with httpx.AsyncClient(transport=guarded_transport(), trust_env=False, follow_redirects=False,
-                                     timeout=httpx.Timeout(connect=20, read=180, write=20, pool=20)) as client:
-            return await run_probe(client, channel, probe, before_send=before_send)
+        yield
+
+
+async def send_probe_with_capacity(channel, probe, *, before_send=None):
+    """Internal sender; caller must already hold both shared capacity guards."""
+    async with httpx.AsyncClient(transport=guarded_transport(), trust_env=False, follow_redirects=False,
+                                 timeout=httpx.Timeout(connect=20, read=180, write=20, pool=20)) as client:
+        return await run_probe(client, channel, probe, before_send=before_send)
+
+
+async def send_probe(channel, probe, *, before_send=None):
+    async with send_capacity():
+        return await send_probe_with_capacity(channel, probe, before_send=before_send)

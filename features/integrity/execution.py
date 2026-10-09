@@ -112,7 +112,7 @@ def build_requests(manifest, config, *, prefix=""):
 
 async def execute_requests(session, requests: list[ProbeRequest], resolve_target: Callable,
                            send: Callable, project_result: Callable, *, stop_when: Callable | None = None,
-                           skip_request: Callable | None = None) -> str:
+                           skip_request: Callable | None = None, yield_after: int | None = None) -> str:
     """Execute immutable request identities once, preserving every confirmed/unknown attempt.
 
     ``resolve_target()`` returns a fresh ResolvedTarget (sync or async).
@@ -122,10 +122,14 @@ async def execute_requests(session, requests: list[ProbeRequest], resolve_target
     """
     status, reason, skipped = "completed", "", []
     index = 0
+    sent = 0
+    prior = session.existing_requests() if yield_after is not None else None
     try:
         for index, request in enumerate(requests):
-            existing = session.existing(request)
+            existing = prior.get(request.request_id) if prior is not None else session.existing(request)
             if existing:
+                if existing["identity_hash"] != request.manifest()["identity_hash"]:
+                    raise ExecutionStopped("rejected", "request_identity_changed")
                 continue
             skip_reason = skip_request(request, session.results()) if skip_request else None
             if skip_reason:
@@ -184,6 +188,10 @@ async def execute_requests(session, requests: list[ProbeRequest], resolve_target
             projection = project_result(request, raw, started, time.time())
             if not session.complete(request, attempt, projection):
                 raise ExecutionStopped("lost", "executor_lease_lost")
+            sent += 1
+            if yield_after is not None and sent >= yield_after and any(r.request_id not in prior for r in requests[index + 1:]):
+                session.check()
+                return "yielded" if session.pause() else "lost"
         session.check()
     except ExecutionStopped as exc:
         status, reason = exc.status, exc.reason
@@ -194,6 +202,8 @@ async def execute_requests(session, requests: list[ProbeRequest], resolve_target
         session.finish("partially_completed" if session.results() else "failed", reason,
                        [{"request_id": r.request_id, "reason": reason} for r in requests[index:]])
         raise
+    if status == "yielded" and yield_after is not None:
+        return "yielded" if session.pause() else "lost"
     if status == "lost":
         session.recover()
         return "lost"

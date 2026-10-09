@@ -240,8 +240,22 @@ def list_baselines():
     return rows
 
 
+def get_baseline(baseline_id):
+    init_tables()
+    with storage.cursor() as cur:
+        row = cur.execute("SELECT score_json FROM integrity_baselines WHERE id=?", (baseline_id,)).fetchone()
+    return storage.loads(row[0], {}) if row else None
+
+
 def lock_baseline(slot_key, label):
-    row = next((s for s in slots() if s["slot_key"] == slot_key), None)
+    init_tables()
+    if slot_key.startswith("timetable:"):
+        from . import timetable
+        row = timetable.get_slot(slot_key)
+    else:
+        row = next((s for s in slots() if s["slot_key"] == slot_key), None)
+    if row and slot_key.startswith("timetable:") and (row["summary"].get("request_errors") or row["summary"].get("unknown") or row["summary"].get("not_run")):
+        raise ValueError("请求异常或缺测的批次不能锁定可信参照")
     score = (row or {}).get("summary", {}).get("score", {})
     outcomes = score.get("outcomes", {})
     if not row or row["method"] != "canary" or row["status"] != "completed" or len(outcomes) != 192 or row["summary"].get("attempted") != 192 or not score.get("conditions"):

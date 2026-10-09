@@ -68,3 +68,33 @@ fieldset { margin:18px 0; }
   label.wide { grid-column:auto; }
   .dialog-card { padding:18px; }
 }
+
+.local-scroll { max-width: 100%; overflow-x: auto; }
+.timetable-grid { min-width: 690px; width: 100%; border-collapse: collapse; }
+.timetable-grid th, .timetable-grid td { padding: .4rem; border-bottom: 1px solid var(--line, #ddd); }
+.timetable-grid label { display: inline-flex; gap: .25rem; align-items: center; white-space: nowrap; font-size: .8rem; }
+.timetable-grid input { width: auto; }
+.timetable-tools { display: flex; flex-wrap: wrap; gap: .8rem; margin: .8rem 0; }
+.timetable-tools fieldset { flex: 1 1 240px; min-width: 0; }
+.timetable-tools .actions { flex-wrap: wrap; }
+.timetable-report { margin-bottom: 1.5rem; min-width: 0; }
+.timetable-report table { min-width: 860px; }
+.timetable-report td { max-width: 300px; overflow-wrap: anywhere; }
+.timetable-report details pre { max-width: 100%; overflow: auto; white-space: pre-wrap; overflow-wrap: anywhere; }
+.report-views { flex-wrap: wrap; margin-bottom: 16px; }
+.report-views [aria-pressed="true"] { background: var(--soft); border-color: var(--accent); font-weight: 650; }
+.timetable-report .demo-note { color: var(--warning); padding: 12px; background: var(--warning-soft); margin: 16px 0; border-radius: 8px; }
+.timetable-overview { table-layout: fixed; }
+.timetable-overview td, .timetable-overview th { white-space: normal; overflow-wrap: anywhere; }
+.timetable-overview th:first-child { width: 185px; }
+.timetable-overview th small { display: block; }
+.timetable-overview td { min-width: 220px; vertical-align: top; }
+.timetable-overview p { margin: 4px 0; }
+.timetable-cell { padding: 6px 8px; border-left: 3px solid var(--line); }
+.timetable-cell + .timetable-cell { margin-top: 12px; border-top: 1px solid var(--line); }
+.timetable-cell > small { display: block; margin: 3px 0; color: var(--muted); }
+.timetable-cell.state-degraded, .timetable-cell.state-review, .timetable-cell.state-incomplete { border-left-color: var(--danger); }
+.timetable-cell.state-observed { border-left-color: var(--accent); }
+.timetable-cell.state-reference_missing, .timetable-cell.state-waiting, .timetable-cell.state-sampling { border-left-color: var(--warning); }
+.timetable-cell .canary-result { margin: 4px 0; }
+[hidden] { display: none !important; }

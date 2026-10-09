@@ -68,7 +68,7 @@ def ensure_due_runs(now_epoch: float | None = None) -> int:
     now_epoch = time.time() if now_epoch is None else now_epoch
     created = 0
     for schedule in storage.list_schedules(enabled_only=True):
-        if schedule.get("plan_version") == "layered-integrity-v1":
+        if schedule.get("plan_version") in {"layered-integrity-v1", "layered-integrity-v2"}:
             continue
         zone = timezone(schedule.get("timezone") or TIMEZONE)
         now_local = datetime.fromtimestamp(now_epoch, zone)
@@ -423,7 +423,7 @@ async def execute_run(run_id: int) -> None:
     heartbeat = asyncio.create_task(keep_lease(), name=f"stability-lease-{run_id}")
     try:
         snapshot = run["snapshot"]
-        if snapshot.get("plan_version") == "layered-integrity-v1":
+        if snapshot.get("plan_version") in {"layered-integrity-v1", "layered-integrity-v2"}:
             return
         storage.clear_probe_results(run_id)
         channels = [item for item in storage.list_channels(

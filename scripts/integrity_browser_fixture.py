@@ -27,6 +27,35 @@ async def main():
         (data/"references.json").write_text(json.dumps(packages))
         print(json.dumps({method:package["package_hash"] for method,package in packages.items()}))
         return
+    if sys.argv[1] == "timetable":
+        from datetime import datetime, timedelta
+        from unittest.mock import patch
+        from zoneinfo import ZoneInfo
+        from features.stability.app import timetable, timetable_executor as executor
+        schedule = storage.get_schedule(int(sys.argv[2]))
+        if schedule["enabled"] or schedule["plan_version"] != timetable.VERSION:
+            raise RuntimeError("disabled owned timetable fixture required")
+        day = datetime.now(ZoneInfo(schedule["timezone"])).date() + timedelta(days=2)
+        midnight = timetable.local_epoch(day, "00:00", ZoneInfo(schedule["timezone"]))
+        targets = [{"registry_channel_id": i, "model": "gpt-6-astra", "protocol": "responses"} for i in schedule["layered_config"]["registry_channel_ids"]]
+        with patch("time.time", return_value=midnight):
+            storage.save_schedule_targets({**schedule, "enabled": True}, targets)
+        schedule = storage.get_schedule(schedule["id"])
+        run_id = timetable.reconcile(schedule, day, now=midnight)
+        # A future source revision prevents the concurrently running UI service
+        # from dispatching today's graph. This process drives only future Mock slots.
+        for due in sorted({r["due"] for r in timetable.slots(run_id)}):
+            with patch("time.time", return_value=due):
+                while True:
+                    slot = executor.select_ready(due)
+                    if slot is None:
+                        break
+                    await executor.execute_probe(slot)
+        executor.refresh_run(run_id)
+        result = storage.get_run(run_id)
+        storage.save_schedule_targets({**storage.get_schedule(schedule["id"]), "enabled": False}, targets)
+        print(json.dumps({"run_id": run_id, "date": str(day), "status": result["status"], "attempted": result["summary"]["attempted"]}))
+        return
     schedule=storage.get_schedule(int(sys.argv[2]))
     from datetime import datetime
     from zoneinfo import ZoneInfo

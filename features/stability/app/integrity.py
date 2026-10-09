@@ -52,15 +52,14 @@ def conditions(slot, manifest, config, target):
                            "max_output_tokens": manifest.max_output_tokens, "retry_policy": "none"},
             "budget": {"max_requests": manifest.max_requests, "request_timeout_seconds": manifest.request_timeout_seconds,
                        "total_timeout_seconds": manifest.total_timeout_seconds,
-                       "window": "overnight" if slot["method"] == "canary" else "daytime"}}
+                       "window": f"timetable-v2-{slot['deadline'] - slot['due']:g}" if "schedule_id" in slot else "overnight" if slot["method"] == "canary" else "daytime"}}
 
 
 def slot_summary(slot, job, manifest, config, target):
     outputs = [{**r, "probe_id": r.get("probe_id", r.get("request_id"))} for r in job.get("results", [])]
     attempted = job["consumed"]["requests"]
     unknown = job["consumed"]["unknown_requests"]
-    baselines = layered.list_baselines()
-    baseline = next((b["score"] for b in baselines if b["id"] == config.get("baseline_id")), None)
+    baseline = layered.get_baseline(config["baseline_id"]) if config.get("baseline_id") and slot["method"] == "canary" else None
     score = score_strategy(manifest, outputs, expected_model=slot["model"],
                            baseline=baseline if slot["method"] == "canary" else None,
                            conditions=conditions(slot, manifest, config, target))
@@ -229,6 +228,8 @@ async def tick(now=None):
     if not executor_enabled():
         return
     now = time.time() if now is None else now
+    from . import timetable_executor
+    await timetable_executor.tick(now)
     layered.init_tables()
     store().recover_expired_leases()
     for schedule in storage.list_schedules(enabled_only=True):
@@ -265,6 +266,8 @@ async def tick(now=None):
 
 async def stop():
     global _task
+    from . import timetable_executor
+    await timetable_executor.stop()
     if _task and not _task.done():
         _task.cancel()
         await asyncio.gather(_task, return_exceptions=True)

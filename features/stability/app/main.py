@@ -14,7 +14,7 @@ from pydantic import BaseModel, ConfigDict, Field, model_validator
 from shared.registry import RegistryError, get_registry
 from features.admission.main import required_protocol
 
-from . import scheduler, storage, transport, layered, integrity
+from . import scheduler, storage, transport, layered, integrity, timetable, timetable_executor
 from .config import TIMEZONE, WEB_DIR
 from .egress import EgressDenied, validate_url
 from .security import basic_auth_middleware
@@ -50,7 +50,7 @@ class ScheduleInput(BaseModel):
     timezone: str = Field(default=TIMEZONE, min_length=1, max_length=80)
     channel_ids: list[int] = Field(default_factory=list, max_length=100)
     targets: list[TargetInput] = Field(default_factory=list, max_length=15)
-    plan_version: Literal["ins-v2", "layered-integrity-v1"] | None = None
+    plan_version: Literal["ins-v2", "layered-integrity-v1", "layered-integrity-v2"] | None = None
     layered_config: dict = Field(default_factory=dict)
     rounds: int = Field(default=3, ge=1, le=10)
     round_interval_seconds: int = Field(default=15, ge=0, le=3600)
@@ -71,7 +71,7 @@ class ScheduleInput(BaseModel):
         scheduler.timezone(self.timezone)
         self.channel_ids = list(dict.fromkeys(self.channel_ids))
         # channel_ids is the legacy caller contract; new target-based forms default to the layered plan.
-        self.plan_version = self.plan_version or (layered.VERSION if self.targets else "ins-v2")
+        self.plan_version = self.plan_version or (timetable.VERSION if self.targets else "ins-v2")
         if not self.channel_ids and not self.targets:
             raise ValueError("请选择至少一个渠道")
         if self.plan_version == layered.VERSION:
@@ -87,6 +87,18 @@ class ScheduleInput(BaseModel):
                 required = {(self.layered_config[k + "_model"], self.layered_config[k + "_protocol"]) for k in ("health", "astra", "sol")}
                 if not required <= selected:
                     raise ValueError("每个渠道必须显式选择探活、Astra 与 Sol 的模型/协议")
+        elif self.plan_version == timetable.VERSION:
+            self.layered_config = timetable.validate_config(self.layered_config)
+            if not self.targets or self.channel_ids:
+                raise ValueError("十分钟计划需要显式 Registry / Astra / Responses 目标")
+            ids = {t.registry_channel_id for t in self.targets}
+            if len(ids) > 5 or len(ids) != len(self.targets):
+                raise ValueError("十分钟计划须选择一至五条不重复的渠道")
+            if any((t.model, t.protocol) != ("gpt-6-astra", "responses") for t in self.targets):
+                raise ValueError("十分钟计划固定 Astra / Responses")
+            self.layered_config["registry_channel_ids"] = sorted(ids)
+            if set(self.layered_config["baseline_ids"]) - {str(i) for i in ids}:
+                raise ValueError("可信参照只能绑定本计划选中的渠道")
         return self
 
 
@@ -161,8 +173,9 @@ async def meta() -> JSONResponse:
             "max_concurrent_probes": scheduler.MAX_CONCURRENT_PROBES,
         },
         "default_timezone": TIMEZONE,
-        "default_plan_version": layered.VERSION,
+        "default_plan_version": timetable.VERSION,
         "layered_defaults": layered.DEFAULTS,
+        "timetable_defaults": timetable.DEFAULTS,
         "daily_limits": {"workday": 230, "weekend": 35, "canary_axis": 192, "inflight": 1},
     })
 
@@ -217,13 +230,20 @@ async def save_schedule(body: ScheduleInput) -> JSONResponse:
     data = body.model_dump()
     data["daily_times"] = ",".join(scheduler.parse_daily_times(body.daily_times))
     try:
+        if body.plan_version == timetable.VERSION:
+            baselines = {b["id"]: b for b in layered.list_baselines()}
+            for channel_id, baseline_id in body.layered_config["baseline_ids"].items():
+                baseline = baselines.get(baseline_id)
+                provider = (baseline or {}).get("score", {}).get("conditions", {}).get("provider", "")
+                if not provider.startswith(f"registry:{channel_id}:"):
+                    raise ValueError("可信参照不存在或不属于所选渠道")
         if body.targets:
             from features.model_coverage.catalog import Catalog
             catalog = Catalog(get_registry())
             for target in body.targets:
                 if target.model_id:
                     bound = catalog.binding(target.registry_channel_id, target.model_id)
-                    if (target.model, target.protocol) != (bound["model"] if body.plan_version == layered.VERSION else bound["upstream_model"], bound["request_protocol"]):
+                    if (target.model, target.protocol) != (bound["model"] if body.plan_version in {layered.VERSION, timetable.VERSION} else bound["upstream_model"], bound["request_protocol"]):
                         raise ValueError("model_mapping_changed: 模型或协议映射已变更")
                 elif not any(m["model"] == target.model and m["protocol"] == target.protocol for m in catalog.models()):
                     raise ValueError("catalog_model_required: 请先添加合法常用模型或显式映射")
@@ -236,7 +256,34 @@ async def save_schedule(body: ScheduleInput) -> JSONResponse:
         raise HTTPException(status_code=404, detail=str(exc)) from exc
     except sqlite3.IntegrityError as exc:
         raise HTTPException(status_code=409, detail="计划名称已经存在") from exc
+    if body.plan_version == timetable.VERSION:
+        from datetime import datetime
+        from zoneinfo import ZoneInfo
+        saved = storage.get_schedule(schedule_id)
+        run_id = timetable.reconcile(saved, datetime.now(ZoneInfo(saved["timezone"])).date())
+        if run_id:
+            timetable_executor.refresh_run(run_id)
     return JSONResponse({"id": schedule_id})
+
+
+@app.post("/api/timetable/preview")
+async def preview_timetable(body: ScheduleInput) -> JSONResponse:
+    if body.plan_version != timetable.VERSION:
+        raise HTTPException(status_code=400, detail="仅十分钟计划支持本预览")
+    return JSONResponse(timetable.preview(body.layered_config, body.timezone))
+
+
+@app.get("/api/timetable/report")
+async def timetable_report(day: str | None = Query(default=None, alias="date"), channel_id: int | None = Query(default=None, ge=1), anomalies_only: bool = False) -> JSONResponse:
+    from datetime import date, datetime
+    from zoneinfo import ZoneInfo
+    from .timetable_report import report
+    try:
+        selected_day = date.fromisoformat(day) if day else datetime.now(ZoneInfo(TIMEZONE)).date()
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail="日期无效") from exc
+    timetable.init_tables()
+    return JSONResponse(report(day=str(selected_day), channel_id=channel_id, anomalies_only=anomalies_only))
 
 
 @app.delete("/api/schedules/{schedule_id}")
@@ -259,6 +306,12 @@ async def run_schedule(schedule_id: int) -> JSONResponse:
         run_id = layered.create_day(schedule, datetime.now(ZoneInfo(schedule["timezone"])).date())
         await integrity.tick()
         return JSONResponse({"run_id": run_id, "status": "pending", "scope": "today_scheduled_slots"}, status_code=202)
+    if schedule.get("plan_version") == timetable.VERSION:
+        from datetime import datetime
+        from zoneinfo import ZoneInfo
+        run_id = timetable.reconcile(schedule, datetime.now(ZoneInfo(schedule["timezone"])).date())
+        await integrity.tick()
+        return JSONResponse({"run_id": run_id, "status": "pending", "scope": "today_scheduled_slots"}, status_code=202)
     run_id = storage.create_run(schedule, time.time(), source="manual")
     if run_id is None:
         raise HTTPException(status_code=409, detail="该计划刚刚已经触发")
@@ -278,6 +331,10 @@ async def run_detail(run_id: int) -> JSONResponse:
         raise HTTPException(status_code=404, detail="运行记录不存在")
     if run["snapshot"].get("plan_version") == layered.VERSION:
         run["slots"] = layered.slots(run_id)
+    elif run["snapshot"].get("plan_version") == timetable.VERSION:
+        from .timetable_report import report
+        run["slots"] = timetable.slots(run_id)
+        run["table_report"] = report(run_id=run_id)
     return JSONResponse(run)
 
 
@@ -291,19 +348,19 @@ async def export_run(run_id: int) -> JSONResponse:
 @app.post("/api/runs/{run_id}/cancel")
 async def cancel_run(run_id: int) -> JSONResponse:
     run = storage.get_run(run_id)
-    if not run or run["snapshot"].get("plan_version") != layered.VERSION:
+    if not run or run["snapshot"].get("plan_version") not in {layered.VERSION, timetable.VERSION}:
         raise HTTPException(status_code=400, detail="仅分层计划支持持久取消")
-    integrity.cancel_run(run_id)
+    (timetable_executor if run["snapshot"]["plan_version"] == timetable.VERSION else integrity).cancel_run(run_id)
     return JSONResponse({"status": "cancelled"})
 
 
 @app.post("/api/runs/{run_id}/resume")
 async def resume_run(run_id: int) -> JSONResponse:
     run = storage.get_run(run_id)
-    if not run or run["snapshot"].get("plan_version") != layered.VERSION:
+    if not run or run["snapshot"].get("plan_version") not in {layered.VERSION, timetable.VERSION}:
         raise HTTPException(status_code=400, detail="仅分层计划支持安全恢复")
     try:
-        integrity.resume_run(run_id)
+        (timetable_executor if run["snapshot"]["plan_version"] == timetable.VERSION else integrity).resume_run(run_id)
     except ValueError as exc:
         raise HTTPException(status_code=409, detail=str(exc)) from exc
     await integrity.tick()

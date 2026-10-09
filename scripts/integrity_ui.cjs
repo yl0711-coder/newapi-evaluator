@@ -60,7 +60,7 @@ async function until(fn,message,timeout=30000){const end=performance.now()+timeo
   const edited=Object.fromEntries(['name','base_url','scope','multiplier','note','enabled','version','protocol_profile'].map(k=>[k,currentChannel[k]]));
   await request(`/api/registry/channels/${channel.id}`,{...edited,status:'online',api_key:''},'PUT');
   await page.goto(base+'/stability/');await page.getByRole('button',{name:'定时计划',exact:true}).click();await page.getByRole('button',{name:'新增计划',exact:true}).click();
-  await page.locator('#schedule-dialog').waitFor();check(await page.getByRole('checkbox',{name:'选择公共渠道 Synthetic first recorded'}).isEnabled(),'zero target user-defined online Registry channel selectable');
+  await page.locator('#schedule-dialog').waitFor();await page.locator('#schedule-pack').selectOption('layered-integrity-v1');check(await page.getByRole('checkbox',{name:'选择公共渠道 Synthetic first recorded'}).isEnabled(),'zero target user-defined online Registry channel selectable');
   await page.locator('#schedule-name').fill('Synthetic layered browser');await page.getByRole('checkbox',{name:'选择公共渠道 Synthetic first recorded'}).check();await page.locator('#schedule-enabled').uncheck();
   const saved=page.waitForResponse(r=>r.url()===base+'/stability/api/schedules'&&r.request().method()==='POST');
   await page.locator('#schedule-form button[type=submit]').click();check((await saved).ok(),'layered plan saved');await page.locator('#schedule-dialog').waitFor({state:'hidden'});
