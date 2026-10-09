@@ -1,6 +1,6 @@
 # Monitor 完整性任务 v2
 
-复用 [v1 HMAC](monitor-internal-api.md) 的签名、nonce、4 MiB 读体上限、时间窗与权限。URL 仍 `/internal/v1`，完整性任务 body/response `schema_version="2.0"`；v1 probe-jobs、历史结果和原执行器保留原 schema 与身份/清单合同。新的 v2 主动任务使用 Registry ID；已有 v2 旧身份快照可查询，恢复需创建具有新 Registry 条件的新任务，unknown 不补发。
+复用 [v1 HMAC](monitor-internal-api.md) 的签名、nonce、4 MiB 读体上限、时间窗与权限。URL 仍 `/internal/v1`，完整性任务 body/response `schema_version="2.0"`；v1 probe-jobs、历史结果和原执行器保留原 schema 与身份/清单合同。新的 v2 主动任务使用 Registry ID；已有 v2 旧身份快照任务仍可查询，但原任务恢复会被拒绝。用户显式确认并使用新的幂等键，可创建绑定当前 Registry 条件的新采样任务；这属于重新采样。旧任务中的 unknown 保留且不补发。
 
 | 接口 | 返回 |
 | --- | --- |
