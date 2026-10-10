@@ -1,7 +1,7 @@
 {
   "version": 1,
   "created_at": "2026-09-27T06:21:51Z",
-  "updated_at": "2026-10-09T15:22:53Z",
+  "updated_at": "2026-10-10T01:30:42Z",
   "files": {
     ".dockerignore": {
       "role": "index",
@@ -59,9 +59,9 @@
     },
     "aoci.code.txt": {
       "role": "index",
-      "sha256": "c295522edc0886f86b4b46c08ccc3e1913903618c1615c8e4f35155296026fe8",
-      "size": 112926,
-      "normalized_sha256": "c295522edc0886f86b4b46c08ccc3e1913903618c1615c8e4f35155296026fe8"
+      "sha256": "0f66c3911cd732466328ba77fb6584a80483d6238f84726a4e34061f5ce6f29c",
+      "size": 113089,
+      "normalized_sha256": "0f66c3911cd732466328ba77fb6584a80483d6238f84726a4e34061f5ce6f29c"
     },
     "aoci.meta.txt": {
       "role": "index",
@@ -245,9 +245,9 @@
     },
     "docs/integrity-testing.md": {
       "role": "index",
-      "sha256": "48b1053e3ef61ebf6dba96366f7e158bf5550f63aca21756e5c04188721d5763",
-      "size": 7651,
-      "normalized_sha256": "48b1053e3ef61ebf6dba96366f7e158bf5550f63aca21756e5c04188721d5763"
+      "sha256": "76c826b92ac7d72a502a8117a4f7a70eea53acf6ad5eb7ddb96b70be01c349cb",
+      "size": 7996,
+      "normalized_sha256": "76c826b92ac7d72a502a8117a4f7a70eea53acf6ad5eb7ddb96b70be01c349cb"
     },
     "docs/model-coverage-testing.md": {
       "role": "index",
@@ -1342,9 +1342,9 @@
     },
     "scripts/integrity_timetable_ui.cjs": {
       "role": "index",
-      "sha256": "a228490364a1abb92045bd85106b1ffe7e55217e745404bccf4860be248dbef3",
-      "size": 17601,
-      "normalized_sha256": "a228490364a1abb92045bd85106b1ffe7e55217e745404bccf4860be248dbef3"
+      "sha256": "dd2b2361e47af13c0d60f8ceac51b775f018dae73a554081caec56f15958fc75",
+      "size": 19676,
+      "normalized_sha256": "dd2b2361e47af13c0d60f8ceac51b775f018dae73a554081caec56f15958fc75"
     },
     "scripts/integrity_ui.cjs": {
       "role": "index",

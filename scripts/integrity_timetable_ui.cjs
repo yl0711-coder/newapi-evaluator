@@ -68,8 +68,40 @@ async function until(fn, message, timeout = 30000) {const end = performance.now(
   const current = (await request('/api/registry/channels')).channels.find(c => c.id === channel.id);
   const fields = Object.fromEntries(['name', 'base_url', 'scope', 'multiplier', 'note', 'enabled', 'version', 'protocol_profile', 'status'].map(k => [k, current[k]]));
   await request(`/api/registry/channels/${channel.id}`, {...fields, name: 'Renamed timetable browser', multiplier: 9, api_key: ''}, 'PUT');
-  await page.reload(); await page.locator('#report-date').fill(driven.date); await page.locator('#report-date').dispatchEvent('change');
-  await until(async () => (await page.locator('#report-counts').innerText()).includes('共 6 行'), 'six channel/time rows');
+  await page.reload();
+  await until(async () => (await page.locator('#report-counts').innerText()).includes('共 6 行'), 'initial date report has six rows');
+  const targetReportReady = () => page.evaluate(({date, runId}) => {
+    const records = [...document.querySelectorAll('#timetable-report [data-record]')];
+    const dates = [...document.querySelectorAll('#timetable-report .timetable-overview tbody th small:first-of-type')];
+    return document.querySelector('#report-counts').textContent.includes('共 6 行') && records.length === 6
+      && records.every(node => node.dataset.record.startsWith(`${runId}:`))
+      && dates.length === 6 && dates.every(node => node.textContent === date);
+  }, {date: driven.date, runId: driven.run_id});
+  // Both dates have six rows: hold the target response to prove old DOM cannot
+  // satisfy readiness, then wait for that response and its date/run rendering.
+  let releaseDateQuery, dateQueryRequested = false;
+  const dateQueryGate = new Promise(resolve => releaseDateQuery = resolve);
+  const reportPattern = '**/stability/api/timetable/report?**';
+  const holdDateQuery = async route => {
+    if (new URL(route.request().url()).searchParams.get('date') === driven.date) {
+      dateQueryRequested = true; await dateQueryGate;
+    }
+    await route.continue();
+  };
+  await page.route(reportPattern, holdDateQuery);
+  const targetResponse = page.waitForResponse(response => {
+    const url = new URL(response.url());
+    return url.pathname === '/stability/api/timetable/report' && url.searchParams.get('date') === driven.date;
+  });
+  try {
+    await page.locator('#report-date').fill(driven.date); await page.locator('#report-date').dispatchEvent('change');
+    await until(async () => dateQueryRequested, 'target date query reaches response gate');
+    check((await page.locator('#report-counts').innerText()).includes('共 6 行') && !(await targetReportReady()), 'old six-row DOM cannot satisfy target date/run readiness');
+    await page.screenshot({path: path.join(data, 'timetable-date-query-pending-1440.png'), fullPage: true});
+  } finally {releaseDateQuery();}
+  check((await targetResponse).ok(), 'target date report response succeeds');
+  await until(targetReportReady, 'six target-date rows render the completed run');
+  await page.unroute(reportPattern, holdDateQuery);
   const table = page.locator('#timetable-report table'); check((await table.innerText()).includes('2.5x') && !(await table.innerText()).includes('Renamed timetable browser'), 'report retains sampled name and multiplier');
   check(await table.evaluate(e => e.classList.contains('timetable-overview')), 'time overview is the default report');
   check((await table.innerText()).includes('192/192') && (await table.innerText()).includes('参照不足'), 'complete scores retain missing-baseline limit');
