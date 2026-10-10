@@ -84,16 +84,9 @@ def resolve_registry_target(registry, channel_id, model, protocol, *, require_on
 
 
 def estimate_input_tokens(probe: dict[str, Any]) -> int:
-    """Conservative byte bound plus framing overhead, not measured tokenizer usage."""
+    """Byte-based accounting estimate; reported tokenizer usage can be higher."""
     content = {k: probe[k] for k in ("prompt", "system_prompt") if k in probe}
     return len(json.dumps(content, ensure_ascii=False, separators=(",", ":")).encode()) + 256
-
-
-def budget_allows(limits: dict, consumed: dict, input_cap: int, output_cap: int) -> bool:
-    """Reservations, including unknown outcomes, consume the hard request/token ceilings."""
-    return (consumed["requests"] + 1 <= limits["max_requests"]
-            and consumed["input_tokens_reserved"] + input_cap <= limits["max_input_tokens"]
-            and consumed["output_tokens_reserved"] + output_cap <= limits["max_output_tokens"])
 
 
 def build_requests(manifest, config, *, prefix=""):

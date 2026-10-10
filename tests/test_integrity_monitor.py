@@ -43,11 +43,13 @@ class IntegrityMonitorTests(unittest.IsolatedAsyncioTestCase):
         calls=[]
         async def send(channel,probe,*,before_send):
             await before_send();calls.append(probe["id"])
-            return {"status":"completed","text":"OK" if probe["max_tokens"]==32 else " ".join(["42"]*331)}
+            return {"status":"completed","text":"OK" if probe["max_tokens"]==32 else " ".join(["42"]*331),
+                    "input_tokens_reported":4390,"output_tokens_reported":probe["max_tokens"]+1}
         with patch.dict(os.environ,{"EVAL_INTEGRITY_EXECUTOR":"live"}):
             await UnifiedService(self.registry).run_pending(send)
         result=await self.call("GET",f"/internal/v1/integrity-jobs/{job['task_id']}/result")
         self.assertEqual(result.json()["job"]["status"],"completed")
+        self.assertTrue(result.json()["job"]["reservation_exceeded"])
         self.assertEqual(len(calls),4)
         self.assertEqual(result.json()["job"]["reports"][0]["method"],"nerfed-api")
         self.assertEqual(result.json()["job"]["reports"][0]["metadata_status"],"unavailable")

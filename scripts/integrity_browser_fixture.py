@@ -57,25 +57,43 @@ async def main():
         print(json.dumps({"run_id": run_id, "date": str(day), "status": result["status"], "attempted": result["summary"]["attempted"]}))
         return
     schedule=storage.get_schedule(int(sys.argv[2]))
-    from datetime import datetime
+    from datetime import datetime, timedelta
+    from unittest.mock import patch
     from zoneinfo import ZoneInfo
-    run_id=layered.create_day(schedule,datetime.now(ZoneInfo(schedule["timezone"])).date())
-    # Move only fixture windows, then drive the real executor without its clock loop.
-    # Plan remains disabled in the application to prevent competing test dispatch.
-    now=time.time()
-    with storage.cursor() as cur:
-        cur.execute("UPDATE layered_slots SET due=?,deadline=? WHERE run_id=?",(now+3600,now+7200,run_id))
-    rows=layered.slots(run_id)
-    channel_id=schedule["layered_config"]["registry_channel_ids"][0]
-    for slot in rows:
-        if slot["method"] in {"modeltrace","canary"}:
-            layered.update_slot(slot["slot_key"],"pending",channel_id=channel_id)
-    # Serial real HTTP/projection/persistence. Test does not substitute any scorer.
-    for slot in layered.slots(run_id):
-        await integrity.execute_slot(slot)
-    integrity.refresh_run(run_id)
-    report=storage.get_run(run_id)
-    print(json.dumps({"run_id":run_id,"status":report["status"],"attempted":report["summary"]["attempted"]}))
+    if schedule["enabled"] or schedule["plan_version"] != layered.VERSION:
+        raise RuntimeError("disabled owned layered fixture required")
+    zone=ZoneInfo(schedule["timezone"])
+    day=datetime.now(zone).date()+timedelta(days=2)
+    while day.weekday()>=5:
+        day+=timedelta(days=1)
+    midnight=layered.epoch(day,"00:00",zone)
+    targets=[{"registry_channel_id":i,"model":model,"protocol":"responses"}
+             for i in schedule["layered_config"]["registry_channel_ids"]
+             for model in ("gpt-6-astra","gpt-6.1-sol")]
+    with patch("time.time",return_value=midnight):
+        storage.save_schedule_targets({**schedule,"enabled":True},targets)
+        # This source plan belongs to the controlled future fixture day. The UI
+        # service's real wall clock must not build a competing current-day run.
+        with storage.cursor() as cur:
+            cur.execute("UPDATE schedules SET created_at=? WHERE id=?",(midnight,schedule["id"]))
+        schedule=storage.get_schedule(schedule["id"])
+        run_id=layered.create_day(schedule,day)
+    try:
+        channel_id=schedule["layered_config"]["registry_channel_ids"][0]
+        for slot in layered.slots(run_id):
+            if slot["method"] in {"modeltrace","canary"}:
+                layered.update_slot(slot["slot_key"],"pending",channel_id=channel_id)
+        # Serial real HTTP/projection/persistence in each original fixture slot's
+        # own window. Source plan is enabled; sender and scorer stay unchanged.
+        for slot in layered.slots(run_id):
+            with patch("time.time",return_value=slot["due"]):
+                await integrity.execute_slot(slot)
+        with patch("time.time",return_value=max(slot["due"] for slot in layered.slots(run_id))+1):
+            integrity.refresh_run(run_id)
+            report=storage.get_run(run_id)
+        print(json.dumps({"run_id":run_id,"status":report["status"],"attempted":report["summary"]["attempted"]}))
+    finally:
+        storage.save_schedule_targets({**storage.get_schedule(schedule["id"]),"enabled":False},targets)
 
 
 if __name__=="__main__":

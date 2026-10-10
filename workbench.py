@@ -84,8 +84,9 @@ def create_app(mode: str | None = None):
         state["integrity_executor"] = integrity_service.executor_status()
         state["evidence_executor"] = integrity_monitor.offline_executor_status()
         if "stability" in children:
-            from features.stability.app import scheduler, storage
+            from features.stability.app import scheduler, storage, integrity
             state["scheduler"] = scheduler.status()
+            state["scheduled_integrity_executor"] = integrity.executor_status()
             state["monitor_executor"] = monitor_internal.executor_status()
             if not storage.health() or not state["scheduler"]["running"]:
                 state["status"] = "degraded"

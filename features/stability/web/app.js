@@ -55,13 +55,15 @@ async function loadHealth() {
     $("#health-card").classList.toggle("bad", !okay);
     $("#health-label").textContent = okay ? "服务正常" : "服务降级";
     $("#health-detail").textContent = `${data.scheduler.active_runs} 个任务运行中 · 请求最多 ${state.maxConcurrentProbes} 并发`;
-    $("#layered-executor-status").textContent = data.layered_executor?.enabled
-      ? "分层巡检执行已启用；按已保存计划的有限采样运行。"
-      : "分层巡检执行默认关闭；可保存计划和查看历史。管理员显式设置 EVAL_INTEGRITY_EXECUTOR=live 后才执行。";
+    const scheduled = data.scheduled_integrity_executor ?? data.layered_executor;
+    $("#layered-executor-status").textContent = scheduled?.enabled && scheduled?.running
+      ? "定时采样已启用；Canary 与 ModelTrace 按已保存的启用计划自动运行，暂停计划即可停止。"
+      : "定时采样服务未运行；请检查服务状态，已保存的计划时刻不会自动补采。";
   } catch {
     $("#health-card").classList.add("bad");
     $("#health-label").textContent = "无法连接";
     $("#health-detail").textContent = "请检查服务状态";
+    $("#layered-executor-status").textContent = "无法获取定时采样状态；请检查服务连接。";
   }
 }
 

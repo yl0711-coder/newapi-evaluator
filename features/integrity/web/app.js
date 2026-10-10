@@ -102,7 +102,7 @@
   }
   function budgetLine(task) {
     const c = task.consumed || {}, l = task.limits || {}, f = task.fees || {};
-    return `尝试 ${c.requests ?? 0}/${l.max_requests ?? '?'} · input 预留 ${c.input_tokens_reserved ?? 0}/${l.max_input_tokens ?? '?'} · output 预留 ${c.output_tokens_reserved ?? 0}/${l.max_output_tokens ?? '?'} · 未知请求 ${c.unknown_requests ?? 0} · 费用估算 USD ${f.estimated_usd ?? 'unknown'}（费用未知请求 ${f.unknown_requests ?? 0}），费用不作停止条件`;
+    return `尝试 ${c.requests ?? 0}/${l.max_requests ?? '?'} · input 记账预估 ${c.input_tokens_reserved ?? 0} · output 记账预估 ${c.output_tokens_reserved ?? 0} · 未知请求 ${c.unknown_requests ?? 0} · 费用估算 USD ${f.estimated_usd ?? 'unknown'}（费用未知请求 ${f.unknown_requests ?? 0}），费用及 token 预估不作停止条件`;
   }
   function reportLine(report) {
     const verdict = report?.source_verdict || report?.status || '等待结果';

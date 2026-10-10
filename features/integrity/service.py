@@ -395,12 +395,14 @@ def resume_review(job_id, **kwargs):
 
 
 def executor_enabled():
+    """Enable explicitly created manual / Monitor API jobs, not saved schedules."""
     return os.environ.get("EVAL_INTEGRITY_EXECUTOR", "off") == "live"
 
 
 def executor_status():
     return {"enabled": executor_enabled(), "running": bool(_executor_task and not _executor_task.done()),
-            "mode": "live" if executor_enabled() else "off", "trigger": "explicit_manual_or_authenticated_monitor"}
+            "mode": "live" if executor_enabled() else "off", "trigger": "explicit_manual_or_authenticated_monitor",
+            "scope": "manual_and_monitor"}
 
 
 def wake_executor():

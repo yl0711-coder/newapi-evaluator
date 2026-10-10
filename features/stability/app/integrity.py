@@ -7,7 +7,7 @@ from datetime import datetime, timedelta
 from zoneinfo import ZoneInfo
 
 from shared.registry import get_registry, RegistryError
-from features.integrity.execution import ResolvedTarget, execute_requests, build_requests
+from features.integrity.execution import ResolvedTarget, ExecutionStopped, execute_requests, build_requests
 from features.integrity.durable import IntegrityStore, default_pricing
 from features.integrity.transport import send_probe
 from features.integrity.strategies import get_strategy
@@ -21,7 +21,20 @@ def store():
     return IntegrityStore(get_registry())
 
 
+def schedule_active(snapshot):
+    schedule = storage.get_schedule(snapshot["id"])
+    return bool(schedule and schedule["enabled"] and schedule["plan_version"] == snapshot["plan_version"])
+
+
+def schedule_permit(snapshot):
+    """Recheck the source plan while reserve holds the Registry write lock."""
+    if not schedule_active(snapshot):
+        raise ExecutionStopped("cancelled", "schedule_paused_or_deleted")
+
+
 def resolve_target(slot, snapshot):
+    if snapshot.get("plan_version") == layered.VERSION and not schedule_active(snapshot):
+        return None
     registry = get_registry()
     target = next((t for t in snapshot["targets"] if t["registry_channel_id"] == slot["registry_channel_id"] and t["model"] == slot["model"] and t["protocol"] == slot["protocol"]), None)
     if not target:
@@ -123,9 +136,6 @@ async def execute_slot(slot):
                     return
                 layered.update_slot(slot["slot_key"], "pending", job_id=job["job_id"], target=target.snapshot)
         if not slot.get("job_id") and job is None:
-            day = datetime.fromisoformat(slot["budget_date"]).date()
-            count = len(config["registry_channel_ids"])
-            max_daily = count * 7 + (195 if day.weekday() < 5 else 0)
             job = ledger.enqueue(idempotency_key=slot["slot_key"], target_snapshot=target.snapshot,
                 strategy={"strategy_id": manifest.strategy_id, "manifest_hash": manifest.manifest_hash}, requests=requests,
                 limits={"max_requests": manifest.max_requests,
@@ -134,7 +144,6 @@ async def execute_slot(slot):
                 deadline=min(slot["deadline"], time.time() + manifest.total_timeout_seconds),
                 pricing=default_pricing(slot["model"]), budget_scope="daily", budget_key="layered-default",
                 budget_date=slot["budget_date"], timezone=run["snapshot"]["timezone"],
-                daily_limits={"max_requests": max_daily, "max_input_tokens": 5000000, "max_output_tokens": 1000000},
                 plan_version=slot["plan_hash"], principal="workbench")
             layered.update_slot(slot["slot_key"], "pending", job_id=job["job_id"], target=target.snapshot)
         claimed = ledger.claim(job_id=job["job_id"], owner="layered-scheduler")
@@ -146,7 +155,8 @@ async def execute_slot(slot):
                         "output_tokens_reported": raw.get("output_tokens_reported"),
                         "reasoning_tokens_reported": raw.get("reasoning_tokens_reported"),
                         "duration_ms": raw.get("latency_ms")}
-            await execute_requests(ledger.session(claimed["job_id"], claimed["owner"]), requests,
+            await execute_requests(ledger.session(claimed["job_id"], claimed["owner"],
+                reserve_guard=lambda *_: schedule_permit(run["snapshot"])), requests,
                 lambda: resolve_target(slot, run["snapshot"]), send_probe, project)
         publish_slot(slot, ledger.job(job["job_id"]))
     except asyncio.CancelledError:
@@ -189,6 +199,9 @@ def select_ready(now):
         run = storage.get_run(slot["run_id"])
         if run["status"] == "cancelled" or slot["status"] in layered.TERMINAL:
             continue
+        if not schedule_active(run["snapshot"]):
+            layered.update_slot(slot["slot_key"], "cancelled", reason="schedule_paused_or_deleted")
+            continue
         config = run["snapshot"]["layered_config"]
         if slot["due"] > now:
             continue
@@ -224,9 +237,8 @@ def select_ready(now):
 
 async def tick(now=None):
     global _task
-    from features.integrity.service import executor_enabled
-    if not executor_enabled():
-        return
+    # An enabled saved schedule authorizes its sampling. The separate manual /
+    # Monitor consumer switch must not silently disable scheduled MT or Canary.
     now = time.time() if now is None else now
     from . import timetable_executor
     await timetable_executor.tick(now)
@@ -262,6 +274,13 @@ async def tick(now=None):
             _task = asyncio.create_task(execute_slot(slot), name="layered-integrity-slot")
     for run_id in {s["run_id"] for s in layered.slots()}:
         refresh_run(run_id)
+
+
+def executor_status():
+    """Scheduled sampling follows plan controls, independent of active reviews."""
+    from . import scheduler
+    return {"enabled": True, "running": scheduler.status()["running"],
+            "mode": "live", "trigger": "enabled_schedule"}
 
 
 async def stop():

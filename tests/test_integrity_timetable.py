@@ -128,6 +128,36 @@ class TimetableExecutionTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(executor.store().job(self.row("canary")["job_id"])["consumed"]["requests"], 1)
         self.assertEqual(len(self.sent), 5)
 
+    async def test_high_usage_and_small_day_estimates_keep_health_mt_canary_complete(self):
+        canary = get_strategy("canary")
+        answers = {probe.probe_id: probe.expected for probe in canary.probes}
+        async def send(channel, probe, *, before_send):
+            await before_send()
+            self.sent.append(probe["id"])
+            text = "OK" if probe["max_tokens"] == 32 else answers[probe["id"]] if probe["max_tokens"] == 512 else " ".join(["42"] * 331)
+            return {"status": "completed", "text": text, "input_tokens_reported": 4390,
+                    "output_tokens_reported": probe["max_tokens"] + 1, "latency_ms": 1}
+        with self.registry.connect() as conn:
+            conn.execute("UPDATE integrity_timetable_days SET limits_json=? WHERE run_id=?",
+                (json.dumps({"max_requests": 1, "max_input_tokens": 1, "max_output_tokens": 1}), self.run))
+        with patch("time.time", return_value=self.now), patch.object(executor, "send_probe", send):
+            for _ in range(196):
+                ready = executor.select_ready(self.now)
+                self.assertIsNotNone(ready)
+                await executor.execute_probe(ready)
+            self.assertIsNone(executor.select_ready(self.now))
+        self.assertEqual(len(self.sent), 196)
+        self.assertEqual(len(set(self.sent)), 196)
+        for method, planned in (("health", 1), ("modeltrace", 3), ("canary", 192)):
+            row = self.row(method)
+            self.assertEqual(row["status"], "completed", row["reason"])
+            self.assertEqual((row["summary"]["attempted"], row["summary"]["valid"]), (planned, planned))
+            self.assertTrue(executor.store().job(row["job_id"])["reservation_exceeded"])
+        self.assertEqual(self.row("canary")["summary"]["score"]["correct"], 192)
+        usage = executor.store().daily_budget(budget_key=timetable.budget_key(self.id),
+            budget_date=str(self.day), timezone=self.plan["timezone"])
+        self.assertEqual(usage["attempted_requests"], 196)
+
     async def test_save_between_resolution_and_permit_blocks_only_removed_method(self):
         async def race(channel, probe, *, before_send):
             self.save({"canary_times": [], "modeltrace_times": ["10:00", "10:10"]}, now=self.now + 1)

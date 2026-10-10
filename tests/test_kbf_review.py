@@ -119,6 +119,47 @@ class ReviewTests(unittest.IsolatedAsyncioTestCase):
             self.svc.enqueue(**self.payload(package, source_ref="synthetic-conflicting-source"))
         self.assertEqual(self.calls, [])
 
+    async def test_legacy_daily_metadata_keeps_kbf_and_hlwy_review_idempotency(self):
+        legacy_daily = {"max_requests": 1000, "max_input_tokens": 1_000_000,
+                        "max_output_tokens": 1_000_000}
+        real_enqueue = self.svc.store.enqueue
+        for method, count in (("kbf", 4), ("hlwy", 5)):
+            with self.subTest(method=method):
+                sent_before = len(self.calls)
+                package = self.import_package(method, count=count)
+                body = self.payload(package, idempotency_key="legacy-" + method)
+                def legacy_enqueue(**options):
+                    return real_enqueue(**options, daily_limits=legacy_daily)
+                # Seed a review through its normal creation path, with the
+                # durable metadata default used before this upgrade.
+                with patch.object(self.svc.store, "enqueue", side_effect=legacy_enqueue):
+                    original = self.svc.enqueue(**body)
+                with self.registry.connect() as conn:
+                    original_hash = conn.execute("SELECT request_hash FROM integrity_jobs WHERE job_id=?",
+                        (original["task_id"],)).fetchone()[0]
+                repeated = self.svc.enqueue(**body)
+                self.assertEqual(repeated["task_id"], original["task_id"])
+                self.assertEqual(len(self.calls), sent_before)
+                async def send(channel, probe, *, before_send):
+                    raw = await self.send(channel, probe, before_send=before_send)
+                    raw.update(input_tokens_reported=4390, output_tokens_reported=probe["max_tokens"] + 1)
+                    return raw
+                await self.svc.run_pending(send)
+                completed = self.svc.enqueue(**body)
+                self.assertEqual((completed["task_id"], completed["status"]),
+                    (original["task_id"], "completed"))
+                self.assertTrue(completed["reservation_exceeded"])
+                with self.registry.connect() as conn:
+                    stored = conn.execute("SELECT request_hash,daily_limits_json FROM integrity_jobs WHERE job_id=?",
+                        (original["task_id"],)).fetchone()
+                self.assertEqual(stored["request_hash"], original_hash)
+                self.assertEqual(json.loads(stored["daily_limits_json"]), legacy_daily)
+                self.assertEqual(await self.svc.run_pending(send), 0)
+        self.assertEqual(len(self.calls), 9)
+        self.assertEqual(len(set(self.calls)), 9)
+        with self.registry.connect() as conn:
+            self.assertEqual(conn.execute("SELECT COUNT(*) FROM integrity_jobs").fetchone()[0], 2)
+
     async def test_kbf_shared_loop_persists_projection_and_same_is_not_identity(self):
         package = self.import_package()
         task = self.svc.enqueue(**self.payload(package))
@@ -139,13 +180,19 @@ class ReviewTests(unittest.IsolatedAsyncioTestCase):
     async def test_hlwy_frozen_request_set_and_projection(self):
         package = self.import_package("hlwy", count=5)
         task = self.svc.enqueue(**self.payload(package))
-        await self.svc.run_pending(self.send)
+        async def send(channel, probe, *, before_send):
+            raw = await self.send(channel, probe, before_send=before_send)
+            raw.update(input_tokens_reported=4390, output_tokens_reported=probe["max_tokens"] + 1)
+            return raw
+        await self.svc.run_pending(send)
         task = self.svc.get(task["task_id"], principal="workbench")
         self.assertEqual(len(self.calls), 5)
         self.assertEqual(task["report"]["comparison"]["overall_score"], 1.0)
         self.assertEqual(task["report"]["target_total"], 5)
         self.assertEqual(task["report"]["target_valid"], 5)
         self.assertEqual(task["report"]["source_verdict"], "BEHAVIORAL_COMPARISON")
+        self.assertEqual(task["status"], "completed")
+        self.assertTrue(task["reservation_exceeded"])
 
     async def test_cancel_then_resume_preserves_confirmed_samples(self):
         package = self.import_package()
@@ -216,20 +263,27 @@ class ReviewTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(len(self.svc.list(principal="workbench", administrative=True)), 2)
         self.assertEqual(external["principal"], "monitor")
 
-    async def test_token_budget_prevents_outbound_attempt(self):
+    async def test_token_estimate_does_not_stop_the_complete_kbf_sample(self):
         package = self.import_package()
         package["budget"]["max_input_tokens"] = 1
+        package["budget"]["max_output_tokens"] = 1
         package["self_test"]["conditions"] = reference_conditions(package)
         package["package_hash"] = reference_hash(package)
         self.svc.import_reference(package,package["package_hash"],confirm_authorized=True)
         body = self.payload(package)
         task=self.svc.enqueue(**body)
-        await self.svc.run_pending(self.send)
+        async def send(channel, probe, *, before_send):
+            raw = await self.send(channel, probe, before_send=before_send)
+            raw.update(input_tokens_reported=4390, output_tokens_reported=probe["max_tokens"] + 1)
+            return raw
+        await self.svc.run_pending(send)
         final=self.svc.get(task["task_id"], principal="workbench")
-        self.assertEqual(self.calls, [])
-        self.assertEqual(final["status"], "partially_completed")
+        self.assertEqual(len(self.calls), 4)
+        self.assertEqual(len(set(self.calls)), 4)
+        self.assertEqual(final["status"], "completed")
         self.assertEqual(final["report"]["target_total"], 4)
-        self.assertEqual(final["report"]["target_coverage"], 0)
+        self.assertEqual(final["report"]["target_coverage"], 1)
+        self.assertTrue(final["reservation_exceeded"])
 
     async def test_missing_self_test_and_invalid_results_remain_explicit(self):
         package=self.import_package(self_test=False)

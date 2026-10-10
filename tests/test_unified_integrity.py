@@ -66,6 +66,21 @@ class UnifiedIntegrityTests(unittest.IsolatedAsyncioTestCase):
         self.assertTrue(all(r["status"]=="skipped" for r in final["reports"]))
         self.assertEqual(len(final["skipped"]),7)
 
+    async def test_high_reported_usage_keeps_all_eight_independent_samples(self):
+        task = self.submit(key="high-reported-usage")
+        async def send(channel, probe, *, before_send):
+            raw = await self.send(channel, probe, before_send=before_send)
+            raw.update(input_tokens_reported=4390, output_tokens_reported=probe["max_tokens"] + 1)
+            return raw
+        await self.svc.run_pending(send)
+        final = self.svc.get(task["job_id"])
+        self.assertEqual((final["status"], len(self.sent)), ("completed", 8))
+        self.assertEqual([r["attempted"] for r in final["reports"]], [1, 3, 3])
+        self.assertEqual([r["valid"] for r in final["reports"]], [1, 3, 3])
+        self.assertTrue(final["reservation_exceeded"])
+        self.assertEqual(final["consumed"]["unknown_requests"], 0)
+        self.assertEqual(await self.svc.run_pending(send), 0)
+
     async def test_method_invalid_keeps_other_methods_and_missing_usage_does_not_stop(self):
         task=self.submit()
         original=self.send

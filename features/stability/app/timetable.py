@@ -285,9 +285,10 @@ def send_guard(slot):
 
 
 def daily_limits(conn, schedule_id, day, control=None):
+    """Estimate the fixed graph for previews/accounting, never a sending cap."""
     control = control or conn.execute("SELECT * FROM integrity_timetable_controls WHERE schedule_id=?", (schedule_id,)).fetchone()
     limits = {k: 0 for k in request_limits("health")}
-    # The dependency graph includes retained consumed reservations, never a new revision budget key.
+    # Retain consumed and unknown estimates across revisions in the same ledger.
     for row in conn.execute("SELECT o.*, (SELECT COUNT(*) FROM integrity_attempts a WHERE a.job_id=o.job_id) AS attempts, (SELECT COALESCE(SUM(input_cap),0) FROM integrity_attempts a WHERE a.job_id=o.job_id) AS input_used, (SELECT COALESCE(SUM(output_cap),0) FROM integrity_attempts a WHERE a.job_id=o.job_id) AS output_used FROM integrity_occurrences o WHERE schedule_id=? AND budget_date=?", (schedule_id, day)):
         caps = request_limits(row["method"]) if selected(control, row) and row["reason"] != "not_scheduled_before_save" else {"max_requests": row["attempts"], "max_input_tokens": row["input_used"], "max_output_tokens": row["output_used"]}
         for key in limits:

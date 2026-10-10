@@ -107,7 +107,12 @@ def main():
                 assert integrity["automatic_trigger"] is False
                 assert json.loads(get("/api/integrity/reviews"))["tasks"] == []
                 assert json.loads(get("/api/integrity/tests"))["tasks"] == []
-                assert json.loads(get("/api/health"))["evidence_executor"]["outbound_requests"] == 0
+                health = json.loads(get("/api/health"))
+                assert health["evidence_executor"]["outbound_requests"] == 0
+                assert health["scheduled_integrity_executor"]["enabled"] is True
+                assert health["scheduled_integrity_executor"]["running"] is True
+                stability_health = json.loads(get("/stability/api/health"))
+                assert stability_health["scheduled_integrity_executor"] == health["scheduled_integrity_executor"]
             assert len(get("/image-quality/assets/app.js")) > 100
             inspected = json.loads(command(["docker", "exec", active, "python", "-m",
                                              "features.image_quality", "inspect-config", "--config",

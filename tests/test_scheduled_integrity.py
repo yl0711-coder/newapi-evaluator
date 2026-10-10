@@ -113,13 +113,13 @@ class ScheduledIntegrityTests(unittest.IsolatedAsyncioTestCase):
             self.assertEqual(scheduler.ensure_due_runs(layered.epoch(self.day, "18:20", self.zone)), 0)
             create.assert_not_called()
 
-    async def test_health_through_shared_executor_then_no_confirmed_resend(self):
+    async def test_high_usage_health_through_shared_executor_then_no_confirmed_resend(self):
         row = self.row("health-0")
         sent = []
         async def send(channel, probe, *, before_send):
             await before_send(); sent.append(probe["id"])
             return {"status": "completed", "valid": True, "text": "synthetic health response", "finish_reason": "stop",
-                    "input_tokens_reported": 5, "output_tokens_reported": 3, "latency_ms": 2}
+                    "input_tokens_reported": 4390, "output_tokens_reported": 33, "latency_ms": 2}
         # The test only moves its slot's window; no live transport is used.
         with storage.cursor() as cur:
             cur.execute("UPDATE layered_slots SET deadline=? WHERE slot_key=?", (time.time() + 60, row["slot_key"]))
@@ -129,6 +129,9 @@ class ScheduledIntegrityTests(unittest.IsolatedAsyncioTestCase):
             completed = self.row("health-0")
             self.assertEqual(completed["status"], "completed", completed)
             self.assertEqual(completed["summary"]["attempted"], 1)
+            job = integrity.store().job(completed["job_id"])
+            self.assertTrue(job["reservation_exceeded"])
+            self.assertEqual(job["results"][0]["input_tokens_reported"], 4390)
             await integrity.execute_slot(completed)
         self.assertEqual(sent, [get_strategy("health").probes[0].probe_id])
         self.assertTrue(self.row("health-0")["summary"]["health_pass"])

@@ -59,7 +59,7 @@ python3 -m venv .venv
 
 渠道采样报告默认按时刻 × 渠道展示「时间总览」，可切换同源明细表，展开实际时段和技术证据。「查看演示」提供独立的三渠道合成指标，不采样、不联网或写数据库；返回真实报告恢复原筛选。到期 v2 报告先归档再清理，保留去重身份、消费/unknown 预留和可信 baseline，主表不留下无详情的历史行。
 
-`/integrity/` 提供不限合格渠道的一次启动三项 API 测试，默认 Astra：健康1次、TraceOne1次、ModelTrace最多3次、nerfed-api最多3次，独立采样、分别报告，最多8尝试、零重试。可查询、取消/恢复、打开历史与导出。另保留授权参考导入、HLwY/KBF主动复核和官方账号nerfed白名单证据离线分析。Monitor 使用 [HMAC v2 任务接口](docs/integrity-monitor-api.md)，普通登录不能替代。新日常及主动执行默认 `EVAL_INTEGRITY_EXECUTOR=off`，显式 live 才运行；账号离线分析不出站。费用只记录，不设每日金额上限；未知价格/usage不停止有限采样，请求/token/time与unknown不重发仍受约束。
+`/integrity/` 提供不限合格渠道的一次启动三项 API 测试，默认 Astra：健康1次、TraceOne1次、ModelTrace最多3次、nerfed-api最多3次，独立采样、分别报告，最多8尝试、零重试。可查询、取消/恢复、打开历史与导出。另保留授权参考导入、HLwY/KBF主动复核和官方账号nerfed白名单证据离线分析。Monitor 使用 [HMAC v2 任务接口](docs/integrity-monitor-api.md)，普通登录不能替代。已保存并启用的定时计划自动执行 Canary 与 ModelTrace，可通过暂停/删除计划或取消时刻停止；定时执行不受 `EVAL_INTEGRITY_EXECUTOR` 影响，旧部署保留 `off` 也能采样。该变量仅控制手动三项测试和 Monitor v2 主动复核，默认 `off`，显式 `live` 才消费主动任务；账号离线分析不出站。完整性采样不设每日金额或额外输入/输出/每日 token 预算截停，上游 reported usage 超过本地预估也继续固定探针。费用和 usage 按实际证据记录；固定题数、每题输出参数、原时窗、零重试和 unknown 不重发仍有效。
 
 普通 API 指纹未校准，不能认证实际模型权重。TraceOne/ModelTrace/HLwY不算独立多票。fpverify reference齐备后才是后续审计；Modivue旁路不安装/改客户端，不引入Meow。详见 [功能与边界](features/integrity/README.md)、[测试清单](docs/integrity-testing.md) 与 [来源许可](features/integrity/NOTICE.md)。
 

@@ -82,7 +82,7 @@ class IntegrityExecutionTests(unittest.IsolatedAsyncioTestCase):
             self.assertEqual(fees["estimated_usd"], 20 if pricing else None)
             self.assertEqual(self.store.daily_budget(budget_key=key, budget_date="2026-10-08")["attempted_requests"], 3)
 
-    async def test_parallel_attempt_caps_are_atomic_across_plan_versions(self):
+    async def test_parallel_fixed_manifests_share_usage_without_a_daily_cap(self):
         jobs = [self.enqueue(f"parallel-{i}", requests=[self.requests[0]], plan_version=f"v{i}", daily_limits={"max_requests": 2, "max_input_tokens": 10000, "max_output_tokens": 100}) for i in range(4)]
         sessions = [self.session(job) for job in jobs]
         def reserve(session):
@@ -91,8 +91,56 @@ class IntegrityExecutionTests(unittest.IsolatedAsyncioTestCase):
             except ExecutionStopped as exc:
                 return exc.reason
         outcomes = await asyncio.gather(*(asyncio.to_thread(reserve, session) for session in sessions))
-        self.assertEqual(sum(isinstance(value, dict) for value in outcomes), 2)
-        self.assertEqual(outcomes.count("daily_request_budget_exhausted"), 2)
+        self.assertTrue(all(isinstance(value, dict) for value in outcomes))
+        self.assertEqual(len({value["attempt_id"] for value in outcomes}), 4)
+        daily = self.store.daily_budget(budget_date="2026-10-08")
+        self.assertEqual(daily["attempted_requests"], 4)
+        self.assertEqual(daily["input_tokens_reserved"], 1600)
+
+    async def test_reported_usage_above_estimates_survives_yield_and_does_not_resend(self):
+        job = self.enqueue("high-usage")
+        sent = []
+        async def send(channel, probe, *, before_send):
+            await before_send()
+            sent.append(probe["id"])
+            return {"status": "completed", "input_tokens_reported": 4390,
+                    "output_tokens_reported": 11}
+        self.assertEqual(await execute_requests(self.session(job), self.requests,
+            self.resolve, send, self.project, yield_after=1), "yielded")
+        self.assertEqual(self.store.job(job["job_id"])["status"], "queued")
+        self.assertEqual(await execute_requests(self.session(job), self.requests,
+            self.resolve, send, self.project, yield_after=1), "completed")
+        final = self.store.job(job["job_id"])
+        self.assertEqual(sent, ["probe-0", "probe-1"])
+        self.assertEqual(final["consumed"]["requests"], 2)
+        self.assertTrue(final["reservation_exceeded"])
+        self.assertTrue(all(row["reservation_exceeded"] for row in final["results"]))
+        self.assertEqual([row["input_tokens_reported"] for row in final["results"]], [4390, 4390])
+        self.assertIsNone(self.store.claim(job_id=job["job_id"], owner="another-owner"))
+
+    async def test_reported_usage_is_recorded_without_blocking_next_reservation(self):
+        job = self.enqueue("direct-high-usage")
+        session = self.session(job)
+        first = session.reserve(self.requests[0], self.resolve())
+        self.assertTrue(session.complete(self.requests[0], first,
+            {"status": "completed", "valid": True, "input_tokens_reported": 4390,
+             "output_tokens_reported": 11}))
+        second = session.reserve(self.requests[1], self.resolve())
+        self.assertNotEqual(first["attempt_id"], second["attempt_id"])
+        with self.assertRaisesRegex(ExecutionStopped, "attempt_already_permitted"):
+            session.reserve(self.requests[1], self.resolve())
+
+    async def test_single_completed_probe_with_high_usage_stays_completed(self):
+        job = self.enqueue("single-high-usage", requests=self.requests[:1])
+        async def send(channel, probe, *, before_send):
+            await before_send()
+            return {"status": "completed", "input_tokens_reported": 4390,
+                    "output_tokens_reported": 11}
+        self.assertEqual(await execute_requests(self.session(job), self.requests[:1],
+            self.resolve, send, self.project), "completed")
+        final = self.store.job(job["job_id"])
+        self.assertTrue(final["reservation_exceeded"])
+        self.assertEqual(final["reason"], "")
 
     async def test_recovery_retains_confirmed_unknown_and_fences_old_owner(self):
         job = self.enqueue()
@@ -217,21 +265,40 @@ class IntegrityExecutionTests(unittest.IsolatedAsyncioTestCase):
             self.registry.save({**current, "enabled": True, "api_key": "fixture-integrity-credential"}, current["id"], current["version"])
             self.target["mapping_revision"] = "v1"
 
-    async def test_hard_request_token_cost_price_and_date_boundaries(self):
+    async def test_token_daily_estimates_price_identity_and_date_accounting(self):
         fixed = self.enqueue("same-id", deadline=time.time() + 60)
         with self.assertRaisesRegex(ValueError, "idempotency_conflict"):
             self.enqueue("same-id", pricing={"input_usd_per_million": 20, "output_usd_per_million": 50, "source": "configured_estimate"}, deadline=fixed["deadline"])
-        for key, changes, reason in [("request-cap", {"daily_limits": {"max_requests": 1, "max_input_tokens": 10000, "max_output_tokens": 100}}, "daily_request_budget_exhausted"),
-                ("token-cap", {"limits": {"max_requests": 2, "max_input_tokens": 400, "max_output_tokens": 20}}, "budget_exhausted")]:
+        for key, changes in [("daily-estimate", {"daily_limits": {"max_requests": 1, "max_input_tokens": 1, "max_output_tokens": 1}}),
+                ("token-estimate", {"limits": {"max_requests": 2, "max_input_tokens": 1, "max_output_tokens": 1}})]:
             job = self.enqueue(key, budget_key=key, **changes)
             async def send(channel, probe):
                 return {"status": "completed"}
-            self.assertEqual(await execute_requests(self.session(job), self.requests, self.resolve, send, self.project), "partially_completed")
-            self.assertEqual(self.store.job(job["job_id"])["reason"], reason)
+            self.assertEqual(await execute_requests(self.session(job), self.requests, self.resolve, send, self.project), "completed")
+            final = self.store.job(job["job_id"])
+            self.assertEqual(final["consumed"]["requests"], 2)
+            self.assertFalse(final["budget_policy"]["token_limits_enforced"])
+            self.assertFalse(final["budget_policy"]["daily_limits_enforced"])
         tomorrow = self.enqueue("new-day", budget_date="2026-10-09")
         session = self.session(tomorrow)
         session.reserve(self.requests[0], self.resolve())
         self.assertEqual(self.store.daily_budget(budget_date="2026-10-09")["attempted_requests"], 1)
+
+    async def test_request_allowance_must_cover_the_complete_fixed_manifest(self):
+        with self.assertRaisesRegex(ValueError, "request manifest exceeds max_requests"):
+            self.enqueue("incomplete-allowance", limits={"max_requests": 1,
+                "max_input_tokens": 5000, "max_output_tokens": 100})
+
+    async def test_reservation_estimates_do_not_restrict_fixed_probe_parameters(self):
+        request = ProbeRequest("small-estimate", self.requests[0].probe, 1, 1)
+        job = self.enqueue("small-estimate", requests=[request])
+        async def send(channel, probe, *, before_send):
+            await before_send()
+            self.assertEqual(probe["max_tokens"], 10)
+            return {"status": "completed", "input_tokens_reported": 4390,
+                    "output_tokens_reported": 11}
+        self.assertEqual(await execute_requests(self.session(job), [request],
+            self.resolve, send, self.project), "completed")
 
     async def test_response_body_is_not_persisted_and_projection_rejects_arbitrary_fields(self):
         job = self.enqueue()

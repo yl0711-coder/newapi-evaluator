@@ -40,7 +40,7 @@ provenance 是调用方声明，结果 `evidence_authenticity=not_verified`。�
  "parameters":"<完整参考parameters对象>","budget":"<完整参考budget对象>"},"confirm_live":true}}
 ```
 
-上例占位字段应替换成已授权参考元数据中的实际对象；实际 budgets 必须与参考绑定一致。review 不接受目标、凭据、幂等键覆盖。target 只接受严格正整数 registry_channel_id 与已登记的 model/protocol，服务端解析 Registry 凭据和精确模型映射；允许已记录和已上线的启用渠道，不需要外部身份或生产清单。发送许可在同一 Registry 事务内重新核验冻结连接和映射。只请求选定候选，reference 不自动在线采集。`EVAL_INTEGRITY_EXECUTOR=live`、持有定时锁的 all/stability 服务才消费主动任务；默认off。费用只记录，无每日金额准入或停止；有限请求/token/time约束仍执行。
+上例占位字段应替换成已授权参考元数据中的实际对象；实际 budgets 元数据必须与参考绑定一致，固定样本数不自动扩张。review 不接受目标、凭据、幂等键覆盖。target 只接受严格正整数 registry_channel_id 与已登记的 model/protocol，服务端解析 Registry 凭据和精确模型映射；允许已记录和已上线的启用渠道，不需要外部身份或生产清单。发送许可在同一 Registry 事务内重新核验冻结连接和映射。只请求选定候选，reference 不自动在线采集。`EVAL_INTEGRITY_EXECUTOR=live`、持有定时锁的 all/stability 服务才消费主动任务；主动消费者默认off。该变量不影响已保存启用的定时 MT/Canary，定时采样通过计划的启用/暂停控制。费用和 usage 只记录；额外输入/输出/每日 token 预算以及 reported 超预估不截停完整性探针。固定请求清单、每题输出参数、原时间窗、零重试和 unknown 不重发仍执行；旧 Monitor v1 probe-jobs 的预算合同不变。
 
 ## 调用代码
 

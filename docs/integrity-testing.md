@@ -17,10 +17,10 @@
 | protocol-browser / diagnosis-browser / model-coverage-browser / monitor-control-browser | 清单对应 *.cjs | 实际HTTP/浏览器、旧HMAC/控制面与覆盖兼容；每组300秒 |
 | integrity-browser | scripts/integrity_ui.cjs | 已记录渠道零身份/生产快照/target三项首测，用户显式上线后零target选计划、完整192题当前成绩、>3美元继续、显式baseline、参考导入、KBF取消/恢复unknown不重发、HLwY、账号离线、导出、390/900/1440屏；600秒 |
 | integrity-timetable-browser | scripts/integrity_timetable_ui.cjs | 任意不规律双集合、独立取消、双空保存/重开、请求预览、键盘、三个独立192题真实Mock、名称倍率历史冻结、时间总览/明细同源、三渠道合成演示零API/退出失败隔离、多run/时区不覆盖、日期/渠道/异常筛选、导出和窄屏局部滚动；600秒 |
-| build-container | scripts/image_quality_container.py --output | 当前镜像all/image-quality健康、integrity静态页/API/默认off/零任务与离线状态，自有容器精确清理；900秒 |
+| build-container | scripts/image_quality_container.py --output | 当前镜像all/image-quality健康、integrity静态页/API、手动消费者默认off、定时采样状态、零任务与离线状态，自有容器精确清理；900秒 |
 | legacy-acceptance | scripts/acceptance.py --sha --output | 仅独立干净提交，既有实验室全量/持续/混合负载；1200秒 |
 
-领域映射：test_schedule_candidates 覆盖用户定义online、recorded拒排期、停用、缺/不可解密凭据、零身份/生产快照、非法协议、原子创建/回滚；test_scheduled_integrity 覆盖230/35、五工作日持久轮转、健康依赖/过期、重复slot、提交后崩溃恢复、Registry 状态/连接/映射漂移零发送、连续异常缺测/漂移/冷却、旧报告/export/baseline保留。test_integrity_execution 覆盖三协议真实解析、终态、usage/reasoning、请求/token/time/租约原子边界、同日>3/未知价格、unknown/取消/漂移/正文不落盘。test_kbf_review 覆盖参考hash/授权/自测/覆盖、真实消费者、冷却/幂等、unknown、数值JSON浏览器往返。test_integrity_scoring 覆盖17/16类、UNLISTED、两答门槛、10对McNemar/四family Holm、invalid/not_run/条件拒比较、白名单元数据。test_integrity_monitor 覆盖异步HMAC、nonce/body、principal隔离、旧nerfed错误、取消/恢复与主动consumer。
+领域映射：test_schedule_candidates 覆盖用户定义online、recorded拒排期、停用、缺/不可解密凭据、零身份/生产快照、非法协议、原子创建/回滚；test_scheduled_integrity 覆盖230/35、五工作日持久轮转、健康依赖/过期、重复slot、提交后崩溃恢复、Registry 状态/连接/映射漂移零发送、连续异常缺测/漂移/冷却、旧报告/export/baseline保留。test_integrity_execution 覆盖三协议真实解析、终态、usage/reasoning、固定请求/时间/租约原子边界、超本地预估及低日 token 预估不截停、同日>3/未知价格、unknown/取消/漂移/正文不落盘。test_kbf_review 覆盖参考hash/授权/自测/覆盖、真实消费者、冷却/幂等、unknown、数值JSON浏览器往返。test_integrity_scoring 覆盖17/16类、UNLISTED、两答门槛、10对McNemar/四family Holm、invalid/not_run/条件拒比较、白名单元数据。test_integrity_monitor 覆盖异步HMAC、nonce/body、principal隔离、旧nerfed错误、取消/恢复与主动consumer。
 
 测试替换上游和不可控时钟，真实执行解析、许可、持久化和报告。浏览器完整日常为单渠道202次，五渠道/五日轮转由领域测试证明，不能宣称五日真实运行。usage/费用为合成上报，不是真账单。未开展真实Monitor联调、真实上游、API校准或实测功效，不发送通知、不部署。
 
@@ -32,8 +32,10 @@ integrity-browser已扩充实际浏览器三项主链：新上线零target/零�
 
 本次独立产品审查修复回归：噪声grid、5000rows/numbers/digits、深层JSON为有界投影，子项invalid仍执行后续方法；同caller重claim的旧session reserve/complete/finish/heartbeat全部fenced；已提交192题canary在健康/时间窗过期、目标漂移及slot缺绑定后纯重建，真实分母和原观测时间保留，零重发。容器清理Mock以实际blocked Docker操作就绪为超时起点，启动另有5秒界限，避免将解释器启动负载误当cleanup超时；原失败保留外置记录。
 
-调度表回归 `test_integrity_timetable`：默认144/24与五渠道图/25920请求、任意双集合/空与错误刻度、DST gap/fold/跨日窗、共享health与单题优先、保存许可前/后竞态、未来零尝试恢复/过去不追赶、保留日预算、unknown重启不重发、同格两方法独立名称/倍率快照与旧倍率缺失、日期报告/export、暂停/删除/时区变更、跨库run重关联/control重建、取得两把共享容量后MT health先发、inconclusive与Holm局部线索。只替换合成响应和不可控时钟，不替换评分算法；新browser实际执行591次本地HTTP（3×192 + 3×3 + 6共享health），不证明真实上游可在时窗内完成。
+调度表回归 `test_integrity_timetable`：默认144/24与五渠道图/25920请求、任意双集合/空与错误刻度、DST gap/fold/跨日窗、共享health与单题优先、保存许可前/后竞态、未来零尝试恢复/过去不追赶、保留日消费账本、unknown重启不重发、同格两方法独立名称/倍率快照与旧倍率缺失、日期报告/export、暂停/删除/时区变更、跨库run重关联/control重建、取得两把共享容量后MT health先发、inconclusive与Holm局部线索。只替换合成响应和不可控时钟，不替换评分算法；新browser实际执行591次本地HTTP（3×192 + 3×3 + 6共享health），不证明真实上游可在时窗内完成。
 
 新增生命周期回归覆盖 storage 两库保存已提交、API reconcile 尚未执行的暂停中断恢复；首次 v2 baseline 锁定不依赖先 GET/list 初始化；v2 到期归档提交后、删除 run 前中断的幂等恢复。核验主报告不留悬空详情、归档日不重建、baseline/消费保留，活动与 incomplete/unknown 日不裁剪。浏览器演示是固定展示数据，零 API/上游请求及零计划创建；稳定、下降线索、指纹偏离、缺测、参照不足、后续恢复与倍率变化不属于统计或真实模型验收证据。
 
 日期切换回归保持旧日期与目标日期各六行，通过门控目标日期响应证明旧 DOM 不满足目标日期/run 就绪条件；等待精确日期响应和对应六条记录、可见日期渲染后，再执行原192/192及参照不足断言。保留首次独立失败和白名单归因，不增加固定sleep或放宽超时。
+
+自动调度回归 `test_scheduled_executor_enabled`：正常 workbench stability lifespan 启动后台 scheduler；未设置或显式 `EVAL_INTEGRITY_EXECUTOR=off` 都会在已保存启用计划的时刻，通过真实受保护 HTTP 向自有回环 Mock 发出共享 health 1 次、MT 3 次与完整 Canary 192 次，持久终态及报告不再待采样。暂停计划后到点零发送，退出 lifespan 停止调度。旧 v1 既有 pending 槽在暂停/删除后取消；目标已解析后在许可事务内再暂停/删除也零许可、零发送。只替换时钟和外部上游，不替换发送许可、sender、解析、评分或报告。该模块由 workbench-python 的 unittest discover 自动收集。

@@ -42,13 +42,13 @@
 </div>
 <label>本次声明条件（必须与参考一致）<textarea id="review-conditions" rows="7" required spellcheck="false"></textarea></label>
 <div class="grid budgets">
-<label>请求尝试上限<input id="review-requests" type="number" min="1" max="256" required></label>
-<label>input token 预留上限<input id="review-input" type="number" min="1" required></label>
-<label>output token 预留上限<input id="review-output" type="number" min="1" required></label>
+<label>固定请求样本数<input id="review-requests" type="number" min="1" max="256" required></label>
+<label>input token 参考预估<input id="review-input" type="number" min="1" required></label>
+<label>output token 参考预估<input id="review-output" type="number" min="1" required></label>
 <label>时间上限（秒）<input id="review-seconds" type="number" min="1" required></label>
 </div>
-<p>请求、token 与时间预算从参考绑定条件填写；重试为 0。费用只作估算记录，不设每日费用上限，未知显示 unknown，不是中转账单。review 与日常、reference 分别记账；同目标同条件复核有七天冷却。</p>
-<label class="check"><input id="review-confirm" type="checkbox" required>我明确确认本次主动请求及上述独立预算</label>
+<p>样本数、token 预估与时间条件须匹配参考；重试为 0。额外 token 或每日预算不截停固定探针。费用只作估算记录，不设每日费用上限，未知显示 unknown，不是中转账单。review 与日常、reference 分别记账；同目标同条件复核有七天冷却。</p>
+<label class="check"><input id="review-confirm" type="checkbox" required>我明确确认本次固定样本及时间条件</label>
 <button id="review-submit" type="submit">创建异步复核任务</button><span id="review-status" role="status"></span>
 </form>
 </section>

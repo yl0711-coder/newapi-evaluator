@@ -156,12 +156,13 @@ async def security_headers(request, call_next):
 
 @app.get("/api/health")
 async def health() -> JSONResponse:
-    from features.integrity.service import executor_enabled
     scheduler_status = scheduler.status()
+    scheduled_status = integrity.executor_status()
     database_ok = storage.health()
     state = "ok" if database_ok and scheduler_status["running"] else "degraded"
     return JSONResponse({"status": state, "database": database_ok, "scheduler": scheduler_status,
-                         "layered_executor": {"enabled": executor_enabled(), "mode": "live" if executor_enabled() else "off"}})
+                         "scheduled_integrity_executor": scheduled_status,
+                         "layered_executor": scheduled_status})
 
 
 @app.get("/api/meta")

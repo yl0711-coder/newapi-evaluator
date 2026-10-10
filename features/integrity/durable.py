@@ -16,7 +16,7 @@ from decimal import Decimal, ROUND_CEILING
 from typing import Any
 from zoneinfo import ZoneInfo
 
-from .execution import ExecutionStopped, ProbeRequest, ResolvedTarget, budget_allows, estimate_input_tokens
+from .execution import ExecutionStopped, ProbeRequest, ResolvedTarget
 
 _ID = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._:/@+\-]{0,199}$")
 _SHA = re.compile(r"^[a-f0-9]{64}$")
@@ -198,13 +198,17 @@ class IntegrityStore:
             if any(type(item[k]) is not int or item[k] < 1 for k in ("input_tokens_reserved", "output_tokens_reserved")):
                 raise ValueError("invalid token reservation")
         if not isinstance(limits, dict) or set(limits) - {"max_requests", "max_input_tokens", "max_output_tokens"} or not {"max_requests", "max_input_tokens", "max_output_tokens"} <= set(limits):
-            raise ValueError("invalid hard budget fields")
+            raise ValueError("invalid sampling estimate fields")
         if any(type(limits[k]) is not int or limits[k] < 1 for k in ("max_requests", "max_input_tokens", "max_output_tokens")) or limits["max_requests"] > 1000:
-            raise ValueError("invalid hard budgets")
+            raise ValueError("invalid sampling estimates")
+        if len(manifest) > limits["max_requests"]:
+            raise ValueError("request manifest exceeds max_requests")
         pricing = clean_pricing(pricing)
         if budget_scope not in {"daily", "reference", "review"}:
             raise ValueError("invalid budget scope")
         budget_key, plan_version, principal = map(_identifier, (budget_key, plan_version, principal))
+        # Legacy budget fields remain part of identity and accounting. The
+        # immutable manifest fixes sends; token and daily estimates never do.
         daily_limits = daily_limits or {"max_requests": 230 if budget_scope == "daily" else 1000,
                                         "max_input_tokens": 1_000_000, "max_output_tokens": 1_000_000}
         if set(daily_limits) != {"max_requests", "max_input_tokens", "max_output_tokens"} or any(type(v) is not int or v < 1 for v in daily_limits.values()):
@@ -248,6 +252,8 @@ class IntegrityStore:
                 "request_manifest": json.loads(row["manifest_json"]), "limits": json.loads(row["limits_json"]),
                 "results": results, "skipped": json.loads(row["skipped_json"]), "principal": row["principal"],
                 "execution_mode": row["execution_mode"],
+                "budget_policy": {"request_limit": "fixed_manifest", "token_limits_enforced": False,
+                                  "daily_limits_enforced": False, "reported_reservation_exceeded_stops": False},
                 "reservation_exceeded": any(r.get("reservation_exceeded") is True for r in results),
                 "pricing": json.loads(row["pricing_json"]) if row["pricing_json"] else None,
                 "budget_scope": row["budget_scope"], "budget_key": row["budget_key"], "budget_date": row["budget_date"],
@@ -397,8 +403,6 @@ class IntegritySession:
     def check(self, *, before_send=True):
         with self.store.registry.connect() as conn:
             self._control(conn.execute("SELECT * FROM integrity_jobs WHERE job_id=?", (self.job_id,)).fetchone(), before_send=before_send)
-            if before_send and conn.execute("SELECT 1 FROM integrity_attempts WHERE job_id=? AND json_extract(result_json,'$.reservation_exceeded')=1", (self.job_id,)).fetchone():
-                raise ExecutionStopped("partially_completed", "reported_reservation_exceeded")
 
     def existing(self, request):
         with self.store.registry.connect() as conn:
@@ -433,8 +437,6 @@ class IntegritySession:
             row = conn.execute("SELECT * FROM integrity_jobs WHERE job_id=?", (self.job_id,)).fetchone()
             self._control(row)
             guarded_limits = self.reserve_guard(conn, row, request) if self.reserve_guard else None
-            if conn.execute("SELECT 1 FROM integrity_attempts WHERE job_id=? AND json_extract(result_json,'$.reservation_exceeded')=1", (self.job_id,)).fetchone():
-                raise ExecutionStopped("partially_completed", "reported_reservation_exceeded")
             snapshot = json.loads(row["target_json"])
             if row["execution_mode"] == "offline":
                 if target.snapshot != snapshot or request.manifest() not in json.loads(row["manifest_json"]):
@@ -477,29 +479,24 @@ class IntegritySession:
                 except ContractError:
                     raise ExecutionStopped("rejected", "production_binding_changed") from None
             manifest = request.manifest()
-            expected = next((m for m in json.loads(row["manifest_json"]) if m["request_id"] == request.request_id), None)
+            fixed_manifest = json.loads(row["manifest_json"])
+            expected = next((m for m in fixed_manifest if m["request_id"] == request.request_id), None)
             if manifest != expected:
                 raise ExecutionStopped("rejected", "request_identity_changed")
-            if request.input_tokens_reserved < estimate_input_tokens(request.probe):
-                raise ExecutionStopped("rejected", "input_reservation_too_small")
-            if type(request.probe.get("max_tokens")) is not int or request.probe["max_tokens"] > request.output_tokens_reserved:
-                raise ExecutionStopped("rejected", "output_reservation_too_small")
+            if type(request.probe.get("max_tokens")) is not int or request.probe["max_tokens"] < 1:
+                raise ExecutionStopped("rejected", "invalid_probe_output_limit")
             if conn.execute("SELECT 1 FROM integrity_attempts WHERE job_id=? AND request_id=?", (self.job_id, request.request_id)).fetchone():
                 raise ExecutionStopped("failed", "attempt_already_permitted")
-            consumed = conn.execute("SELECT COUNT(*),COALESCE(SUM(input_cap),0),COALESCE(SUM(output_cap),0) FROM integrity_attempts WHERE job_id=?", (self.job_id,)).fetchone()
-            ledger = dict(zip(("requests", "input_tokens_reserved", "output_tokens_reserved"), consumed))
-            if not budget_allows(json.loads(row["limits_json"]), ledger, request.input_tokens_reserved, request.output_tokens_reserved):
-                raise ExecutionStopped("partially_completed", "budget_exhausted")
+            if conn.execute("SELECT COUNT(*) FROM integrity_attempts WHERE job_id=?", (self.job_id,)).fetchone()[0] >= len(fixed_manifest):
+                raise ExecutionStopped("failed", "fixed_manifest_exhausted")
             pricing = clean_pricing(json.loads(row["pricing_json"])) if row["pricing_json"] else None
             daily_key = tuple(row[k] for k in ("budget_scope", "budget_key", "budget_date", "timezone"))
-            # Compatibility columns are retained; currency never controls execution.
+            # Compatibility columns record estimates and usage, not send caps.
             conn.execute("INSERT OR IGNORE INTO integrity_daily_budgets(budget_scope,budget_key,budget_date,timezone,limit_micro) VALUES(?,?,?,?,0)", daily_key)
             daily = conn.execute("SELECT * FROM integrity_daily_budgets WHERE budget_scope=? AND budget_key=? AND budget_date=? AND timezone=?", daily_key).fetchone()
             daily_limits = json.loads(row["daily_limits_json"])
             for field in ("max_requests", "max_input_tokens", "max_output_tokens"):
                 daily_limits[field] = guarded_limits[field] if guarded_limits is not None else min(daily_limits[field], daily[field]) if daily[field] is not None else daily_limits[field]
-            if not budget_allows(daily_limits, {"requests": daily["attempted_requests"], "input_tokens_reserved": daily["input_tokens_reserved"], "output_tokens_reserved": daily["output_tokens_reserved"]}, request.input_tokens_reserved, request.output_tokens_reserved):
-                raise ExecutionStopped("partially_completed", "daily_request_budget_exhausted")
             conn.execute("UPDATE integrity_daily_budgets SET max_requests=?,max_input_tokens=?,max_output_tokens=? WHERE budget_scope=? AND budget_key=? AND budget_date=? AND timezone=?", (*[daily_limits[k] for k in ("max_requests", "max_input_tokens", "max_output_tokens")], *daily_key))
             attempt_id = "attempt-" + secrets.token_hex(16)
             conn.execute("INSERT INTO integrity_attempts(job_id,request_id,identity_hash,attempt_id,status,input_cap,output_cap,created_at) VALUES(?,?,?,?, 'permitted',?,?,?)",
