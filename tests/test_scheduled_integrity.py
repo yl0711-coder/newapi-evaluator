@@ -14,7 +14,7 @@ import httpx
 from shared import registry as registry_module
 from shared.registry import Registry
 from features.integrity.strategies import get_strategy
-from features.stability.app import storage, layered, integrity, scheduler
+from features.stability.app import storage, layered, integrity, scheduler, timetable
 from features.stability.app.main import ScheduleInput, app
 
 
@@ -31,8 +31,8 @@ class ScheduledIntegrityTests(unittest.IsolatedAsyncioTestCase):
             "api_key": "synthetic-layered-credential", "multiplier": 1, "status":"online"})
         self.targets = [{"registry_channel_id": self.channel["id"], "model": model, "protocol": "responses"}
                         for model in ("gpt-6-astra", "gpt-6.1-sol")]
-        data = ScheduleInput(name="Synthetic layered", daily_times="09:30", targets=self.targets,
-                             plan_version=layered.VERSION).model_dump()
+        data = ScheduleInput.model_construct(name="Synthetic layered", daily_times="09:30", targets=self.targets,
+                             plan_version=layered.VERSION, layered_config=layered.validate_config({})).model_dump(warnings=False)
         self.schedule_id = storage.save_schedule_targets(data, self.targets)
         self.schedule = storage.get_schedule(self.schedule_id)
         self.day = date(2026, 10, 8)
@@ -82,28 +82,6 @@ class ScheduledIntegrityTests(unittest.IsolatedAsyncioTestCase):
         storage.close()
         self.assertEqual(layered.select_rotation(self.schedule_id, "2026-10-09", [1], 999999), 5)
 
-    async def test_1530_health_dependency_cannot_race_and_failed_skips(self):
-        now = layered.epoch(self.day, "15:36", self.zone)
-        self.settle_other_slots({"health-2", "astra-1"})
-        # The only ready slot is health, not Astra.
-        self.assertEqual(integrity.select_ready(now)["method"], "health")
-        self.finish_health("health-2", now, False)
-        self.assertIsNone(integrity.select_ready(now))
-        self.assertEqual(self.row("astra-1")["status"], "skipped")
-        self.assertEqual(self.row("astra-1")["reason"], "health_failed_or_unmeasured")
-
-    async def test_health_has_exact_model_coverage_and_expiry_adds_no_probe(self):
-        now = layered.epoch(self.day, "15:36", self.zone)
-        self.settle_other_slots({"health-2", "sol"})
-        self.finish_health("health-2", now)
-        ready = integrity.select_ready(now + 15 * 60)
-        self.assertEqual(ready["slot"], "sol")
-        self.assertEqual(self.row("health-2")["summary"]["health_coverage"]["model"], "gpt-6-astra")
-        self.assertNotEqual(ready["model"], self.row("health-2")["model"])
-        self.assertIsNone(integrity.select_ready(now + 61 * 60))
-        self.assertEqual(self.row("sol")["reason"], "health_expired")
-        self.assertEqual(len([s for s in layered.slots(self.run_id) if s["method"] == "health"]), 4)
-
     async def test_same_day_restart_does_not_duplicate_slots_or_make_legacy_pending(self):
         duplicate = layered.create_day(self.schedule, self.day)
         self.assertEqual(duplicate, self.run_id)
@@ -112,30 +90,6 @@ class ScheduledIntegrityTests(unittest.IsolatedAsyncioTestCase):
         with patch.object(scheduler.storage, "list_schedules", return_value=[self.schedule]), patch.object(scheduler.storage, "create_run") as create:
             self.assertEqual(scheduler.ensure_due_runs(layered.epoch(self.day, "18:20", self.zone)), 0)
             create.assert_not_called()
-
-    async def test_high_usage_health_through_shared_executor_then_no_confirmed_resend(self):
-        row = self.row("health-0")
-        sent = []
-        async def send(channel, probe, *, before_send):
-            await before_send(); sent.append(probe["id"])
-            return {"status": "completed", "valid": True, "text": "synthetic health response", "finish_reason": "stop",
-                    "input_tokens_reported": 4390, "output_tokens_reported": 33, "latency_ms": 2}
-        # The test only moves its slot's window; no live transport is used.
-        with storage.cursor() as cur:
-            cur.execute("UPDATE layered_slots SET deadline=? WHERE slot_key=?", (time.time() + 60, row["slot_key"]))
-        row = self.row("health-0")
-        with patch.object(integrity, "send_probe", send):
-            await integrity.execute_slot(row)
-            completed = self.row("health-0")
-            self.assertEqual(completed["status"], "completed", completed)
-            self.assertEqual(completed["summary"]["attempted"], 1)
-            job = integrity.store().job(completed["job_id"])
-            self.assertTrue(job["reservation_exceeded"])
-            self.assertEqual(job["results"][0]["input_tokens_reported"], 4390)
-            await integrity.execute_slot(completed)
-        self.assertEqual(sent, [get_strategy("health").probes[0].probe_id])
-        self.assertTrue(self.row("health-0")["summary"]["health_pass"])
-        self.assertNotIn("synthetic health response", json.dumps(storage.get_run(self.run_id)))
 
     async def test_not_run_failure_denominator_and_cancel_resume_preserve_original_window(self):
         self.settle_other_slots(set())
@@ -150,7 +104,8 @@ class ScheduledIntegrityTests(unittest.IsolatedAsyncioTestCase):
         integrity.cancel_run(self.run_id)
         self.assertEqual(self.row("canary")["status"], "cancelled")
         with patch.object(integrity.time, "time", return_value=deadline - 1):
-            integrity.resume_run(self.run_id)
+            with self.assertRaisesRegex(ValueError, "旧定时"):
+                integrity.resume_run(self.run_id)
         self.assertEqual(self.row("canary")["deadline"], deadline)
 
     async def test_explicit_baseline_survives_history_retention_and_no_auto_promotion(self):
@@ -181,82 +136,63 @@ class ScheduledIntegrityTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(detail.json()["summary"]["pass_rate"], 1)
         self.assertEqual(detail.json()["results"], [])
 
-    async def test_committed_job_and_missing_slot_binding_recover_without_resend(self):
-        row = self.row("health-0")
-        sent = []
-        async def send(channel, probe, *, before_send):
-            await before_send(); sent.append(probe["id"])
-            return {"status": "completed", "valid": True, "text": "synthetic health",
-                    "finish_reason": "stop", "input_tokens_reported": 1,
-                    "output_tokens_reported": 1, "latency_ms": 1}
-        with storage.cursor() as cur:
-            cur.execute("UPDATE layered_slots SET deadline=? WHERE slot_key=?", (time.time()+60, row["slot_key"]))
-        with patch.object(integrity, "send_probe", send):
-            await integrity.execute_slot(self.row("health-0"))
-            committed = self.row("health-0")
-            original = integrity.store().job(committed["job_id"])
-            # Simulate process death before the slot publishes its job ID/summary.
-            with storage.cursor() as cur:
-                cur.execute("UPDATE layered_slots SET job_id=NULL,status='pending',summary_json='{}' WHERE slot_key=?", (row["slot_key"],))
-            await integrity.execute_slot(self.row("health-0"))
-            restored = self.row("health-0")
-            self.assertEqual(restored["job_id"], original["job_id"])
-            self.assertEqual(restored["status"], "completed")
-            self.assertTrue(restored["summary"]["health_pass"])
-            self.assertEqual(integrity.store().job(restored["job_id"])["deadline"], original["deadline"])
-            # Also cover death after durable terminal commit, before slot publication.
-            layered.update_slot(row["slot_key"], "running", summary={})
-            await integrity.execute_slot(self.row("health-0"))
-        self.assertEqual(len(sent), 1)
-        self.assertEqual(self.row("health-0")["summary"]["attempted"], 1)
+    def historical_job(self, slot, *, completed=False):
+        from features.integrity.execution import build_requests, resolve_registry_target
+        from features.integrity.durable import default_pricing
+        from features.integrity.scoring import project_observation
+        manifest = get_strategy(slot["method"])
+        requests = build_requests(manifest, self.schedule["layered_config"])
+        target = resolve_registry_target(self.registry, self.channel["id"], slot["model"], slot["protocol"], require_online=True)
+        ledger = integrity.store()
+        job = ledger.enqueue(idempotency_key=slot["slot_key"], target_snapshot=target.snapshot,
+            strategy={"strategy_id": manifest.strategy_id, "manifest_hash": manifest.manifest_hash},
+            requests=requests, limits={"max_requests":len(requests),"max_input_tokens":sum(r.input_tokens_reserved for r in requests),"max_output_tokens":sum(r.output_tokens_reserved for r in requests)},
+            deadline=time.time()+3600, pricing=default_pricing(slot["model"]), principal="workbench")
+        claimed=ledger.claim(job_id=job["job_id"],owner="synthetic-legacy")
+        session=ledger.session(job["job_id"],claimed["owner"])
+        for request in requests if completed else requests[:1]:
+            attempt=session.reserve(request,target)
+            if completed:
+                raw={"status":"completed","text":str(request.probe.get("expected", "OK"))}
+                session.complete(request,attempt,project_observation(manifest,request.probe["id"],raw))
+        if completed:
+            session.finish("completed","",[])
+        return ledger.job(job["job_id"]), session, requests[0], target
 
-    async def test_user_recorded_status_rejects_frozen_plan_without_send(self):
-        self.registry.save({**self.registry.get(self.channel["id"]), "status":"recorded", "api_key":""}, self.channel["id"], self.registry.get(self.channel["id"])["version"])
-        async def forbidden(*args, **kwargs):
-            self.fail("user offline Registry target sent a request")
-        with patch.object(integrity, "send_probe", forbidden):
-            await integrity.execute_slot(self.row("health-0"))
-        row = self.row("health-0")
-        self.assertEqual(row["status"], "skipped")
-        self.assertEqual(row["reason"], "target_unavailable")
-        self.assertEqual(integrity.store().list_jobs(), [])
+    async def test_retirement_preserves_unknown_and_fences_old_lease(self):
+        row=self.row("health-0")
+        job, session, request, target=self.historical_job(row)
+        layered.update_slot(row["slot_key"],"running")
+        with patch.object(integrity,"send_probe",side_effect=AssertionError("legacy request sent")):
+            timetable.retire_legacy()
+        retired=self.row("health-0")
+        self.assertEqual((retired["status"],retired["summary"]["unknown"]),("cancelled",1))
+        self.assertEqual(retired["job_id"],job["job_id"])
+        self.assertEqual(integrity.store().job(job["job_id"])["consumed"]["unknown_requests"],1)
+        self.assertFalse(session.complete(request,{"attempt_id":"late-result"},{"valid":True}))
+        self.assertEqual(storage.get_run(self.run_id)["summary"]["unknown"],1)
+        self.assertFalse(storage.has_active_run(self.schedule_id))
 
-    async def test_committed_canary_republishes_before_health_window_or_target_gates(self):
-        self.settle_other_slots({"health-3", "canary"})
-        now = time.time()
-        self.finish_health("health-3", now)
-        row = self.row("canary")
-        layered.update_slot(row["slot_key"], "pending", channel_id=self.channel["id"], dependency=self.row("health-3")["slot_key"])
+    async def test_retirement_rebuilds_committed_canary_before_cancelling(self):
+        row=self.row("canary")
+        row["registry_channel_id"]=self.channel["id"]
+        layered.update_slot(row["slot_key"],"running",channel_id=self.channel["id"])
+        job, _, _, _=self.historical_job(row,completed=True)
+        with patch.object(integrity,"send_probe",side_effect=AssertionError("committed Canary resent")):
+            timetable.retire_legacy()
+        restored=self.row("canary")
+        self.assertEqual((restored["status"],restored["summary"]["attempted"]),("completed",192))
+        self.assertEqual(restored["job_id"],job["job_id"])
+        self.assertEqual(restored["summary"]["observed_at"],job["updated_at"])
+
+    async def test_retirement_recovers_parent_after_all_slots_settled(self):
+        self.settle_other_slots(set())
         with storage.cursor() as cur:
-            cur.execute("UPDATE layered_slots SET due=?,deadline=? WHERE slot_key=?", (now-1,now+12*3600,row["slot_key"]))
-        expected = {p.probe_id:str(p.expected) for p in get_strategy("canary").probes}
-        sent = []
-        async def send(channel, probe, *, before_send):
-            await before_send();sent.append(probe["id"])
-            return {"status":"completed", "text":expected[probe["id"]], "input_tokens_reported":1, "output_tokens_reported":1}
-        with patch.object(integrity, "send_probe", send):
-            await integrity.execute_slot(self.row("canary"))
-        original = integrity.store().job(self.row("canary")["job_id"])
-        self.assertEqual(original["consumed"]["requests"], 192)
-        current = self.registry.get(self.channel["id"])
-        self.registry.save({**current, "api_key":"synthetic-replaced"}, current["id"], current["version"])
-        for bound in (True,False):
-            with self.subTest(bound=bound):
-                with storage.cursor() as cur:
-                    cur.execute("UPDATE layered_slots SET status=?,summary_json='{}',job_id=? WHERE slot_key=?",
-                        ("running" if bound else "pending",original["job_id"] if bound else None,row["slot_key"]))
-                async def forbidden(*args, **kwargs):
-                    self.fail("committed canary was resent")
-                with patch.dict(os.environ, {"EVAL_INTEGRITY_EXECUTOR":"live"}), patch.object(integrity,"send_probe",forbidden):
-                    await integrity.tick(now+13*3600)
-                restored = self.row("canary")
-                self.assertEqual(restored["job_id"], original["job_id"])
-                self.assertEqual(restored["status"], "completed")
-                self.assertEqual(restored["summary"]["attempted"], 192)
-                self.assertEqual(restored["summary"]["valid"], 192)
-                self.assertEqual(restored["summary"]["observed_at"], original["updated_at"])
-                self.assertEqual(storage.get_run(self.run_id)["summary"]["attempted"], 193)
-        self.assertEqual(len(sent), 192)
+            cur.execute("UPDATE runs SET status='running' WHERE id=?",(self.run_id,))
+        timetable.retire_legacy()
+        self.assertEqual(storage.get_run(self.run_id)["status"],"incomplete")
+        self.assertFalse(storage.has_active_run(self.schedule_id))
+        self.assertIsNone(integrity.select_ready(time.time()))
 
     async def test_incident_requires_consecutive_valid_conditions_and_cooldown(self):
         config = self.schedule["layered_config"]

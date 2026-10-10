@@ -9,7 +9,8 @@ from functools import lru_cache
 from zoneinfo import ZoneInfo
 
 from shared.registry import get_registry, RegistryError
-from features.integrity.execution import build_requests, execute_requests
+from features.integrity.execution import execute_requests
+from features.integrity import retries
 from features.integrity.durable import IntegrityStore, default_pricing
 from features.integrity.strategies import get_strategy
 from features.integrity.scoring import project_observation
@@ -22,12 +23,12 @@ _reconciled = {}
 
 @lru_cache(maxsize=3)
 def strategy(method):
-    return get_strategy(method)
+    return get_strategy("nerfed-api" if method == "nerfed" else method)
 
 
 @lru_cache(maxsize=3)
 def fixed_requests(method):
-    return build_requests(strategy(method), timetable.DEFAULTS)
+    return retries.requests(strategy(method), timetable.DEFAULTS)
 
 
 def store():
@@ -54,13 +55,17 @@ def publish(slot, job):
     manifest = strategy(slot["method"])
     config = slot["snapshot"]["layered_config"]
     baseline_id = config.get("baseline_ids", {}).get(str(slot["registry_channel_id"]), config.get("baseline_id") if len(config["registry_channel_ids"]) == 1 else None)
-    summary = integrity.slot_summary(slot, job, manifest, {**config, "baseline_id": baseline_id}, job["target_snapshot"])
+    with get_registry().connect() as conn:
+        attempts = [dict(r) for r in conn.execute("SELECT * FROM integrity_attempts WHERE job_id=?", (job["job_id"],))]
+    logical = retries.summarize(attempts, len(manifest.probes))
+    outputs = logical.pop("outputs")
+    summary = integrity.slot_summary(slot, {**job, "results": outputs}, manifest, config, job["target_snapshot"])
+    summary.update(logical)
     with get_registry().connect() as conn:
         span = conn.execute("SELECT MIN(created_at),MAX(completed_at) FROM integrity_attempts WHERE job_id=?", (job["job_id"],)).fetchone()
     summary["sampling_started_at"] = span[0]
     summary["sampling_finished_at"] = span[1] if not summary["unknown"] else job["updated_at"]
     summary["sampling_end_basis"] = "local_wait_ended_upstream_unknown" if summary["unknown"] else "confirmed_results"
-    summary["request_errors"] = sum(r.get("status", "completed") not in {"completed", "success", "ok"} for r in job["results"])
     final = job["status"]
     if final == "completed" and (summary["unknown"] or summary["not_run"]):
         final = "partially_completed"
@@ -71,32 +76,24 @@ def publish(slot, job):
 def publish_progress(slot, job_id):
     """Read bounded numeric projections for this job, without rescoring its answers."""
     with get_registry().connect() as conn:
-        row = conn.execute("""SELECT COUNT(*),SUM(status='completed'),SUM(status='unknown'),
-            SUM(CASE WHEN status='completed' THEN COALESCE(json_extract(result_json,'$.valid'),0) ELSE 0 END),
-            SUM(CASE WHEN status='completed' THEN COALESCE(json_extract(result_json,'$.correct'),0) ELSE 0 END),
-            SUM(CASE WHEN status='completed' AND COALESCE(json_extract(result_json,'$.status'),'completed') NOT IN ('completed','success','ok') THEN 1 ELSE 0 END),
-            MIN(created_at),MAX(completed_at) FROM integrity_attempts WHERE job_id=?""", (job_id,)).fetchone()
-    attempted, confirmed, unknown, valid, correct, errors, started, finished = row
-    planned = timetable.request_limits(slot["method"])["max_requests"]
-    config = slot["snapshot"]["layered_config"]
-    baseline = config.get("baseline_ids", {}).get(str(slot["registry_channel_id"]))
-    summary = {"planned": planned, "attempted": attempted, "valid": valid or 0,
-               "invalid": (confirmed or 0) - (valid or 0), "unknown": unknown or 0,
-               "not_run": planned - attempted, "request_errors": errors or 0, "baseline_id": baseline,
-               "score": {"status": "incomplete", "correct": correct or 0, "total": planned},
-               "sampling_started_at": started, "sampling_finished_at": finished,
-               "sampling_end_basis": "latest_confirmed_result_batch_in_progress", "calibration_status": "unvalidated"}
+        attempts = [dict(r) for r in conn.execute("SELECT * FROM integrity_attempts WHERE job_id=?", (job_id,))]
+    summary = retries.summarize(attempts, len(strategy(slot["method"]).probes))
+    summary.pop("outputs")
+    summary.update(score={"status": "incomplete"},
+                   sampling_started_at=min((a["created_at"] for a in attempts), default=None),
+                   sampling_finished_at=max((a["completed_at"] or 0 for a in attempts), default=None),
+                   sampling_end_basis="latest_confirmed_result_batch_in_progress", calibration_status="unvalidated")
     timetable.update_slot(slot["slot_key"], "pending", summary=summary, last_probe=time.time())
     refresh_run(slot["run_id"])
 
 
 def refresh_run(run_id):
     keys = ("planned", "attempted", "valid", "invalid", "unknown", "not_run")
-    planned = "CASE method WHEN 'canary' THEN 192 WHEN 'modeltrace' THEN 3 ELSE 1 END"
+    planned = "3"
     sums = ",".join(f"COALESCE(SUM(COALESCE(json_extract(summary_json,'$.{k}'),{planned if k in {'planned', 'not_run'} else 0})),0)" for k in keys)
     with get_registry().connect() as conn:
-        counts = conn.execute("SELECT COUNT(*),SUM(status NOT IN ('completed','partially_completed','cancelled','expired','rejected','failed','skipped')),SUM(status!='completed')," + sums + " FROM integrity_occurrences WHERE run_id=?", (run_id,)).fetchone()
-        day = conn.execute("SELECT * FROM integrity_timetable_days WHERE run_id=?", (run_id,)).fetchone()
+        counts = conn.execute("SELECT COUNT(*),SUM(status NOT IN ('completed','partially_completed','cancelled','expired','rejected','failed','skipped')),SUM(status!='completed')," + sums + " FROM integrity_sampling_occurrences WHERE run_id=?", (run_id,)).fetchone()
+        day = conn.execute("SELECT * FROM integrity_sampling_days WHERE run_id=?", (run_id,)).fetchone()
     total, active, not_completed = counts[:3]
     counters = dict(zip(keys, counts[3:]))
     terminal = not active
@@ -111,8 +108,8 @@ def refresh_run(run_id):
 def select_ready(now):
     registry = get_registry()
     with registry.connect() as conn:
-        candidates = [dict(r) for r in conn.execute("""SELECT o.slot_key,o.dependency FROM integrity_occurrences o
-          JOIN integrity_timetable_days d ON d.run_id=o.run_id
+        candidates = [dict(r) for r in conn.execute("""SELECT o.slot_key,o.dependency FROM integrity_sampling_occurrences o
+          JOIN integrity_sampling_days d ON d.run_id=o.run_id
           WHERE o.status='pending' AND o.due<=? AND o.deadline>? AND d.cancelled=0
           ORDER BY o.priority,o.deadline,o.last_probe,o.registry_channel_id,o.due LIMIT 64""", (now, now))]
     for slot in candidates:
@@ -133,7 +130,7 @@ def settle_pending(now):
     """Bounded recovery/expiry reads never parse complete historical job results."""
     registry = get_registry()
     with registry.connect() as conn:
-        rows = [timetable.decode(r) for r in conn.execute("""SELECT o.* FROM integrity_occurrences o
+        rows = [timetable.decode(r) for r in conn.execute("""SELECT o.* FROM integrity_sampling_occurrences o
           LEFT JOIN integrity_jobs j ON j.job_id=o.job_id
           WHERE o.status IN ('pending','running') AND
           (o.deadline<=? OR j.status IN ('completed','partially_completed','cancelled','expired','rejected','failed'))
@@ -148,10 +145,12 @@ def settle_pending(now):
             refresh_run(slot["run_id"])
     if _task is None or _task.done():
         with registry.connect() as conn:
-            conn.execute("UPDATE integrity_occurrences SET status='pending' WHERE status='running' AND job_id IN (SELECT job_id FROM integrity_jobs WHERE status='queued')")
+            conn.execute("UPDATE integrity_sampling_occurrences SET status='pending' WHERE status='running' AND job_id IN (SELECT job_id FROM integrity_jobs WHERE status='queued')")
 
 
 async def execute_probe(slot, *, sender=None):
+    if slot["method"] not in timetable.METHODS or not slot["slot_key"].startswith("sampling-v3:"):
+        raise ValueError("旧定时任务已停用")
     ledger = store()
     manifest = strategy(slot["method"])
     config = slot["snapshot"]["layered_config"]
@@ -168,7 +167,7 @@ async def execute_probe(slot, *, sender=None):
     try:
         if job is None:
             with get_registry().connect() as conn:
-                day = conn.execute("SELECT limits_json,budget_timezone FROM integrity_timetable_days WHERE run_id=?", (slot["run_id"],)).fetchone()
+                day = conn.execute("SELECT limits_json,budget_timezone FROM integrity_sampling_days WHERE run_id=?", (slot["run_id"],)).fetchone()
             job = ledger.enqueue(idempotency_key=slot["slot_key"], target_snapshot=target.snapshot,
                 strategy={"strategy_id": manifest.strategy_id, "manifest_hash": manifest.manifest_hash}, requests=requests,
                 limits=timetable.request_limits(slot["method"]), not_before=slot["due"], deadline=slot["deadline"],
@@ -187,7 +186,8 @@ async def execute_probe(slot, *, sender=None):
                     "status": raw.get("status", "unknown"),
                     "started_at": started, "finished_at": finished}
         state = await execute_requests(ledger.session(claimed["job_id"], claimed["owner"], reserve_guard=timetable.send_guard(slot)),
-            requests, lambda: integrity.resolve_target(slot, slot["snapshot"]), sender or send_probe, project, yield_after=1)
+            requests, lambda: integrity.resolve_target(slot, slot["snapshot"]), sender or send_probe, project, yield_after=1,
+            skip_request=retries.skip_reason, record_connect_failure=True)
         if state == "yielded":
             publish_progress(slot, job["job_id"])
         elif state != "lost":
@@ -240,9 +240,9 @@ async def stop():
 def cancel_run(run_id):
     with get_registry().connect() as conn:
         conn.execute("BEGIN IMMEDIATE")
-        conn.execute("UPDATE integrity_timetable_days SET cancelled=1 WHERE run_id=?", (run_id,))
-        conn.execute("UPDATE integrity_jobs SET cancel_requested=1,status=CASE WHEN status='queued' THEN 'cancelled' ELSE status END WHERE job_id IN (SELECT job_id FROM integrity_occurrences WHERE run_id=? AND status IN ('pending','running'))", (run_id,))
-        conn.execute("UPDATE integrity_occurrences SET status='cancelled',reason='cancel_requested' WHERE run_id=? AND status='pending'", (run_id,))
+        conn.execute("UPDATE integrity_sampling_days SET cancelled=1 WHERE run_id=?", (run_id,))
+        conn.execute("UPDATE integrity_jobs SET cancel_requested=1,status=CASE WHEN status='queued' THEN 'cancelled' ELSE status END WHERE job_id IN (SELECT job_id FROM integrity_sampling_occurrences WHERE run_id=? AND status IN ('pending','running'))", (run_id,))
+        conn.execute("UPDATE integrity_sampling_occurrences SET status='cancelled',reason='cancel_requested' WHERE run_id=? AND status='pending'", (run_id,))
     refresh_run(run_id)
 
 
@@ -256,7 +256,7 @@ def resume_run(run_id):
     if not schedule or not schedule["enabled"]:
         raise ValueError("计划已暂停或删除")
     with get_registry().connect() as conn:
-        control = conn.execute("SELECT * FROM integrity_timetable_controls WHERE schedule_id=?", (schedule["id"],)).fetchone()
+        control = conn.execute("SELECT * FROM integrity_sampling_controls WHERE schedule_id=?", (schedule["id"],)).fetchone()
     ledger = store()
     for slot in active:
         if not timetable.selected(control, slot):
@@ -265,5 +265,5 @@ def resume_run(run_id):
             ledger.resume(slot["job_id"])
         timetable.update_slot(slot["slot_key"], "pending", reason="explicit_resume")
     with get_registry().connect() as conn:
-        conn.execute("UPDATE integrity_timetable_days SET cancelled=0 WHERE run_id=?", (run_id,))
+        conn.execute("UPDATE integrity_sampling_days SET cancelled=0 WHERE run_id=?", (run_id,))
     refresh_run(run_id)

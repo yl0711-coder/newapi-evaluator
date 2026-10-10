@@ -19,6 +19,8 @@ from . import service
 VERSION = "three-method-api-v1"
 METHODS = ("traceone", "modeltrace", "nerfed-api")
 CONFIG = {"reasoning_effort": "low"}
+CANARY_VERSION = "canary-active-v1"
+KINDS = {VERSION: METHODS, "nerfed-api-v1": ("nerfed-api",), CANARY_VERSION: ("canary",)}
 
 
 class UnifiedService:
@@ -50,7 +52,7 @@ class UnifiedService:
         return rows
 
     def _layout(self, model, kind):
-        methods = METHODS if kind == VERSION else ("nerfed-api",)
+        methods = KINDS[kind]
         manifests = {m: get_strategy(m) for m in ("health", *methods)}
         unsupported = {m for m in methods if m == "modeltrace" and
                        model not in {r["id"] for r in load_bank(manifests[m])["models"]}}
@@ -59,14 +61,22 @@ class UnifiedService:
         return manifests, unsupported, requests
 
     def submit(self, *, registry_channel_id, model="gpt-6-astra", protocol="responses",
-               idempotency_key, confirm_live, principal="workbench", kind=VERSION, target_snapshot=None):
+               idempotency_key, confirm_live, principal="workbench", kind=VERSION, target_snapshot=None, baseline_id=None):
         if confirm_live is not True:
-            raise RegistryError("必须明确确认本次最多8次主动请求")
+            raise RegistryError("必须明确确认本次有限主动请求")
         if model not in {"gpt-6-astra", "gpt-6.1-sol"} or protocol != "responses":
             raise RegistryError("首版三方法套餐支持 Astra / 6.1 Sol 的 Responses、low 条件")
         service._principal(principal); service._identity(idempotency_key)
-        if kind not in {VERSION, "nerfed-api-v1"}:
+        if kind not in KINDS:
             raise RegistryError("统一任务类型不受支持")
+        if kind == CANARY_VERSION and (model != "gpt-6-astra" or principal != "workbench"):
+            raise RegistryError("主动 Canary 当前仅支持工作台 Astra / Responses / low")
+        if baseline_id is not None and (kind != CANARY_VERSION or type(baseline_id) is not int or baseline_id < 1):
+            raise RegistryError("可信参照只能用于主动 Canary")
+        if baseline_id is not None:
+            from features.stability.app import layered
+            if layered.get_baseline(baseline_id) is None:
+                raise RegistryError("可信参照不存在")
         if principal == "monitor":
             from .monitor_adapter import resolve_monitor_target
             target = resolve_monitor_target({"target_snapshot": target_snapshot})
@@ -77,8 +87,18 @@ class UnifiedService:
                 raise RegistryError("工作台不能覆盖目标快照")
             target = self.target(registry_channel_id, model, protocol)
         manifests, _, requests = self._layout(model, kind)
+        if baseline_id is not None:
+            from features.stability.app import layered
+            baseline = layered.get_baseline(baseline_id)
+            manifest = manifests["canary"]
+            expected = self.canary_conditions({"target_snapshot": target.snapshot, "strategy": {"expected_model": model}}, manifest)
+            if (baseline.get("conditions") != expected or set(baseline.get("outcomes", {})) != {p.probe_id for p in manifest.probes}
+                    or any(baseline.get(k) != getattr(manifest, k) for k in ("asset_hash", "scorer_hash", "sampling_hash", "manifest_hash"))):
+                raise RegistryError("可信参照与当前 Canary 目标、条件或版本不一致")
         strategy = {"strategy_id": kind, "version": VERSION, "expected_model": model,
                     **{m + "_hash": manifest.manifest_hash for m, manifest in manifests.items()}}
+        if kind == CANARY_VERSION:
+            strategy["baseline_id"] = str(baseline_id or "none")
         limits = {"max_requests": len(requests), "max_input_tokens": sum(r.input_tokens_reserved for r in requests),
                   "max_output_tokens": sum(r.output_tokens_reserved for r in requests)}
         key = "unified:" + canonical_hash({"principal": principal, "key": idempotency_key})
@@ -89,7 +109,7 @@ class UnifiedService:
                     raise Conflict("同一幂等键不能改变目标、条件或版本")
                 return self.get(previous["job_id"], principal=principal)
             job = self.store.enqueue(idempotency_key=key, target_snapshot=target.snapshot, strategy=strategy,
-                requests=requests, limits=limits, deadline=time.time() + 600,
+                requests=requests, limits=limits, deadline=time.time() + (manifests["canary"].total_timeout_seconds if kind == CANARY_VERSION else 600),
                 pricing=default_pricing(model), principal=principal, budget_scope="review",
                 budget_key=key, plan_version=canonical_hash(strategy),
                 daily_limits=limits)
@@ -99,7 +119,7 @@ class UnifiedService:
     def _owned(self, job_id, principal, administrative=False):
         service._principal(principal)
         job = self.store.public(job_id)
-        if job["strategy"].get("strategy_id") not in {VERSION, "nerfed-api-v1"} or (
+        if job["strategy"].get("strategy_id") not in KINDS or (
                 job["principal"] != principal and not (administrative and principal == "workbench")):
             raise KeyError("统一任务不存在")
         return job
@@ -138,12 +158,18 @@ class UnifiedService:
                           "connection_fingerprint": job["target_snapshot"]["connection_fingerprint"],
                           "effort": "low", "stream": False, "retry": 0,
                           "max_output_tokens": manifest.max_output_tokens}
+            baseline = None
+            if method == "canary":
+                conditions = self.canary_conditions(job, manifest)
+                from features.stability.app import layered
+                baseline_id = job["strategy"].get("baseline_id", "none")
+                baseline = layered.get_baseline(int(baseline_id)) if baseline_id != "none" else None
             try:
-                score = score_strategy(manifest, outputs, expected_model=model, conditions=conditions)
+                score = score_strategy(manifest, outputs, expected_model=model, conditions=conditions, baseline=baseline)
             except ValueError:
                 score = {"status": "unknown", "reason": "scorer_or_asset_changed", "identity_authenticated": False}
             status = "unsupported" if method in unsupported else "unknown" if unknown else "skipped" if reason == "health_failed_or_unmeasured" else "not_run" if not actual else "completed" if len(outputs) == manifest.max_requests else "incomplete"
-            reports.append({"method": method, "label": {"traceone":"TraceOne", "modeltrace":"ModelTrace", "nerfed-api":"is-gpt-nerfed (API)"}[method],
+            reports.append({"method": method, "label": {"traceone":"TraceOne", "modeltrace":"ModelTrace", "nerfed-api":"is-gpt-nerfed (API)", "canary":"Canary 主动能力测试"}[method],
                 "version": manifest.version, "status": status, "reason": reason, "planned": manifest.max_requests,
                 "attempted": len(actual), "valid": sum(bool(o["valid"]) for o in outputs),
                 "invalid": sum(not o["valid"] for o in outputs), "unknown": unknown, "not_run": not_run,
@@ -154,14 +180,36 @@ class UnifiedService:
                 "score": score, "conditions": conditions,
                 "limits": {"max_requests": manifest.max_requests, "max_retries": 0,
                            "request_timeout_seconds": manifest.request_timeout_seconds},
+                "request_errors": sum(r.get("status") not in {"completed", "success", "ok"} for r in outputs),
                 "limitation": "普通API行为线索，未校准；相关数字指纹不能多票认证身份或实际权重。"})
         return {**job, "task_id": job_id, "reports": reports, "health": health,
                 "executor": service.executor_status(), "task_version": job["strategy"]["strategy_id"]}
 
+    def canary_conditions(self, job, manifest):
+        from features.stability.app import layered
+        target = job["target_snapshot"]
+        return {"provider": f"registry:{target['registry_channel_id']}:{target['connection_fingerprint']}",
+                "model": job["strategy"]["expected_model"], "protocol": target["protocol"],
+                "parameters": {"reasoning_effort": "low", "stream": False,
+                    "system_prompt_hash": layered.canonical_hash([p.system_prompt for p in manifest.probes]),
+                    "wrapper": "integrity-transport-v1", "sampling": "fixed-probes",
+                    "max_output_tokens": manifest.max_output_tokens, "retry_policy": "none"},
+                "budget": {"max_requests": manifest.max_requests, "request_timeout_seconds": manifest.request_timeout_seconds,
+                           "total_timeout_seconds": manifest.total_timeout_seconds, "window": "canary-active-v1"}}
+
+    def lock_canary_baseline(self, job_id, label):
+        job = self.get(job_id, principal="workbench")
+        if job["task_version"] != CANARY_VERSION or job["status"] != "completed":
+            raise ValueError("只能锁定完整主动 Canary 任务")
+        report = next(r for r in job["reports"] if r["method"] == "canary")
+        from features.stability.app import layered
+        return layered.persist_baseline("active-canary:" + job_id, label,
+            {"method": "canary", "status": report["status"], "summary": report})
+
     def list(self, *, principal="workbench", administrative=False):
         return [self.get(j["job_id"], principal=principal, administrative=administrative)
-                for j in self.store.list_jobs(principal=None if administrative and principal == "workbench" else principal)
-                if j["strategy"].get("strategy_id") in {VERSION, "nerfed-api-v1"}]
+                for j in self.store.list_jobs(principal=None if administrative and principal == "workbench" else principal,
+                                             strategy_ids=tuple(KINDS))]
 
     def cancel(self, job_id, **kwargs):
         self._owned(job_id, **kwargs)
@@ -186,9 +234,7 @@ class UnifiedService:
             send = send_probe
         count = 0
         self.store.recover_expired_leases()
-        for job in self.list(administrative=True):
-            if job["status"] != "queued":
-                continue
+        for job in self.store.list_jobs(strategy_ids=tuple(KINDS), status="queued", oldest_first=True):
             claimed = self.store.claim(job_id=job["job_id"], owner=service.EXECUTOR_ID)
             if not claimed:
                 continue

@@ -38,7 +38,7 @@ class ResponsesRequestTests(unittest.TestCase):
         result = inspect("https://synthetic.example/custom/v1", "gpt-6-astra", "openai")
         self.assertEqual(result["requests_sent"], 0)
         self.assertEqual(result["protocol"], "responses")
-        self.assertEqual(len(result["settings"]), 5)
+        self.assertEqual(len(result["settings"]), 6)
         self.assertNotIn("synthetic.example", json.dumps(result))
         self.assertNotIn("custom", json.dumps(result))
         self.assertTrue(all(set(row["parameters"]) == {"model", "stream", "store", "max_output_tokens", "reasoning"}

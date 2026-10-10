@@ -254,15 +254,21 @@ def lock_baseline(slot_key, label):
         row = timetable.get_slot(slot_key)
     else:
         row = next((s for s in slots() if s["slot_key"] == slot_key), None)
-    if row and slot_key.startswith("timetable:") and (row["summary"].get("request_errors") or row["summary"].get("unknown") or row["summary"].get("not_run")):
-        raise ValueError("请求异常或缺测的批次不能锁定可信参照")
-    score = (row or {}).get("summary", {}).get("score", {})
+    return persist_baseline(slot_key, label, row)
+
+
+def persist_baseline(source_key, label, row):
+    init_tables()
+    summary = (row or {}).get("summary", {})
+    score = summary.get("score", {})
     outcomes = score.get("outcomes", {})
-    if not row or row["method"] != "canary" or row["status"] != "completed" or len(outcomes) != 192 or row["summary"].get("attempted") != 192 or not score.get("conditions"):
-        raise ValueError("只能显式锁定完整、同条件的 192 项结果")
+    if (not row or row["method"] != "canary" or row["status"] != "completed"
+            or len(outcomes) != 192 or summary.get("attempted") != 192 or not score.get("conditions")
+            or summary.get("request_errors") or summary.get("unknown") or summary.get("not_run")):
+        raise ValueError("只能显式锁定完整、同条件且无传输异常的 192 项结果")
     with storage.cursor() as cur:
-        cur.execute("INSERT OR IGNORE INTO integrity_baselines(source_slot_key,label,score_json,selected_at) VALUES(?,?,?,?)", (slot_key, label[:80], storage.dumps(score), time.time()))
-        return cur.execute("SELECT id FROM integrity_baselines WHERE source_slot_key=?", (slot_key,)).fetchone()[0]
+        cur.execute("INSERT OR IGNORE INTO integrity_baselines(source_slot_key,label,score_json,selected_at) VALUES(?,?,?,?)", (source_key, label[:80], storage.dumps(score), time.time()))
+        return cur.execute("SELECT id FROM integrity_baselines WHERE source_slot_key=?", (source_key,)).fetchone()[0]
 
 
 def record_incident(slot, score, config):

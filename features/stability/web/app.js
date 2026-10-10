@@ -1,6 +1,6 @@
 const state = {
   inventory: [], channels: [], candidates: [], baselines: [], baselineIds: {}, schedules: [], runs: [], reportGroups: [],
-  maxConcurrentProbes: 2, timetable: {canary_times: [], modeltrace_times: []}, previewGeneration: 0,
+  maxConcurrentProbes: 2, timetable: {modeltrace_times: [], nerfed_times: []}, previewGeneration: 0,
   reportView: "overview", reportDemo: false, reportData: null, reportGeneration: 0, realReportFilters: null,
 };
 const $ = (selector) => document.querySelector(selector);
@@ -57,7 +57,7 @@ async function loadHealth() {
     $("#health-detail").textContent = `${data.scheduler.active_runs} 个任务运行中 · 请求最多 ${state.maxConcurrentProbes} 并发`;
     const scheduled = data.scheduled_integrity_executor ?? data.layered_executor;
     $("#layered-executor-status").textContent = scheduled?.enabled && scheduled?.running
-      ? "定时采样已启用；Canary 与 ModelTrace 按已保存的启用计划自动运行，暂停计划即可停止。"
+      ? "定时采样已启用；MT 与 Nerfed 按已保存的启用计划自动运行，暂停计划即可停止。"
       : "定时采样服务未运行；请检查服务状态，已保存的计划时刻不会自动补采。";
   } catch {
     $("#health-card").classList.add("bad");
@@ -165,11 +165,11 @@ function renderSchedules() {
   root.replaceChildren(...state.schedules.map((schedule) => {
     const card = text("article", "", "panel");
     card.append(text("h3", schedule.name));
-    if (schedule.plan_version === "layered-integrity-v2") {
+    if (schedule.plan_version === "layered-integrity-v3") {
       const c = schedule.layered_config, n = c.registry_channel_ids.length;
-      const total = n * (192 * c.canary_times.length + 3 * c.modeltrace_times.length + new Set([...c.canary_times, ...c.modeltrace_times]).size);
-      card.append(text("p", `每天 · ${n} 渠道 · Canary ${c.canary_times.length} 批 × 192 题 · MT ${c.modeltrace_times.length} 批 × 3 题 · ${total} 次请求上限`));
-      card.append(text("p", `${schedule.timezone} · Astra / Responses / low · 在途 1 · 无每日金额上限${total === 0 ? " · 零时段，未安排采样" : ""}`));
+      const total = n * 6 * c.modeltrace_times.length;
+      card.append(text("p", `每天 · ${n} 渠道 · MT / Nerfed 同轮采样 · ${c.modeltrace_times.length} 个十分钟时刻`));
+      card.append(text("p", `${schedule.timezone} · 首次 ${total} 次，断联最多再重试三次 · 用户报告仅展示结论`));
     } else if (schedule.plan_version === "layered-integrity-v1") {
       const config = schedule.layered_config;
       const n = config.registry_channel_ids.length;
@@ -210,10 +210,8 @@ function renderLegacyPicker(selected = []) {
 
 function renderChannelPicker(selected = [], registrySelected = []) {
   const version = $("#schedule-pack").value;
-  const v2 = version === "layered-integrity-v2", layered = v2 || version === "layered-integrity-v1";
-  $("#layered-fields").hidden = $("#layered-budget-hint").hidden = v2 || !layered;
+  const v2 = version === "layered-integrity-v3", layered = v2;
   $("#timetable-fields").hidden = !v2;
-  $("#baseline-field").hidden = v2 || !layered;
   for (const id of ["times","rounds","interval","notify-delay","concurrency","success","timeout","break","speed-mode","baseline-runs","slow-ratio","p95"]) $(`#schedule-${id}`).closest("label").hidden = layered;
   if (!layered) { renderLegacyPicker(selected); return; }
   const root = $("#channel-picker");
@@ -236,15 +234,6 @@ function renderChannelPicker(selected = [], registrySelected = []) {
       if (!choices.some(item => item.eligible)) eligible = false;
       select.disabled = !choices.length || choices.every(item => !item.eligible);
       row.append(text("span", model), select);
-    }
-    if (v2) {
-      const baseline = document.createElement("select"); baseline.dataset.baseline = channel.registry_channel_id;
-      baseline.setAttribute("aria-label", `${channel.name} 可信 Canary baseline`);
-      const choices = state.baselines.filter(b => b.score?.conditions?.provider?.startsWith(`registry:${channel.registry_channel_id}:`));
-      baseline.replaceChildren(new Option("未选定，仅当前成绩", ""), ...choices.map(b => new Option(`#${b.id} ${b.label}`, b.id)));
-      baseline.value = state.baselineIds[channel.registry_channel_id] ?? "";
-      baseline.addEventListener("change", () => {if (baseline.value) state.baselineIds[channel.registry_channel_id] = Number(baseline.value); else delete state.baselineIds[channel.registry_channel_id];});
-      row.append(text("span", "该渠道可信 Canary baseline"), baseline);
     }
     input.disabled = !eligible;
     input.addEventListener("change", updateTimetablePreview);
@@ -305,17 +294,17 @@ function renderTimetable() {
     const row = document.createElement("tr"); row.append(text("th", String(hour).padStart(2, "0")));
     for (const clock of times.slice(hour * 6, hour * 6 + 6)) {
       const cell = document.createElement("td");
-      for (const method of ["canary", "modeltrace"]) {
+      for (const method of ["modeltrace"]) {
         const label = text("label", ""), input = document.createElement("input");
         input.type = "checkbox"; input.dataset.method = method; input.dataset.clock = clock;
         input.checked = state.timetable[method + "_times"].includes(clock);
-        input.setAttribute("aria-label", `${method === "canary" ? "Canary" : "MT"} ${clock}`);
+        input.setAttribute("aria-label", `MT / Nerfed ${clock}`);
         input.addEventListener("change", () => {
           const key = method + "_times", selected = new Set(state.timetable[key]);
           input.checked ? selected.add(clock) : selected.delete(clock);
-          state.timetable[key] = [...selected].sort(); updateTimetablePreview();
+          state.timetable.modeltrace_times = [...selected].sort(); state.timetable.nerfed_times = [...state.timetable.modeltrace_times]; updateTimetablePreview();
         });
-        label.append(input, document.createTextNode(method === "canary" ? "C" : "MT")); cell.append(label, document.createElement("br"));
+        label.append(input, document.createTextNode("MT / N")); cell.append(label, document.createElement("br"));
       }
       row.append(cell);
     }
@@ -323,11 +312,11 @@ function renderTimetable() {
   }
   table.replaceChildren(head, body);
   const tools = $("#timetable-tools"); tools.replaceChildren();
-  for (const method of ["canary", "modeltrace"]) {
-    const group = document.createElement("fieldset"); group.append(text("legend", method === "canary" ? "Canary 时刻" : "MT 时刻"));
+  for (const method of ["modeltrace"]) {
+    const group = document.createElement("fieldset"); group.append(text("legend", "MT / Nerfed 同步采样时刻"));
     const actions = text("div", "", "actions");
-    const select = chosen => {state.timetable[method + "_times"] = chosen; renderTimetable(); updateTimetablePreview();};
-    actions.append(action("全选", () => select([...times])), action("清空", () => select([])), action("恢复默认", () => select(method === "canary" ? times.filter((_, i) => i % 6 === 0) : [...times])), action("仅整点", () => select(times.filter((_, i) => i % 6 === 0))));
+    const select = chosen => {state.timetable = {modeltrace_times: [...chosen], nerfed_times: [...chosen]}; renderTimetable(); updateTimetablePreview();};
+    actions.append(action("全选", () => select([...times])), action("清空", () => select([])), action("恢复默认", () => select([...times])), action("仅整点", () => select(times.filter((_, i) => i % 6 === 0))));
     const start = document.createElement("select"), end = document.createElement("select");
     for (const clock of times) {start.add(new Option(clock, clock)); end.add(new Option(clock, clock));}
     start.value = "09:00"; end.value = "18:00";
@@ -337,13 +326,13 @@ function renderTimetable() {
   }
 }
 async function updateTimetablePreview() {
-  if ($("#schedule-pack").value !== "layered-integrity-v2") return;
+  if ($("#schedule-pack").value !== "layered-integrity-v3") return;
   const targets = selectedTimetableTargets(), generation = ++state.previewGeneration;
   if (!targets.length) {$("#timetable-preview").textContent = "选择渠道后显示每日请求量。"; return;}
   try {
-    const p = await api("/api/timetable/preview", {method: "POST", body: JSON.stringify({name: "计划预览", daily_times: "00:00", timezone: $("#schedule-timezone").value, targets, plan_version: "layered-integrity-v2", layered_config: state.timetable})});
+    const p = await api("/api/timetable/preview", {method: "POST", body: JSON.stringify({name: "计划预览", daily_times: "00:00", timezone: $("#schedule-timezone").value, targets, plan_version: "layered-integrity-v3", layered_config: state.timetable})});
     if (generation !== state.previewGeneration) return;
-    $("#timetable-preview").textContent = `${p.date} · ${p.channels} 渠道 · Canary ${p.canary_batches} 批 × 192 / MT ${p.modeltrace_batches} 批 × 3 / 共享探活 ${p.shared_health} 次 · 每日最多 ${p.max_requests} 次请求${p.max_requests === 0 ? " · 零时段，未安排采样" : ""} · 不设每日金额上限`;
+    $("#timetable-preview").textContent = `${p.date} · ${p.channels} 渠道 · MT / Nerfed 每轮各 3 题 · 首次 ${p.initial_requests} 次，含断联重试最多 ${p.max_requests} 次${p.max_requests === 0 ? " · 未安排采样" : ""}`;
   } catch (error) {if (generation === state.previewGeneration) $("#timetable-preview").textContent = error.message;}
 }
 function reportMultiplier(item) {
@@ -396,9 +385,8 @@ function renderTimetableOverview(root, data) {
       if (!records.length) td.append(text("p", "无符合筛选的采样记录", "muted"));
       for (const record of records) {
         const cell = text("article", "", `timetable-cell state-${record.state}`); cell.dataset.record = recordIdentity(record);
-        cell.append(text("strong", record.status), text("small", `${record.state === "waiting" ? "配置" : "采样时"}倍率：${reportMultiplier(record)}`));
-        const canary = text("div", "", "canary-result"); appendCanaryReport(canary, record, data.synthetic, false); canary.firstChild.prepend("Canary：");
-        cell.append(canary, text("p", `MT：${record.modeltrace.label}`), reportEvidence(record, data.synthetic, true));
+        cell.append(text("strong", record.conclusion?.label || record.status));
+        if (record.canary) cell.append(reportEvidence(record, data.synthetic, true));
         td.append(cell);
       }
       tr.append(td);
@@ -419,16 +407,18 @@ function renderTimetableReport(root, data, run = null, view = "detail") {
   if (view === "overview") {renderTimetableOverview(root, data); return;}
   const scroll = text("div", "", "local-scroll"), table = document.createElement("table"); table.className = "detail-table";
   const head = document.createElement("thead"), h = document.createElement("tr");
-  ["计划时刻 / 实际采样时段（时区）", "渠道 / Registry ID", "渠道倍率", "Canary 成绩 / 基线变化", "ModelTrace 结论", "综合状态 / 证据"].forEach(v => h.append(text("th", v))); head.append(h);
+  ["计划时刻（时区）", "渠道", "结论"].forEach(v => h.append(text("th", v))); head.append(h);
   const body = document.createElement("tbody");
   for (const item of data.rows) {
     const row = document.createElement("tr"); row.dataset.channel = item.registry_channel_id; row.dataset.record = recordIdentity(item);
     const time = document.createElement("td"); time.append(text("p", item.scheduled_at), text("p", item.sampling_period), text("small", `${item.timezone} · ${data.synthetic ? "演示" : "Run"} ${item.run_id}`));
     const channel = text("td", `${item.channel_name} · Registry #${item.registry_channel_id}`);
-    const multiplier = text("td", reportMultiplier(item));
-    const canary = document.createElement("td"), mt = text("td", item.modeltrace.label), status = text("td", item.status);
-    appendCanaryReport(canary, item, data.synthetic); status.append(reportEvidence(item, data.synthetic));
-    row.append(time, channel, multiplier, canary, mt, status); body.append(row);
+    const decision = text("td", item.conclusion?.label || item.status);
+    if (item.canary) {
+      appendCanaryReport(decision, item, data.synthetic);
+      decision.append(text("p", item.modeltrace.label), reportEvidence(item, data.synthetic));
+    }
+    row.append(time, channel, decision); body.append(row);
   }
   table.append(head, body); scroll.append(table); root.append(scroll);
 }
@@ -512,16 +502,11 @@ async function openSchedule(schedule = null) {
   $("#schedule-enabled").checked = schedule ? Boolean(schedule.enabled) : true;
   const [candidateData, baselineData] = await Promise.all([api("/api/candidates"), api("/api/baselines")]);
   state.candidates = candidateData.candidates; state.baselines = baselineData.baselines;
-  $("#schedule-pack").value = schedule?.plan_version || "layered-integrity-v2";
+  $("#schedule-pack").value = schedule?.plan_version || "layered-integrity-v3";
   const config = schedule?.layered_config || {};
   state.baselineIds = {...(config.baseline_ids ?? {})};
-  state.timetable = {canary_times: [...(config.canary_times ?? timetableGridTimes().filter((_, i) => i % 6 === 0))], modeltrace_times: [...(config.modeltrace_times ?? timetableGridTimes())]};
+  state.timetable = {modeltrace_times: [...(config.modeltrace_times ?? timetableGridTimes())], nerfed_times: [...(config.nerfed_times ?? config.modeltrace_times ?? timetableGridTimes())]};
   renderTimetable();
-  for (const [id, key, fallback] of [["ttl","health_ttl_minutes",60],["health-times","health_times",["09:30","12:30","15:30","18:00"]],["astra-times","astra_times",["10:00","15:35"]],["sol-time","sol_time","15:50"],["mt-time","modeltrace_time","16:10"],["canary-time","canary_time","18:15"],["day-deadline","day_deadline","17:55"],["canary-deadline","canary_deadline","08:55"],["health-model","health_model","gpt-6-astra"],["health-protocol","health_protocol","responses"]]) {
-    const value = config[key] ?? fallback; $(`#layered-${id}`).value = Array.isArray(value) ? value.join(",") : value;
-  }
-  $("#layered-baseline").replaceChildren(new Option("未选定，仅当前成绩", ""), ...state.baselines.map(b => new Option(`#${b.id} ${b.label} · ${percent(b.score.score)}`, b.id)));
-  $("#layered-baseline").value = config.baseline_id || "";
   renderChannelPicker(schedule?.channel_ids || [], config.registry_channel_ids || []);
   $("#schedule-error").textContent = "";
   $("#schedule-dialog").showModal();
@@ -549,38 +534,11 @@ async function saveSchedule(event) {
     enabled: $("#schedule-enabled").checked,
   };
   payload.plan_version = $("#schedule-pack").value;
-  if (payload.plan_version === "layered-integrity-v1") {
-    payload.channel_ids = [];
-    payload.layered_config = {
-      health_ttl_minutes:Number($("#layered-ttl").value),
-      health_times:$("#layered-health-times").value.split(",").map(x => x.trim()),
-      astra_times:$("#layered-astra-times").value.split(",").map(x => x.trim()),
-      sol_time:$("#layered-sol-time").value.trim(), modeltrace_time:$("#layered-mt-time").value.trim(),
-      canary_time:$("#layered-canary-time").value.trim(), day_deadline:$("#layered-day-deadline").value.trim(),
-      canary_deadline:$("#layered-canary-deadline").value.trim(),
-      health_model:$("#layered-health-model").value.trim(), health_protocol:$("#layered-health-protocol").value,
-      baseline_id:Number($("#layered-baseline").value) || null,
-    };
-    payload.targets = [];
-    for (const input of $$("#channel-picker input[data-registry]:checked")) {
-      const row = input.closest("article");
-      for (const select of row.querySelectorAll("select[data-model]")) {
-        const entry = JSON.parse(select.value);
-        payload.targets.push({registry_channel_id:Number(input.dataset.registry), model:entry.model, protocol:entry.protocol, model_id:entry.model_id});
-      }
-      const channel = state.candidates.find(c => c.registry_channel_id === Number(input.dataset.registry));
-      const health = channel.models.find(m => m.model === payload.layered_config.health_model && m.protocol === payload.layered_config.health_protocol);
-      if (health && !payload.targets.some(t => t.registry_channel_id === channel.registry_channel_id && t.model === health.model && t.protocol === health.protocol)) {
-        payload.targets.push({registry_channel_id:channel.registry_channel_id, model:health.model, protocol:health.protocol, model_id:health.model_id});
-      }
-    }
-  }
-  if (payload.plan_version === "layered-integrity-v2") {
+  if (payload.plan_version === "layered-integrity-v3") {
     payload.channel_ids = [];
     payload.daily_times = "00:00";
     payload.targets = selectedTimetableTargets();
-    const ids = new Set(payload.targets.map(t => String(t.registry_channel_id)));
-    payload.layered_config = {...state.timetable, reasoning_effort: "low", baseline_ids: Object.fromEntries(Object.entries(state.baselineIds).filter(([k]) => ids.has(k)))};
+    payload.layered_config = {...state.timetable, reasoning_effort: "low"};
   }
   const submit = $("#schedule-form button[type=submit]"); submit.disabled = true;
   try {
@@ -613,7 +571,7 @@ async function loadRuns() {
 
 function runBadge(run) {
   if (run.summary?.empty_plan) return ["未安排", ""];
-  if (run.snapshot?.plan_version === "layered-integrity-v2" || run.source === "timetable-v2") return [run.status === "running" ? "采样中" : run.status === "completed" ? "已完成采样" : "未完成 / 未测", run.status === "running" ? "running" : run.status === "completed" ? "" : "fail"];
+  if (["layered-integrity-v2", "layered-integrity-v3"].includes(run.snapshot?.plan_version) || ["timetable-v2", "timetable-v3"].includes(run.source)) return [run.status === "running" ? "采样中" : run.status === "completed" ? "已完成采样" : "未完成 / 未测", run.status === "running" ? "running" : run.status === "completed" ? "" : "fail"];
   if (["pending", "running"].includes(run.status)) return [run.status === "pending" ? "等待" : "运行中", "running"];
   if (run.status !== "completed" || run.summary?.verdict === "fail") return ["异常", "fail"];
   return ["通过", ""];
@@ -652,7 +610,7 @@ async function showRun(id) {
   const summary = run.summary || {};
   root.replaceChildren(text("p", `${run.schedule_name} · ${formatDate(run.scheduled_for)} · ${run.status}`));
   const exportLink = text("a", "导出 JSON"); exportLink.href = `./api/runs/${id}/export`; root.append(exportLink);
-  if (run.snapshot?.plan_version === "layered-integrity-v2") {
+  if (["layered-integrity-v2", "layered-integrity-v3"].includes(run.snapshot?.plan_version)) {
     renderTimetableReport(root, run.table_report, run);
     $("#run-dialog").showModal(); return;
   }

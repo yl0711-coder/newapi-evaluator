@@ -94,12 +94,12 @@ class ScheduledExecutorEnabledTests(unittest.IsolatedAsyncioTestCase):
                 await asyncio.sleep(0.005)
         await asyncio.wait_for(wait(), 15)
 
-    def payload(self, *, canary=True, enabled=True):
+    def payload(self, *, enabled=True):
         return {"name": "Synthetic automatic sampling", "daily_times": "00:00",
                 "timezone": "Asia/Shanghai", "enabled": enabled,
                 "targets": [{"registry_channel_id": self.channel["id"],
                              "model": "gpt-6-astra", "protocol": "responses"}],
-                "layered_config": {"canary_times": ["00:10"] if canary else [],
+                "layered_config": {"nerfed_times": ["00:10"],
                                    "modeltrace_times": ["00:10"]}}
 
     async def verify_automatic_sampling(self, executor_mode):
@@ -126,11 +126,12 @@ class ScheduledExecutorEnabledTests(unittest.IsolatedAsyncioTestCase):
                     self.clock += 600
                     await self.wait_for(lambda: all(s["status"] in timetable.TERMINAL for s in timetable.slots(run_id)))
                     methods = {s["method"]: s for s in timetable.slots(run_id)}
-                    for method, count in (("health", 1), ("modeltrace", 3), ("canary", 192)):
+                    self.assertEqual(set(methods), {"modeltrace", "nerfed"})
+                    for method, count in (("modeltrace", 3), ("nerfed", 3)):
                         self.assertEqual(methods[method]["status"], "completed")
                         self.assertEqual(methods[method]["summary"]["attempted"], count)
                         self.assertEqual(methods[method]["summary"]["valid"], count)
-                    self.assertEqual(len(self.requests), 196)
+                    self.assertEqual(len(self.requests), 6)
                     report = (await client.get("/stability/api/timetable/report", params={"date": str(self.day)})).json()
                     self.assertEqual(len(report["rows"]), 1)
                     row = report["rows"][0]
@@ -138,10 +139,10 @@ class ScheduledExecutorEnabledTests(unittest.IsolatedAsyncioTestCase):
                     self.assertNotIn("待采样", json.dumps(row, ensure_ascii=False))
             self.assertFalse(integrity.executor_status()["running"])
 
-    async def test_unset_manual_switch_runs_scheduled_mt_and_full_canary(self):
+    async def test_unset_manual_switch_runs_scheduled_mt_and_nerfed(self):
         await self.verify_automatic_sampling(None)
 
-    async def test_explicit_off_manual_switch_runs_scheduled_mt_and_full_canary(self):
+    async def test_explicit_off_manual_switch_runs_scheduled_mt_and_nerfed(self):
         await self.verify_automatic_sampling("off")
 
     async def test_pausing_saved_schedule_prevents_scheduled_requests(self):
@@ -165,8 +166,8 @@ class ScheduledExecutorEnabledTests(unittest.IsolatedAsyncioTestCase):
     def v1_plan(self, name):
         targets = [{"registry_channel_id": self.channel["id"], "model": model, "protocol": "responses"}
                    for model in ("gpt-6-astra", "gpt-6.1-sol")]
-        data = ScheduleInput(name=name, daily_times="09:30", timezone="Asia/Shanghai",
-                             plan_version=layered.VERSION, targets=targets).model_dump()
+        data = ScheduleInput.model_construct(name=name, daily_times="09:30", timezone="Asia/Shanghai",
+                             plan_version=layered.VERSION, targets=targets, layered_config=layered.validate_config({})).model_dump(warnings=False)
         schedule_id = storage.save_schedule_targets(data, targets)
         schedule = storage.get_schedule(schedule_id)
         run_id = layered.create_day(schedule, self.day)
@@ -187,34 +188,12 @@ class ScheduledExecutorEnabledTests(unittest.IsolatedAsyncioTestCase):
                 self.assertTrue(all(row["status"] == "cancelled" for row in rows))
                 self.assertEqual(self.requests, [])
 
-    async def test_v1_permit_rechecks_pause_and_delete_after_target_resolution(self):
-        for action in ("pause", "delete"):
-            with self.subTest(action=action):
-                data, targets, schedule, run_id = self.v1_plan("Synthetic v1 permit " + action)
-                slot = next(row for row in layered.slots(run_id) if row["slot"] == "health-0")
-                original = integrity.resolve_target
-                resolutions = 0
-
-                def resolve_then_change(*args):
-                    nonlocal resolutions
-                    resolved = original(*args)
-                    resolutions += 1
-                    # A second process can commit a pause after the final fresh
-                    # target read, immediately before reserve obtains its lock.
-                    if resolutions == 3:
-                        if action == "pause":
-                            storage.save_schedule_targets({**data, "id": schedule["id"], "enabled": False}, targets)
-                        else:
-                            storage.delete_schedule(schedule["id"])
-                    return resolved
-
-                with patch.object(integrity, "resolve_target", side_effect=resolve_then_change):
-                    await integrity.execute_slot(slot)
-                finished = next(row for row in layered.slots(run_id) if row["slot_key"] == slot["slot_key"])
-                self.assertEqual(finished["status"], "cancelled")
-                self.assertEqual(finished["reason"], "schedule_paused_or_deleted")
-                self.assertEqual(integrity.store().job(finished["job_id"])["consumed"]["requests"], 0)
-                self.assertEqual(self.requests, [])
+    async def test_v1_direct_dispatch_is_retired_without_send(self):
+        _, _, _, run_id=self.v1_plan("Synthetic retired dispatch")
+        slot=next(row for row in layered.slots(run_id) if row["slot"]=="health-0")
+        await integrity.execute_slot(slot)
+        self.assertEqual(self.requests,[])
+        self.assertEqual(integrity.store().list_jobs(),[])
 
 
 if __name__ == "__main__":

@@ -105,7 +105,8 @@ def build_requests(manifest, config, *, prefix=""):
 
 async def execute_requests(session, requests: list[ProbeRequest], resolve_target: Callable,
                            send: Callable, project_result: Callable, *, stop_when: Callable | None = None,
-                           skip_request: Callable | None = None, yield_after: int | None = None) -> str:
+                           skip_request: Callable | None = None, yield_after: int | None = None,
+                           record_connect_failure: bool = False) -> str:
     """Execute immutable request identities once, preserving every confirmed/unknown attempt.
 
     ``resolve_target()`` returns a fresh ResolvedTarget (sync or async).
@@ -175,6 +176,12 @@ async def execute_requests(session, requests: list[ProbeRequest], resolve_target
                     await asyncio.gather(task, return_exceptions=True)
             if not attempt:
                 state = raw.get("status") if isinstance(raw, dict) else None
+                if record_connect_failure and state in {"network_error", "timeout"}:
+                    # A confirmed preflight failure gets its own durable identity.
+                    # The same final target/control guard still authorizes accounting.
+                    await before_send()
+            if not attempt:
+                state = raw.get("status") if isinstance(raw, dict) else None
                 reason = {"egress_denied": "eval_egress_denied", "network_error": "transport_connect",
                           "timeout": "transport_timeout"}.get(state, "transport_without_permit")
                 raise ExecutionStopped("rejected" if state == "egress_denied" else "failed", reason)
@@ -202,7 +209,7 @@ async def execute_requests(session, requests: list[ProbeRequest], resolve_target
         return "lost"
     if status == "expired" and session.results():
         status = "partially_completed"
-    if status == "completed" and skipped:
+    if status == "completed" and any(item["reason"] != "retry_not_needed" for item in skipped):
         status, reason = "partially_completed", "health_failed_or_unmeasured"
     if not session.finish(status, reason, skipped):
         return "lost"

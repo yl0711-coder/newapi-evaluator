@@ -86,7 +86,7 @@ class IntegrationTests(unittest.IsolatedAsyncioTestCase):
         with patch.object(admission.engine, "wait_between_questions", new=AsyncMock()):
             response = await self.client.post("/admission/api/compare", json={"candidate":candidate, "reference":self.selection(), "rounds":1})
         self.assertEqual(response.status_code, 200, response.text)
-        self.assertEqual(len(requests), 10)
+        self.assertEqual(len(requests), 12)
         self.assertNotIn(candidate["api_key"], response.text)
         self.assertNotIn(self.key, response.text)
         events = [json.loads(line) for line in response.text.splitlines()]
@@ -123,7 +123,7 @@ class IntegrationTests(unittest.IsolatedAsyncioTestCase):
                 json={"candidate":self.candidate(), "reference":self.selection()},
             )
         self.assertEqual(response.status_code, 200, response.text)
-        self.assertEqual(len(requests), 20)
+        self.assertEqual(len(requests), 24)
         candidate_prompts = sorted(json.loads(item.content)["messages"][-1]["content"] for item in requests if item.url.host == "candidate.example")
         reference_prompts = sorted(json.loads(item.content)["messages"][-1]["content"] for item in requests if item.url.host == "reference.example")
         self.assertEqual(candidate_prompts, reference_prompts)
@@ -131,9 +131,9 @@ class IntegrationTests(unittest.IsolatedAsyncioTestCase):
         started = next(event for event in events if event["type"] == "run_started")
         self.assertEqual((started["rounds"], started["warmup_rounds"]), (2, 1))
         questions = [event for event in events if event["type"] == "question_started"]
-        self.assertEqual([event["round_role"] for event in questions].count("warmup"), 5)
-        self.assertEqual([event["round_role"] for event in questions].count("evaluated"), 5)
-        self.assertEqual(len({event["pair_id"] for event in questions}), 10)
+        self.assertEqual([event["round_role"] for event in questions].count("warmup"), 6)
+        self.assertEqual([event["round_role"] for event in questions].count("evaluated"), 6)
+        self.assertEqual(len({event["pair_id"] for event in questions}), 12)
         measurements = [event for event in events if event["type"] == "side_finished"]
         self.assertTrue(all(event.get("pair_id") and event.get("round_role") for event in measurements))
         self.assertTrue(all(event.get("actual_model") == "demo-model" for event in measurements))
@@ -175,7 +175,7 @@ class IntegrationTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(response.status_code, 200)
         events = [json.loads(line) for line in response.text.splitlines()]
         self.assertEqual(events[0]["protocols"], {"candidate": "responses", "reference": "responses"})
-        self.assertEqual(len(requests), 20)
+        self.assertEqual(len(requests), 24)
         for index in range(0, len(requests), 2):
             self.assertEqual(requests[index], requests[index+1])
         measurements = [value for value in events if value["type"] == "side_finished"]
@@ -195,7 +195,7 @@ class IntegrationTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(saved.status_code, 201)
         report_id = saved.json()["id"]
         detail = (await self.client.get(f"/admission/api/reports/{report_id}")).json()
-        self.assertEqual(detail["summary"]["evidence"]["valid_pairs"], 5)
+        self.assertEqual(detail["summary"]["evidence"]["valid_pairs"], 6)
         self.assertEqual(detail["candidate"]["protocol"], "responses")
         self.assertEqual(detail["measurements"][0]["max_output_tokens"], 4096)
         ordinary = (await self.client.get(f"/admission/api/reports/{report_id}/ordinary")).json()

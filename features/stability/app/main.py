@@ -50,7 +50,7 @@ class ScheduleInput(BaseModel):
     timezone: str = Field(default=TIMEZONE, min_length=1, max_length=80)
     channel_ids: list[int] = Field(default_factory=list, max_length=100)
     targets: list[TargetInput] = Field(default_factory=list, max_length=15)
-    plan_version: Literal["ins-v2", "layered-integrity-v1", "layered-integrity-v2"] | None = None
+    plan_version: Literal["ins-v2", "layered-integrity-v1", "layered-integrity-v2", "layered-integrity-v3"] | None = None
     layered_config: dict = Field(default_factory=dict)
     rounds: int = Field(default=3, ge=1, le=10)
     round_interval_seconds: int = Field(default=15, ge=0, le=3600)
@@ -74,6 +74,8 @@ class ScheduleInput(BaseModel):
         self.plan_version = self.plan_version or (timetable.VERSION if self.targets else "ins-v2")
         if not self.channel_ids and not self.targets:
             raise ValueError("请选择至少一个渠道")
+        if self.plan_version in timetable.LEGACY_VERSIONS:
+            raise ValueError("旧定时套餐已停用，请使用 MT / Nerfed 十分钟采样")
         if self.plan_version == layered.VERSION:
             self.layered_config = layered.validate_config(self.layered_config)
             if not self.targets:
@@ -97,8 +99,6 @@ class ScheduleInput(BaseModel):
             if any((t.model, t.protocol) != ("gpt-6-astra", "responses") for t in self.targets):
                 raise ValueError("十分钟计划固定 Astra / Responses")
             self.layered_config["registry_channel_ids"] = sorted(ids)
-            if set(self.layered_config["baseline_ids"]) - {str(i) for i in ids}:
-                raise ValueError("可信参照只能绑定本计划选中的渠道")
         return self
 
 
@@ -231,13 +231,6 @@ async def save_schedule(body: ScheduleInput) -> JSONResponse:
     data = body.model_dump()
     data["daily_times"] = ",".join(scheduler.parse_daily_times(body.daily_times))
     try:
-        if body.plan_version == timetable.VERSION:
-            baselines = {b["id"]: b for b in layered.list_baselines()}
-            for channel_id, baseline_id in body.layered_config["baseline_ids"].items():
-                baseline = baselines.get(baseline_id)
-                provider = (baseline or {}).get("score", {}).get("conditions", {}).get("provider", "")
-                if not provider.startswith(f"registry:{channel_id}:"):
-                    raise ValueError("可信参照不存在或不属于所选渠道")
         if body.targets:
             from features.model_coverage.catalog import Catalog
             catalog = Catalog(get_registry())
@@ -332,9 +325,9 @@ async def run_detail(run_id: int) -> JSONResponse:
         raise HTTPException(status_code=404, detail="运行记录不存在")
     if run["snapshot"].get("plan_version") == layered.VERSION:
         run["slots"] = layered.slots(run_id)
-    elif run["snapshot"].get("plan_version") == timetable.VERSION:
+    elif run["snapshot"].get("plan_version") in {timetable.VERSION, "layered-integrity-v2"}:
         from .timetable_report import report
-        run["slots"] = timetable.slots(run_id)
+        run["slots"] = timetable.slots(run_id, legacy=run["snapshot"]["plan_version"] == "layered-integrity-v2")
         run["table_report"] = report(run_id=run_id)
     return JSONResponse(run)
 

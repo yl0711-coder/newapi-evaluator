@@ -42,8 +42,8 @@ class ScheduleCandidateTests(unittest.IsolatedAsyncioTestCase):
         models = self.catalog.models()
         targets = [{"registry_channel_id": self.channel["id"], "model_id": model["id"],
                     "model": model["model"], "protocol": model["protocol"]}
-                   for model in models if model["model"] in {"gpt-6-astra", "gpt-6.1-sol"}]
-        return {"name": name, "daily_times": "09:30", "plan_version": "layered-integrity-v1", "targets": targets}
+                   for model in models if model["model"] == "gpt-6-astra"]
+        return {"name": name, "daily_times": "09:30", "plan_version": "layered-integrity-v3", "targets": targets}
 
     async def test_fresh_online_zero_target_is_selectable_then_saved_atomically(self):
         self.assertEqual(storage.list_channels(), [])
@@ -59,7 +59,7 @@ class ScheduleCandidateTests(unittest.IsolatedAsyncioTestCase):
         saved = await self.client.post("/api/schedules", json=self.payload())
         self.assertEqual(saved.status_code, 200, saved.text)
         plan = storage.get_schedule(saved.json()["id"])
-        self.assertEqual(len(plan["channel_ids"]), 2)
+        self.assertEqual(len(plan["channel_ids"]), 1)
         self.assertEqual(plan["layered_config"]["registry_channel_ids"], [self.channel["id"]])
         self.assertNotIn("synthetic-schedule-credential", json.dumps(response.json()))
 
@@ -107,7 +107,7 @@ class ScheduleCandidateTests(unittest.IsolatedAsyncioTestCase):
         changed = [{**t, "registry_channel_id": other["id"]} for t in data["targets"]]
         with self.assertRaises(Exception):
             storage.save_schedule_targets(data, changed)
-        self.assertEqual(len(storage.list_channels()), 2)
+        self.assertEqual(len(storage.list_channels()), 1)
         self.assertEqual(storage.get_schedule(original)["layered_config"]["registry_channel_ids"], [self.channel["id"]])
 
     async def test_concurrent_two_plans_reuse_one_target_per_model(self):
@@ -117,7 +117,7 @@ class ScheduleCandidateTests(unittest.IsolatedAsyncioTestCase):
             futures = [pool.submit(storage.save_schedule_targets, data, data["targets"]) for data in (first, second)]
             ids = [f.result(timeout=10) for f in futures]
         self.assertEqual(len(set(ids)), 2)
-        self.assertEqual(len(storage.list_channels()), 2)
+        self.assertEqual(len(storage.list_channels()), 1)
         self.assertEqual(storage.get_schedule(ids[0])["channel_ids"], storage.get_schedule(ids[1])["channel_ids"])
 
     async def test_illegal_protocol_rejected_before_any_target_write(self):

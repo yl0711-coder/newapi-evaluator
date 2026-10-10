@@ -6,6 +6,7 @@
   let metadata = {channels:[], references:[]}, activeTask = '', refreshing = false;
   let submissionKey = crypto.randomUUID();
   let unifiedKey = crypto.randomUUID(), unifiedActive = '';
+  let canaryKey = crypto.randomUUID(), canaryBaselines = [];
   const query = new URLSearchParams(location.search);
   $('review-source').value = query.get('source_ref') || 'manual:' + crypto.randomUUID();
   $('review-incident').value = $('review-source').value;
@@ -67,6 +68,25 @@
     }
     if(chosen) $('unified-channel').value=chosen;
     unifiedConditions();
+    const canaryChosen = $('canary-channel').value;
+    $('canary-channel').replaceChildren(new Option('请选择渠道',''));
+    for (const channel of metadata.unified.channels) {
+      const option = new Option(`${channel.name} · #${channel.id}`, String(channel.id));
+      option.disabled = !channel.models.some(m => m.model === 'gpt-6-astra' && m.eligible);
+      $('canary-channel').append(option);
+    }
+    if (canaryChosen) $('canary-channel').value = canaryChosen;
+    canaryBaselines = (await api('/canary/baselines')).baselines;
+    canaryBaselineOptions();
+  }
+  function canaryBaselineOptions() {
+    const chosen = $('canary-baseline').value;
+    const prefix = 'registry:' + $('canary-channel').value + ':';
+    $('canary-baseline').replaceChildren(new Option('未选择，仅当前成绩',''));
+    for (const b of canaryBaselines.filter(b => b.score?.conditions?.provider?.startsWith(prefix) && b.score?.conditions?.budget?.window === 'canary-active-v1')) {
+      $('canary-baseline').append(new Option(`#${b.id} ${b.label}`, String(b.id)));
+    }
+    if (chosen) $('canary-baseline').value = chosen;
   }
   function unifiedConditions() {
     const channel=metadata.unified?.channels.find(c=>String(c.id)===$('unified-channel').value);
@@ -76,27 +96,39 @@
   }
   async function unifiedDetail(id) {
     unifiedActive=id; const task=await api('/tests/'+id);
-    $('unified-detail').hidden=false; $('unified-detail').replaceChildren(text('h3','统一报告 '+id),text('pre',JSON.stringify(task,null,2)));
+    $('unified-detail').hidden=false; $('unified-detail').replaceChildren(text('h3','主动测试报告 '+id),text('pre',JSON.stringify(task,null,2)));
   }
   async function refreshUnified() {
     const {tasks}=await api('/tests');$('unified-tasks').replaceChildren();
     if(!tasks.length)$('unified-tasks').append(text('p','暂无三项测试历史'));
     for(const task of tasks) {
       const row=text('article','', 'task');row.dataset.unifiedId=task.task_id;
-      row.append(text('h3',`${task.status} · ${task.target_snapshot.model} · #${task.target_snapshot.registry_channel_id}`),text('p',budgetLine(task)));
+      row.append(text('h3',`${task.task_version === 'canary-active-v1' ? 'Canary' : '三项测试'} · ${task.status} · ${task.target_snapshot.model} · #${task.target_snapshot.registry_channel_id}`),text('p',budgetLine(task)));
       const results=text('div','', 'method-results');
       for(const report of task.reports) {
         const card=text('section','', 'method-result');card.dataset.method=report.method;
         card.append(text('h4',report.label),text('p',`${report.status} · ${report.score.source_verdict || report.score.status} · ${report.reason}`),
           text('p',`有效 ${report.valid} / 尝试 ${report.attempted} / 计划 ${report.planned} · invalid ${report.invalid} · unknown ${report.unknown} · 未运行 ${report.not_run}`),
           text('p',`耗时 ${Math.round(report.duration_ms)} ms · input ${report.usage.input_tokens_reported ?? 'unknown'} / output ${report.usage.output_tokens_reported ?? 'unknown'} / reasoning ${report.usage.reasoning_tokens_reported ?? 'unknown'}`),
-          text('p',`版本 ${report.version} · ${report.conditions.protocol} / ${report.conditions.effort} · calibration_status=unvalidated · metadata_status=unavailable`),text('p',report.limitation));results.append(card);
+          text('p',`版本 ${report.version} · ${report.conditions.protocol} / low · calibration_status=unvalidated · metadata_status=unavailable`),text('p',report.limitation));results.append(card);
       }
       row.append(results);
-      const detail=text('button','查看三项报告');detail.type='button';detail.onclick=()=>unifiedDetail(task.task_id).catch(error);row.append(detail);
-      if(['queued','running'].includes(task.status)) {const b=text('button','取消三项任务');b.type='button';b.onclick=()=>post('/tests/'+task.task_id+'/cancel',{}).then(refreshUnified).catch(error);row.append(b);}
-      if(['cancelled','failed','partially_completed'].includes(task.status)) {const b=text('button','安全恢复三项任务');b.type='button';b.onclick=()=>post('/tests/'+task.task_id+'/resume',{}).then(refreshUnified).catch(error);row.append(b);}
-      const link=text('a','导出三项 JSON','export');link.href='/api/integrity/tests/'+task.task_id+'/export';link.download='three-method-api.json';row.append(link);$('unified-tasks').append(row);
+      const canary = task.reports.find(r => r.method === 'canary');
+      if (canary) {
+        row.append(text('p', `Canary ${canary.score.correct ?? 0}/192 · ${canary.score.status}`));
+        if (task.status === 'completed' && canary.status === 'completed' && !canary.request_errors && !canary.unknown && !canary.not_run) {
+          const lock = text('button', '锁定为可信 Canary 参照'); lock.type='button';
+          lock.onclick=async()=>{try {
+            const label=prompt('为完整同条件结果填写可信参照名称', 'Canary ' + task.task_id); if(!label)return;
+            await post('/tests/'+task.task_id+'/baseline', {label});
+            canaryBaselines=(await api('/canary/baselines')).baselines; canaryBaselineOptions();
+          }catch(e){error(e);}}; row.append(lock);
+        }
+      }
+      const detail=text('button','查看报告');detail.type='button';detail.onclick=()=>unifiedDetail(task.task_id).catch(error);row.append(detail);
+      if(['queued','running'].includes(task.status)) {const b=text('button','取消任务');b.type='button';b.onclick=()=>post('/tests/'+task.task_id+'/cancel',{}).then(refreshUnified).catch(error);row.append(b);}
+      if(['cancelled','failed','partially_completed'].includes(task.status)) {const b=text('button','安全恢复任务');b.type='button';b.onclick=()=>post('/tests/'+task.task_id+'/resume',{}).then(refreshUnified).catch(error);row.append(b);}
+      const link=text('a','导出 JSON','export');link.href='/api/integrity/tests/'+task.task_id+'/export';link.download='three-method-api.json';row.append(link);$('unified-tasks').append(row);
     }
     if(unifiedActive)await unifiedDetail(unifiedActive);
   }
@@ -174,6 +206,14 @@
     const task=await post('/tests',{registry_channel_id:Number($('unified-channel').value),model:$('unified-model').value,protocol:'responses',idempotency_key:unifiedKey,confirm_live:$('unified-confirm').checked});
     $('unified-status').textContent='已受理统一任务 '+task.task_id;await refreshUnified();await unifiedDetail(task.task_id);
   }catch(e){error(e);}finally{unifiedConditions();}};
+  $('canary-channel').onchange=()=>{canaryKey=crypto.randomUUID();canaryBaselineOptions();$('canary-confirm').checked=false;};
+  $('canary-baseline').onchange=()=>{canaryKey=crypto.randomUUID();$('canary-confirm').checked=false;};
+  $('canary-new').onclick=()=>{canaryKey=crypto.randomUUID();$('canary-confirm').checked=false;$('canary-status').textContent='已准备新一轮 Canary。';};
+  $('canary-form').onsubmit=async event=>{event.preventDefault();clearError();$('canary-submit').disabled=true;try {
+    const task=await post('/canary',{registry_channel_id:Number($('canary-channel').value), model:'gpt-6-astra',protocol:'responses',
+      idempotency_key:canaryKey,baseline_id:Number($('canary-baseline').value)||null,confirm_live:$('canary-confirm').checked});
+    $('canary-status').textContent='已受理 Canary '+task.task_id;await refreshUnified();await unifiedDetail(task.task_id);
+  }catch(e){error(e);}finally{$('canary-submit').disabled=false;}};
   loadMeta().then(refresh).catch(error);
   setInterval(()=>refresh().catch(error),1500);
 })();

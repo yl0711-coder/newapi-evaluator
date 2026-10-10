@@ -162,6 +162,15 @@ def init() -> None:
             except sqlite3.OperationalError as exc:
                 if "duplicate column name" not in str(exc).casefold():
                     raise
+        from .timetable_contract import VERSION, LEGACY_VERSIONS, upgrade_config, validate_config
+        for row in _connection.execute("SELECT id,plan_version,layered_config_json FROM schedules WHERE plan_version IN (?,?)", LEGACY_VERSIONS).fetchall():
+            config = loads(row["layered_config_json"], {})
+            try:
+                upgraded = validate_config(upgrade_config(config, row["plan_version"]))
+            except (ValueError, TypeError):
+                continue
+            _connection.execute("UPDATE schedules SET plan_version=?,layered_config_json=?,updated_at=? WHERE id=?",
+                                (VERSION, dumps(upgraded), time.time(), row["id"]))
         _connection.commit()
 
 
@@ -417,7 +426,7 @@ def create_run(schedule: dict[str, Any], scheduled_for: float, source: str = "sc
     )}
     snapshot["report_groups"] = list_report_groups()
     snapshot["plan_version"] = schedule.get("plan_version", "ins-v2")
-    if snapshot["plan_version"] in {"layered-integrity-v1", "layered-integrity-v2"}:
+    if snapshot["plan_version"] in {"layered-integrity-v1", "layered-integrity-v2", "layered-integrity-v3"}:
         snapshot["layered_config"] = schedule["layered_config"]
         snapshot["targets"] = [{k: target[k] for k in ("id", "registry_channel_id", "model", "protocol")}
                                for target in list_channels(ids=snapshot["channel_ids"])]
@@ -437,7 +446,7 @@ def recover_expired_runs(now: float) -> int:
     with cursor() as cur:
         return cur.execute(
             "UPDATE runs SET status='pending',error='上次执行中断，已重新排队',lease_until=NULL "
-            "WHERE status='running' AND COALESCE(json_extract(snapshot_json,'$.plan_version'),'ins-v2') NOT IN ('layered-integrity-v1','layered-integrity-v2') AND COALESCE(lease_until,0)<?",
+            "WHERE status='running' AND COALESCE(json_extract(snapshot_json,'$.plan_version'),'ins-v2') NOT IN ('layered-integrity-v1','layered-integrity-v2','layered-integrity-v3') AND COALESCE(lease_until,0)<?",
             (now,),
         ).rowcount
 
@@ -445,14 +454,14 @@ def recover_expired_runs(now: float) -> int:
 def recover_all_running() -> int:
     with cursor() as cur:
         return cur.execute(
-            "UPDATE runs SET status='pending',error='服务重启，任务已重新排队',lease_until=NULL WHERE status='running' AND COALESCE(json_extract(snapshot_json,'$.plan_version'),'ins-v2') NOT IN ('layered-integrity-v1','layered-integrity-v2')"
+            "UPDATE runs SET status='pending',error='服务重启，任务已重新排队',lease_until=NULL WHERE status='running' AND COALESCE(json_extract(snapshot_json,'$.plan_version'),'ins-v2') NOT IN ('layered-integrity-v1','layered-integrity-v2','layered-integrity-v3')"
         ).rowcount
 
 
 def pending_runs(limit: int) -> list[dict[str, Any]]:
     with cursor() as cur:
         return [dict(row) for row in cur.execute(
-            "SELECT * FROM runs WHERE status='pending' AND COALESCE(json_extract(snapshot_json,'$.plan_version'),'ins-v2') NOT IN ('layered-integrity-v1','layered-integrity-v2') AND scheduled_for<=? ORDER BY scheduled_for LIMIT ?",
+            "SELECT * FROM runs WHERE status='pending' AND COALESCE(json_extract(snapshot_json,'$.plan_version'),'ins-v2') NOT IN ('layered-integrity-v1','layered-integrity-v2','layered-integrity-v3') AND scheduled_for<=? ORDER BY scheduled_for LIMIT ?",
             (time.time(), limit),
         ).fetchall()]
 
@@ -648,7 +657,7 @@ def prune_run_history(now: float, retention_days: int) -> int:
     cutoff = float(now) - max(1, int(retention_days)) * 86400
     settled = "status IN ('completed','failed') AND notify_status NOT IN ('pending','sending') AND COALESCE(finished_at,created_at)<?"
     with cursor() as cur:
-        has_timetable = cur.execute("SELECT 1 FROM runs WHERE source='timetable-v2' AND " + settled + " LIMIT 1", (cutoff,)).fetchone()
+        has_timetable = cur.execute("SELECT 1 FROM runs WHERE source IN ('timetable-v2','timetable-v3') AND " + settled + " LIMIT 1", (cutoff,)).fetchone()
     removed = 0
     if has_timetable:
         from . import timetable
@@ -660,14 +669,16 @@ def prune_run_history(now: float, retention_days: int) -> int:
         with registry.connect() as guard, cursor() as cur:
             guard.execute("BEGIN IMMEDIATE")
             cur.execute("BEGIN IMMEDIATE")
-            ids = [r[0] for r in cur.execute("SELECT id FROM runs WHERE source='timetable-v2' AND " + settled, (cutoff,))]
-            guard.executemany("UPDATE integrity_timetable_days SET archived=1,cancelled=1 WHERE run_id=?", ((i,) for i in ids))
+            rows = cur.execute("SELECT id,source FROM runs WHERE source IN ('timetable-v2','timetable-v3') AND " + settled, (cutoff,)).fetchall()
+            for run_id, source in rows:
+                table = "integrity_sampling_days" if source == "timetable-v3" else "integrity_timetable_days"
+                guard.execute("UPDATE " + table + " SET archived=1,cancelled=1 WHERE run_id=?", (run_id,))
             guard.commit()
-            removed += cur.execute("DELETE FROM runs WHERE source='timetable-v2' AND " + settled, (cutoff,)).rowcount
+            removed += cur.execute("DELETE FROM runs WHERE source IN ('timetable-v2','timetable-v3') AND " + settled, (cutoff,)).rowcount
     with cursor() as cur:
         removed += cur.execute(
             "DELETE FROM runs WHERE status IN ('completed','failed') "
-            "AND source!='timetable-v2' "
+            "AND source NOT IN ('timetable-v2','timetable-v3') "
             "AND notify_status NOT IN ('pending','sending') "
             "AND COALESCE(finished_at,created_at)<?",
             (cutoff,),

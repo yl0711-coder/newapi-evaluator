@@ -8,16 +8,18 @@ from zoneinfo import ZoneInfo
 
 from shared.registry import get_registry
 from . import timetable
+from features.integrity.conclusions import conclusion
+from features.integrity.strategies import get_strategy
 
 
 def method_result(slot):
     if slot is None:
         return {"label": "未安排", "state": "not_scheduled", "planned": 0}
     summary, score = slot["summary"], slot["summary"].get("score", {})
-    planned = timetable.request_limits(slot["method"])["max_requests"]
+    planned = len(get_strategy("nerfed-api" if slot["method"] == "nerfed" else slot["method"]).probes)
     result = {"planned": planned, "attempted": summary.get("attempted", 0), "valid": summary.get("valid", 0),
               "unknown": summary.get("unknown", 0), "not_run": summary.get("not_run", planned),
-              "request_errors": summary.get("request_errors", 0), "score": score, "status": slot["status"],
+              "request_errors": summary.get("request_errors", 0), "physical_attempts": summary.get("physical_attempts", summary.get("attempted", 0)), "score": score, "status": slot["status"],
               "reason": slot["reason"], "baseline_id": summary.get("baseline_id"),
               "slot_key": slot["slot_key"], "sampling_started_at": summary.get("sampling_started_at"),
               "sampling_finished_at": summary.get("sampling_finished_at"), "fees": summary.get("fees", {})}
@@ -29,7 +31,7 @@ def method_result(slot):
         return {**result, "label": "未完成 / 未测", "state": "incomplete"}
     if result["request_errors"]:
         return {**result, "label": "请求异常，需复核", "state": "review"}
-    if slot["method"] == "modeltrace":
+    if slot["method"] in {"modeltrace", "nerfed"}:
         if score.get("source_verdict") == "MISMATCH":
             return {**result, "label": "指纹差异，需复核", "state": "review"}
         if score.get("status") == "scored" and score.get("prediction") == "gpt-6-astra":
@@ -55,7 +57,7 @@ def method_result(slot):
 def table_rows(slots):
     grouped = {}
     for slot in slots:
-        if slot["method"] not in timetable.METHODS:
+        if slot["method"] not in {"canary", "modeltrace", "nerfed"}:
             continue
         key = (slot["run_id"], slot["due"], slot["registry_channel_id"])
         grouped.setdefault(key, {})[slot["method"]] = slot
@@ -66,7 +68,8 @@ def table_rows(slots):
         snapshot = example["snapshot"]
         timezone = snapshot["timezone"]
         zone = ZoneInfo(timezone)
-        results = {m: method_result(methods.get(m)) for m in timetable.METHODS}
+        method_names = timetable.METHODS if example["slot_key"].startswith("sampling-v3:") else ("canary", "modeltrace")
+        results = {m: method_result(methods.get(m)) for m in method_names}
         displays = []
         for method, slot in methods.items():
             config = slot["snapshot"]["layered_config"]
@@ -90,21 +93,34 @@ def table_rows(slots):
                      "channel_multiplier": multiplier, "method_multipliers": {m: v["channel_multiplier"] for m, v in results.items() if "channel_multiplier" in v},
                      "multiplier_basis": "用户配置的渠道倍率标记，未验证实际扣费",
                      "sampling_period": period, "sampling_started_at": start, "sampling_finished_at": end,
-                     "canary": results["canary"], "modeltrace": results["modeltrace"], "state": state,
+                     **results, "state": state,
                      "status": labels[state], "anomaly": state not in {"observed", "waiting", "sampling"}, "calibration_status": "unvalidated"})
+        if method_names == timetable.METHODS:
+            decision = conclusion(results)
+            rows[-1].update(conclusion=decision, state=decision["state"], status=decision["label"],
+                            anomaly=decision["state"] not in {"observed", "waiting", "sampling"})
+        else:
+            rows[-1]["conclusion"] = {"label": "历史记录 · " + rows[-1]["status"], "state": state}
     return sorted(rows, key=lambda r: (r["scheduled_at_utc"], r["registry_channel_id"], r["run_id"]))
 
 
 def report(*, run_id=None, day=None, channel_id=None, anomalies_only=False):
-    filters, values = ["EXISTS (SELECT 1 FROM integrity_timetable_days d WHERE d.run_id=integrity_occurrences.run_id AND d.archived=0)"], []
-    for field, value in (("run_id", run_id), ("budget_date", day), ("registry_channel_id", channel_id)):
-        if value is not None:
-            filters.append(field + "=?")
-            values.append(value)
-    where = " WHERE " + " AND ".join(filters) if filters else ""
+    slots, empty = [], []
     with get_registry().connect() as conn:
-        slots = [timetable.decode(r) for r in conn.execute("SELECT * FROM integrity_occurrences" + where + " ORDER BY due,registry_channel_id,run_id,method LIMIT 10001", values)]
-        empty = [dict(r) for r in conn.execute("SELECT d.run_id,d.budget_date FROM integrity_timetable_days d WHERE d.archived=0 AND NOT EXISTS (SELECT 1 FROM integrity_occurrences o WHERE o.run_id=d.run_id)" + (" AND d.run_id=?" if run_id else " AND d.budget_date=?"), (run_id or day,))]
+        for table, days in (("integrity_sampling_occurrences", "integrity_sampling_days"),
+                            ("integrity_occurrences", "integrity_timetable_days")):
+            if not conn.execute("SELECT 1 FROM sqlite_master WHERE name=?", (table,)).fetchone():
+                continue
+            filters = [f"EXISTS (SELECT 1 FROM {days} d WHERE d.run_id={table}.run_id AND d.archived=0)"]
+            values = []
+            for field, value in (("run_id", run_id), ("budget_date", day), ("registry_channel_id", channel_id)):
+                if value is not None:
+                    filters.append(field + "=?")
+                    values.append(value)
+            slots.extend(timetable.decode(r) for r in conn.execute("SELECT * FROM " + table + " WHERE " + " AND ".join(filters) + " ORDER BY due,registry_channel_id,run_id,method LIMIT 10001", values))
+            empty.extend(dict(r) for r in conn.execute(f"SELECT d.run_id,d.budget_date FROM {days} d WHERE d.archived=0 AND NOT EXISTS (SELECT 1 FROM {table} o WHERE o.run_id=d.run_id)" + (" AND d.run_id=?" if run_id else " AND d.budget_date=?"), (run_id or day,)))
+    slots.sort(key=lambda r: (r["due"], r["registry_channel_id"], r["run_id"], r["method"]))
+    slots = slots[:10001]
     truncated = len(slots) > 10000
     # A raw SQL cap can cut one method or a channel group. Drop the complete
     # boundary group so absence never masquerades as an unscheduled method.

@@ -5,16 +5,26 @@ from datetime import datetime
 
 from zoneinfo import ZoneInfo
 
-VERSION = "layered-integrity-v2"
-METHODS = ("canary", "modeltrace")
+VERSION = "layered-integrity-v3"
+LEGACY_VERSIONS = ("layered-integrity-v1", "layered-integrity-v2")
+METHODS = ("modeltrace", "nerfed")
 GRID = [f"{hour:02d}:{minute:02d}" for hour in range(24) for minute in range(0, 60, 10)]
-DEFAULTS = {"canary_times": GRID[::6], "modeltrace_times": GRID,
-            "reasoning_effort": "low", "baseline_id": None, "baseline_ids": {}}
-WINDOWS = {"modeltrace": 600, "canary": 3600}
+DEFAULTS = {"modeltrace_times": GRID, "nerfed_times": GRID, "reasoning_effort": "low"}
+WINDOWS = {"modeltrace": 600, "nerfed": 600}
+
+
+def upgrade_config(config, version):
+    empty = version == "layered-integrity-v2" and all(config.get(method + "_times") == [] for method in ("modeltrace", "canary"))
+    times = [] if empty else GRID
+    return {**{k: config[k] for k in ("registry_channel_ids", "target_bindings", "channel_names", "channel_multipliers") if k in config},
+            "channel_names": dict(config.get("channel_names", {})),
+            "channel_multipliers": dict(config.get("channel_multipliers", {})),
+            "modeltrace_times": list(times), "nerfed_times": list(times), "reasoning_effort": "low",
+            "legacy_plan": {"version": version, "config": config}}
 
 
 def validate_config(value):
-    allowed = set(DEFAULTS) | {"registry_channel_ids", "target_bindings", "channel_names", "channel_multipliers"}
+    allowed = set(DEFAULTS) | {"registry_channel_ids", "target_bindings", "channel_names", "channel_multipliers", "legacy_plan"}
     if not isinstance(value, dict) or set(value) - allowed:
         raise ValueError("十分钟计划配置含未知字段")
     config = {**DEFAULTS, **value}
@@ -28,12 +38,8 @@ def validate_config(value):
         config[key] = sorted(times)
     if config["reasoning_effort"] != "low":
         raise ValueError("十分钟计划固定 Astra / Responses / low")
-    if config["baseline_id"] is not None and (type(config["baseline_id"]) is not int or config["baseline_id"] < 1):
-        raise ValueError("可信参照 ID 无效")
-    ids = config["baseline_ids"]
-    if (not isinstance(ids, dict) or any(not isinstance(k, str) or not re.fullmatch(r"[1-9][0-9]*", k) or type(v) is not int or v < 1 for k, v in ids.items())):
-        raise ValueError("每渠道可信参照须为 Registry ID 到正整数 baseline ID 的映射")
-    config["baseline_ids"] = dict(ids)
+    if config["modeltrace_times"] != config["nerfed_times"]:
+        raise ValueError("MT 与 Nerfed 必须在同一十分钟时刻采样")
     return config
 
 
@@ -48,19 +54,17 @@ def local_epoch(day, clock, zone):
 def build_slots(schedule, day):
     config, zone = schedule["layered_config"], ZoneInfo(schedule["timezone"])
     rows = []
-    for clock in sorted(set(config["canary_times"]) | set(config["modeltrace_times"])):
+    for clock in config["modeltrace_times"]:
         due = local_epoch(day, clock, zone)
         if due is None:
             continue
-        methods = [m for m in METHODS if clock in config[m + "_times"]]
+        methods = list(METHODS)
         for channel_id in config["registry_channel_ids"]:
-            health_key = f"timetable:{schedule['id']}:{int(due)}:{channel_id}:health"
-            for method in ["health", *methods]:
-                key = health_key if method == "health" else f"timetable:{schedule['id']}:{int(due)}:{channel_id}:{method}"
-                window = min(WINDOWS[m] for m in methods) if method == "health" else WINDOWS[method]
+            for method in methods:
+                key = f"sampling-v3:{schedule['id']}:{int(due)}:{channel_id}:{method}"
+                window = WINDOWS[method]
                 rows.append({"slot_key": key, "slot": f"{clock}-{method}", "schedule_id": schedule["id"],
                              "budget_date": str(day), "clock": clock, "due": due, "deadline": due + window,
                              "registry_channel_id": channel_id, "method": method, "model": "gpt-6-astra",
-                             "protocol": "responses", "dependency": None if method == "health" else health_key,
-                             "priority": 0 if method == "modeltrace" or method == "health" and "modeltrace" in methods else 1 if method == "health" else 2})
+                             "protocol": "responses", "dependency": None, "priority": 0})
     return rows

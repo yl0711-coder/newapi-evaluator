@@ -52,6 +52,15 @@ class UnifiedInput(Input):
     confirm_live: Literal[True]
 
 
+class CanaryInput(UnifiedInput):
+    model: Literal["gpt-6-astra"] = "gpt-6-astra"
+    baseline_id: int | None = Field(default=None, ge=1, strict=True)
+
+
+class CanaryBaselineInput(Input):
+    label: str = Field(min_length=1, max_length=80)
+
+
 def call(function, *args, **kwargs):
     try:
         return function(*args, **kwargs)
@@ -74,6 +83,24 @@ async def meta():
             "audit_status": {"fpverify": "reference_gated_future_audit", "modivue": "explicit_summary_only"},
             "unified": {"version": VERSION, "channels": call(unified_service().choices),
                         "default_model": "gpt-6-astra", "max_requests": 8, "max_retries": 0}}
+
+
+@router.post("/canary", status_code=202)
+async def create_canary(body: CanaryInput):
+    from .unified import get_service, CANARY_VERSION
+    return call(get_service().submit, kind=CANARY_VERSION, **body.model_dump(mode="json"))
+
+
+@router.get("/canary/baselines")
+async def canary_baselines():
+    from features.stability.app import layered
+    return {"baselines": call(layered.list_baselines)}
+
+
+@router.post("/tests/{job_id}/baseline")
+async def lock_canary_baseline(job_id: str, body: CanaryBaselineInput):
+    from .unified import get_service
+    return {"id": call(get_service().lock_canary_baseline, job_id, body.label)}
 
 
 @router.get("/tests")

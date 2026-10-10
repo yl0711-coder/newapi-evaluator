@@ -25,11 +25,11 @@ from feishu import BitableWriter, FeishuSettings, build_fields, channel_group_va
 
 class QuestionBankTests(unittest.TestCase):
     def test_question_mix_is_fixed(self) -> None:
-        self.assertEqual(len(QUESTIONS), 5)
+        self.assertEqual(len(QUESTIONS), 6)
         difficulties = [question["difficulty"] for question in QUESTIONS]
         self.assertEqual(difficulties.count("easy"), 3)
-        self.assertEqual(difficulties.count("hard"), 2)
-        self.assertEqual(len({question["id"] for question in QUESTIONS}), 5)
+        self.assertEqual(difficulties.count("hard"), 3)
+        self.assertEqual(len({question["id"] for question in QUESTIONS}), 6)
 
     def test_every_request_is_streaming(self) -> None:
         endpoint = EndpointConfig(
@@ -465,7 +465,7 @@ class FrontendSafetyTests(unittest.TestCase):
 
     def test_question_file_is_valid_json(self) -> None:
         question_path = Path(__file__).parent / "questions.json"
-        self.assertEqual(len(json.loads(question_path.read_text(encoding="utf-8"))), 5)
+        self.assertEqual(len(json.loads(question_path.read_text(encoding="utf-8"))), 6)
 
     def test_frontend_exposes_token_metrics(self) -> None:
         source = (Path(__file__).parent / "web" / "app.js").read_text(encoding="utf-8")
@@ -528,15 +528,15 @@ class MultiRoundRouteTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(response.status_code, 200)
         events = [json.loads(line) for line in response.text.splitlines()]
         self.assertEqual(events[0]["rounds"], 2)
-        self.assertEqual(events[0]["total_question_runs"], 10)
+        self.assertEqual(events[0]["total_question_runs"], 12)
         self.assertEqual([event["round"] for event in events if event["type"] == "round_started"], [1, 2])
         finished = [event for event in events if event["type"] == "side_finished"]
-        self.assertEqual(len(finished), 20)
+        self.assertEqual(len(finished), 24)
         self.assertEqual({event["round"] for event in finished}, {1, 2})
         cooldowns = [event for event in events if event["type"] == "question_cooldown"]
-        self.assertEqual(len(cooldowns), 9)
+        self.assertEqual(len(cooldowns), 11)
         self.assertTrue(all(event["seconds"] == 3 for event in cooldowns))
-        self.assertEqual(wait_between_questions.await_count, 9)
+        self.assertEqual(wait_between_questions.await_count, 11)
 
 
 if __name__ == "__main__":

@@ -4,6 +4,16 @@
 <body>
 <main>
 <h1>模型完整性复核</h1>
+<section aria-labelledby="canary-title">
+<h2 id="canary-title">主动 Canary 测试</h2>
+<p>仅在点击开始后执行。固定 Astra / Responses / low，1 次探活及完整 192 题，零重试，最长十小时。未选择可信参照时仅给出当前成绩；完整、同条件且无传输异常的结果可显式锁定为参照。</p>
+<form id="canary-form"><div class="grid">
+<label>测试渠道<select id="canary-channel" required><option value="">请选择渠道</option></select></label>
+<label>可信参照<select id="canary-baseline"><option value="">未选择，仅当前成绩</option></select></label>
+</div><label class="check"><input id="canary-confirm" type="checkbox" required>确认本次最多 193 次主动请求</label>
+<button id="canary-submit" type="submit">开始 Canary 测试</button><button id="canary-new" type="button">新一轮 Canary</button><span id="canary-status" role="status"></span>
+</form><p>任务、取消、原时窗恢复与导出见下方历史报告。</p>
+</section>
 <section aria-labelledby="unified-title">
 <h2 id="unified-title">一次运行三项测试</h2>
 <p>选择一次渠道，分别实际运行 TraceOne、ModelTrace 和 is-gpt-nerfed API 数字指纹。默认 Astra / Responses / low；1 次探活、1 次 TraceOne、最多 3 次 ModelTrace 和 3 次 nerfed，总计最多 8 次尝试、零重试。普通 API 未校准，不能认证身份或实际权重。</p>

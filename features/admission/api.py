@@ -92,11 +92,11 @@ class AdmissionReportInput(BaseModel):
     warmup_rounds: int = Field(default=0, ge=0, le=1)
     candidate: ReportEndpointInput
     reference: ReportEndpointInput
-    questions: list[ReportQuestionInput] = Field(min_length=1, max_length=5)
-    measurements: list[dict[str, Any]] = Field(default_factory=list, max_length=50)
-    responses: list[ReportResponseInput] = Field(default_factory=list, max_length=50)
+    questions: list[ReportQuestionInput] = Field(min_length=1, max_length=6)
+    measurements: list[dict[str, Any]] = Field(default_factory=list, max_length=60)
+    responses: list[ReportResponseInput] = Field(default_factory=list, max_length=60)
     summary: dict[str, Any] = Field(default_factory=dict)
-    pairs: list[dict[str, Any]] = Field(default_factory=list, max_length=25)
+    pairs: list[dict[str, Any]] = Field(default_factory=list, max_length=30)
 
 
 def _contains_secret_field(value: Any) -> bool:

@@ -318,10 +318,25 @@ class IntegrityStore:
     def public(self, job_id):
         return {k: v for k, v in self.job(job_id).items() if k not in {"owner", "lease_until"}}
 
-    def list_jobs(self, *, principal=None, limit=100):
+    def list_jobs(self, *, principal=None, limit=100, strategy_ids=None, status=None, oldest_first=False):
+        filters, values = [], []
+        if principal:
+            filters.append('principal=?')
+            values.append(principal)
+        if strategy_ids is not None:
+            if not strategy_ids:
+                return []
+            filters.append("json_extract(strategy_json,'$.strategy_id') IN (" + ','.join('?' for _ in strategy_ids) + ')')
+            values.extend(strategy_ids)
+        if status is not None:
+            filters.append('status=?')
+            values.append(status)
+        order = 'ASC' if oldest_first else 'DESC'
+        query = 'SELECT * FROM integrity_jobs' + (' WHERE ' + ' AND '.join(filters) if filters else '')
+        query += f' ORDER BY created_at {order},job_id {order} LIMIT ?'
+        values.append(min(200, max(1, int(limit))))
         with self.registry.connect() as conn:
-            rows = conn.execute("SELECT * FROM integrity_jobs" + (" WHERE principal=?" if principal else "") + " ORDER BY created_at DESC LIMIT ?",
-                                (principal, min(200, max(1, int(limit)))) if principal else (min(200, max(1, int(limit))),)).fetchall()
+            rows = conn.execute(query, values).fetchall()
             return [{k: v for k, v in self._job(conn, row).items() if k not in {"owner", "lease_until"}} for row in rows]
 
     def resume(self, job_id):
@@ -381,6 +396,18 @@ class IntegrityStore:
     def cancel(self, job_id):
         with self.registry.connect() as conn:
             conn.execute("UPDATE integrity_jobs SET cancel_requested=1,status=CASE WHEN status='queued' THEN 'cancelled' ELSE status END,updated_at=? WHERE job_id=?", (time.time(), job_id))
+        return self.job(job_id)
+
+    def retire(self, job_id):
+        """Fence obsolete scheduled consumers and preserve uncertain permissions."""
+        with self.registry.connect() as conn:
+            conn.execute("BEGIN IMMEDIATE")
+            row = conn.execute("SELECT status FROM integrity_jobs WHERE job_id=?", (job_id,)).fetchone()
+            if row is None:
+                raise KeyError("integrity job not found")
+            if row[0] in {"queued", "running"}:
+                conn.execute("UPDATE integrity_attempts SET status='unknown' WHERE job_id=? AND status='permitted'", (job_id,))
+                conn.execute("UPDATE integrity_jobs SET status='cancelled',cancel_requested=1,owner=NULL,lease_until=NULL,reason='scheduled_methods_upgraded',updated_at=? WHERE job_id=?", (time.time(), job_id))
         return self.job(job_id)
 
 

@@ -137,8 +137,8 @@ CHANNEL_FIELD_ALIASES = {
 def load_questions() -> list[dict[str, Any]]:
     with QUESTIONS_PATH.open("r", encoding="utf-8") as file:
         questions = json.load(file)
-    if len(questions) != 5:
-        raise RuntimeError("题库必须恰好包含 5 道题。")
+    if len(questions) != 6:
+        raise RuntimeError("题库必须恰好包含 6 道题。")
     return questions
 
 

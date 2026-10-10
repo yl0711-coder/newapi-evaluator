@@ -23,7 +23,7 @@ def store():
 
 def schedule_active(snapshot):
     schedule = storage.get_schedule(snapshot["id"])
-    return bool(schedule and schedule["enabled"] and schedule["plan_version"] == snapshot["plan_version"])
+    return False if snapshot.get("plan_version") in {"layered-integrity-v1", "layered-integrity-v2"} else bool(schedule and schedule["enabled"] and schedule["plan_version"] == snapshot["plan_version"])
 
 
 def schedule_permit(snapshot):
@@ -62,10 +62,10 @@ def conditions(slot, manifest, config, target):
             "parameters": {"reasoning_effort": config["reasoning_effort"], "stream": False,
                            "system_prompt_hash": layered.canonical_hash([p.system_prompt for p in manifest.probes]),
                            "wrapper": "integrity-transport-v1", "sampling": "fixed-probes",
-                           "max_output_tokens": manifest.max_output_tokens, "retry_policy": "none"},
+                           "max_output_tokens": manifest.max_output_tokens, "retry_policy": "connection-retries-v1" if slot.get("slot_key", "").startswith("sampling-v3:") else "none"},
             "budget": {"max_requests": manifest.max_requests, "request_timeout_seconds": manifest.request_timeout_seconds,
                        "total_timeout_seconds": manifest.total_timeout_seconds,
-                       "window": f"timetable-v2-{slot['deadline'] - slot['due']:g}" if "schedule_id" in slot else "overnight" if slot["method"] == "canary" else "daytime"}}
+                       "window": f"{'sampling-v3' if slot.get('slot_key', '').startswith('sampling-v3:') else 'timetable-v2'}-{slot['deadline'] - slot['due']:g}" if "schedule_id" in slot else "overnight" if slot["method"] == "canary" else "daytime"}}
 
 
 def slot_summary(slot, job, manifest, config, target):
@@ -236,44 +236,8 @@ def select_ready(now):
 
 
 async def tick(now=None):
-    global _task
-    # An enabled saved schedule authorizes its sampling. The separate manual /
-    # Monitor consumer switch must not silently disable scheduled MT or Canary.
-    now = time.time() if now is None else now
     from . import timetable_executor
     await timetable_executor.tick(now)
-    layered.init_tables()
-    store().recover_expired_leases()
-    for schedule in storage.list_schedules(enabled_only=True):
-        if schedule["plan_version"] != layered.VERSION:
-            continue
-        zone = ZoneInfo(schedule["timezone"])
-        day = datetime.fromtimestamp(now, zone).date()
-        due = layered.epoch(day, schedule["layered_config"]["health_times"][0], zone)
-        if due >= schedule["created_at"] and now >= due:
-            layered.create_day(schedule, day)
-    # Any job completed before a process exit is read from the durable ledger, never cleared.
-    for slot in layered.slots():
-        if slot["status"] not in layered.TERMINAL or not slot["summary"]:
-            ledger = store()
-            job = ledger.job(slot["job_id"]) if slot.get("job_id") else ledger.job_by_key(slot["slot_key"])
-            if job is None:
-                continue
-            if job["status"] in layered.TERMINAL:
-                # Publication after a committed ledger is pure reconstruction. Do
-                # not gate it on today's health, target, or expired sending window.
-                publish_slot(slot, job)
-                continue
-            # Re-enter summary publication even when the job committed before process exit.
-            # Claiming a terminal job sends nothing; its immutable results rebuild the slot.
-            if slot["status"] not in layered.TERMINAL and (_task is None or _task.done()):
-                layered.update_slot(slot["slot_key"], "pending", job_id=job["job_id"], target=job["target_snapshot"])
-    if _task is None or _task.done():
-        slot = select_ready(now)
-        if slot:
-            _task = asyncio.create_task(execute_slot(slot), name="layered-integrity-slot")
-    for run_id in {s["run_id"] for s in layered.slots()}:
-        refresh_run(run_id)
 
 
 def executor_status():
@@ -304,14 +268,4 @@ def cancel_run(run_id):
 
 
 def resume_run(run_id):
-    rows = layered.slots(run_id)
-    if not any(s["deadline"] > time.time() and s["status"] in {"cancelled", "failed", "partially_completed"} for s in rows):
-        raise ValueError("原时间窗已结束，不能延长或重发")
-    for slot in rows:
-        if slot["deadline"] <= time.time() or slot["status"] not in {"cancelled", "failed", "partially_completed"}:
-            continue
-        if slot.get("job_id"):
-            store().resume(slot["job_id"])
-        layered.update_slot(slot["slot_key"], "pending", reason="explicit_resume")
-    with storage.cursor() as cur:
-        cur.execute("UPDATE runs SET status='running' WHERE id=?", (run_id,))
+    raise ValueError("旧定时任务已停用，请使用 MT / Nerfed 新计划")
