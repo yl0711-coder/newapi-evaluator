@@ -2,11 +2,13 @@
 
 适用规则 `docs/ai-rules` v1.0。本功能属于工作台定时、准入及完整性模块，不改 `relay_lab` 共享引擎；实验室五模式继续纳入既有 E2E 和独立 legacy acceptance。环境、数据、日志、截图和证据使用仓外新目录，不加载业务 `.env`、渠道库、凭据或通知设置。上游源码核对不替代产品测试。
 
-统一入口：`python -B scripts/verify_integrity.py --output <新外置目录>`。独立验收在干净 detached 候选提交增加 `--sha <40位SHA>`，使用独立环境与新数据。`PLAYWRIGHT_MODULE`、`PLAYWRIGHT_BROWSERS_PATH`、`EVAL_TEST_ARTIFACT_ROOT` 和 `TMPDIR` 显式指向仓外；执行器设置 `PYTHON_EXECUTABLE`。执行器保留收集数、退出码、前后源码指纹及首次失败，实施逐组时限和总预算，失败优先汇总。开发19组、3000秒；独立20组、4200秒。
+统一入口：`python -B scripts/verify_integrity.py --output <新外置目录>`。独立验收在干净 detached 候选提交增加 `--sha <40位SHA>`，使用独立环境与新数据。`PLAYWRIGHT_MODULE`、`PLAYWRIGHT_BROWSERS_PATH`、`EVAL_TEST_ARTIFACT_ROOT` 和 `TMPDIR` 显式指向仓外；执行器设置 `PYTHON_EXECUTABLE`。执行器保留收集数、退出码、前后源码指纹及首次失败，实施逐组时限和总预算，失败优先汇总。开发22组、3000秒；独立23组、4200秒。输入 Token 与服务器准入队列的合同见 [功能和接口](token-usage-queue.md)。
 
 | suite_id | 入口 | 验证与时限 |
 | --- | --- | --- |
 | protocol-inspect / admission-inspect / diagnosis-inspect / image-inspect / model-coverage-inspect | 清单对应 inspect CLI | 零发送、脱敏配置；各60秒 |
+| token-usage-inspect | `python -m features.token_usage inspect-config` | 固定样本、预算、阈值、协议与半小时间隔，零发送；60秒 |
+| token-usage-browser / admission-queue-browser | `scripts/token_usage_ui.cjs` / `scripts/admission_queue_ui.cjs` | 可信绑定、主动结果、切页后台继续、严格FIFO、重启补Key与unknown不重发；各300秒 |
 | integrity-inspect | `scripts/inspect_integrity.py` | 全资产及运行hash、17/16类区别、v3图及重试上限；零数据库、凭据与网络；60秒 |
 | workbench-python | `scripts/test_all.py --output` | 三引擎 selftests 与全部 unittest discover，含下列领域回归；900秒 |
 | workbench-web | `scripts/test_web.js` | 既有页面契约；120秒 |

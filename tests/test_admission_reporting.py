@@ -100,6 +100,39 @@ class AdmissionReportingTests(unittest.TestCase):
         self.assertNotIn("base_url", public["candidate"])
         self.assertNotIn("base_url", public["reference"])
 
+    def test_token_high_risk_remains_visible_when_all_question_pairs_are_normal(self):
+        report = base_report()
+        report["measurements"] = [measurement(2, "q1", side) for side in reporting.SIDES]
+        report["token_usage"] = {
+            "conclusion": "high_risk", "severity": "high_risk", "billing_status": "unverified",
+            "label": "输入 Token 用量上报显著偏高；实际计费待核实", "status": "pending",
+            "candidate_input_tokens": 126000, "reference_input_tokens": 9000,
+            "pairs": [{"ratio": 14}],
+        }
+        technical = reporting.finalize_report(report)
+        self.assertEqual(technical["summary"]["overall"]["status"], "token_usage_high_risk")
+        self.assertEqual(technical["token_usage"]["candidate_input_tokens"], 126000)
+        public = reporting.public_report(report)
+        self.assertEqual(public["token_usage"]["conclusion"], "high_risk")
+        self.assertEqual(public["token_usage"]["billing_status"], "unverified")
+        self.assertNotIn("pairs", public["token_usage"])
+        self.assertNotIn("candidate_input_tokens", public["summary"]["token_usage"])
+
+    def test_missing_token_evidence_does_not_become_runtime_equivalence(self):
+        report = base_report()
+        report["measurements"] = [measurement(2, "q1", side) for side in reporting.SIDES]
+        report["token_usage"] = {"conclusion": "unable_to_determine", "label": "Token 检测无法判定"}
+        self.assertEqual(reporting.finalize_report(report)["summary"]["overall"]["status"], "insufficient")
+        report["token_usage"]["conclusion"] = "pending_confirmation"
+        self.assertEqual(reporting.finalize_report(report)["summary"]["overall"]["status"], "insufficient")
+
+    def test_old_report_without_token_evidence_preserves_its_summary(self):
+        report = base_report()
+        report["measurements"] = [measurement(2, "q1", side) for side in reporting.SIDES]
+        public = reporting.public_report(report)
+        self.assertEqual(public["summary"]["overall"]["status"], "runtime_similar")
+        self.assertNotIn("token_usage", public)
+
 
 if __name__ == "__main__":
     unittest.main()

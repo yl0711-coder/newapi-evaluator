@@ -7,19 +7,30 @@ const net = require('node:net');
 const {spawn} = require('node:child_process');
 const {chromium} = require(process.env.PLAYWRIGHT_MODULE || 'playwright');
 const root = path.resolve(__dirname, '..');
-const data = fs.mkdtempSync(path.join(os.tmpdir(), 'workbench-ui-'));
+const evidenceRoot = fs.realpathSync(process.env.UI_EVIDENCE_ROOT || os.tmpdir());
+assert.ok(evidenceRoot !== root && !evidenceRoot.startsWith(root + path.sep),'Browser evidence belongs outside source');
+const data = fs.mkdtempSync(path.join(evidenceRoot, 'workbench-ui-'));
 const python = process.env.PYTHON_EXECUTABLE || path.join(root,'.venv','bin','python');
 const requests = [];
 const heldImageResponses = new Set();
 let openEndedImages = 0;
-let app, appExit, appError, browser, logs = '';
+let app, appExit, appError, browser, logs = '', phase = 'startup';
+const startupFailure = () => Object.assign(new Error('owned_ui_server_start_failed'),{code:'OWNED_UI_START_FAILED'});
+let rejectFixture;
+const fixtureFailure = new Promise((resolve,reject)=>{rejectFixture=reject;});
 const upstream = http.createServer(async (req, res) => {
+  try {
   const parts = []; for await (const chunk of req) parts.push(chunk);
   const body = JSON.parse(Buffer.concat(parts)); requests.push({key:req.headers.authorization, body, path:req.url});
   if (req.url.endsWith('/responses')) {
     assert.equal(body.model,'gpt-6-astra'); assert.equal(body.max_output_tokens,4096);
     assert.equal(body.reasoning.effort,'low'); assert.equal(body.store,false);
     assert.ok(!('max_tokens' in body) && !('max_completion_tokens' in body) && !('messages' in body));
+    if (!body.stream) {
+      res.writeHead(200,{'Content-Type':'application/json'});
+      res.end(JSON.stringify({status:'completed',model:body.model,output:[{type:'message',content:[{type:'output_text',text:'Synthetic Astra answer'}]}],
+        usage:{input_tokens:12,output_tokens:42,output_tokens_details:{reasoning_tokens:40}}})); return;
+    }
     res.writeHead(200,{'Content-Type':'text/event-stream'});
     const values=[{type:'response.created',response:{model:body.model,status:'in_progress'}},
       {type:'response.output_text.delta',delta:'Synthetic Astra '},{type:'response.output_text.delta',delta:'answer'},
@@ -55,32 +66,37 @@ const upstream = http.createServer(async (req, res) => {
     res.writeHead(200, {'Content-Type':'application/json'});
     res.end(JSON.stringify({choices:[{message:{content:'391',reasoning_content:'Visible reasoning for this fixture.'},finish_reason:'stop'}],usage:{prompt_tokens:10,completion_tokens:8}}));
   }
+  } catch(error) {res.destroy();rejectFixture(error);}
 });
 
-(async () => {
+Promise.race([fixtureFailure,(async () => {
   await new Promise(resolve => upstream.listen(0,'127.0.0.1',resolve));
   const upstreamUrl = `http://127.0.0.1:${upstream.address().port}/v1`;
   const appPort = Number(process.env.UI_TEST_PORT || 18090), base = `http://127.0.0.1:${appPort}`;
   const portCheck = net.createServer();
   await new Promise((resolve,reject)=>{portCheck.once('error',reject);portCheck.listen(appPort,'127.0.0.1',resolve);});
   await new Promise(resolve=>portCheck.close(resolve));
-  app = spawn(python,['run.py','--port',String(appPort)],{cwd:root,env:{...process.env,PLATFORM_DATA_DIR:data,PLATFORM_EGRESS_ALLOWLIST:'127.0.0.1',PLATFORM_USERNAME:'',PLATFORM_PASSWORD:''},stdio:['ignore','pipe','pipe']});
+  const appEnv = Object.fromEntries(['PATH','HOME','LANG','LC_ALL','SYSTEMROOT'].filter(name=>process.env[name]).map(name=>[name,process.env[name]]));
+  Object.assign(appEnv,{TMPDIR:data,PYTHONDONTWRITEBYTECODE:'1',PLATFORM_DATA_DIR:data,RELAY_LAB_DATA_DIR:path.join(data,'relay-lab'),
+    PLATFORM_EGRESS_ALLOWLIST:'127.0.0.1',PLATFORM_USERNAME:'',PLATFORM_PASSWORD:''});
+  app = spawn(python,['-B','run.py','--port',String(appPort)],{cwd:root,env:appEnv,stdio:['ignore','pipe','pipe']});
+  app.stdout.resume();
   appExit = new Promise(resolve=>{app.once('exit',resolve);app.once('error',error=>{appError=error;resolve();});});
   app.stderr.on('data',chunk=>logs+=chunk.toString());
   let ready = false;
   for (let i=0; i<100; i++) {
-    if(appError || app.exitCode!==null || app.signalCode!==null) throw new Error('Owned UI server failed to start');
+    if(appError || app.exitCode!==null || app.signalCode!==null) throw startupFailure();
     try { const r = await fetch(base+'/api/health'); if(r.ok) {ready=true;break;} } catch {}
     await new Promise(resolve=>setTimeout(resolve,100));
   }
-  assert.ok(ready && !appError && app.exitCode===null && app.signalCode===null,'Owned UI server failed to start');
+  if(!ready || appError || app.exitCode!==null || app.signalCode!==null) throw startupFailure();
   browser = await chromium.launch({headless:true, ...(process.env.PLAYWRIGHT_CHANNEL ? {channel:process.env.PLAYWRIGHT_CHANNEL} : {})});
   const page = await browser.newPage({viewport:{width:1440,height:1000}});
   const errors = []; page.on('pageerror',e=>errors.push(e.message));
   await page.goto(base+'/');
-  await page.locator('#features a').nth(7).waitFor();
+  await page.locator('#features a').nth(8).waitFor();
   assert.deepEqual(await page.locator('#features a').evaluateAll(cards=>cards.map(card=>card.getAttribute('href'))),
-    ['/admission/protocol/','/admission/','/stability/','/reasoning/','/capacity/','/diagnosis/','/image-quality/', '/integrity/']);
+    ['/admission/protocol/','/admission/','/stability/','/reasoning/','/capacity/','/diagnosis/','/image-quality/', '/integrity/','/token-usage/']);
   await page.locator('#features a[href="/admission/protocol/"]').click();
   await page.getByText('先获取或输入模型，再预览并开始检测。',{exact:true}).waitFor();
   assert.equal(await page.locator('.platform-nav a[aria-current="page"]').textContent(),'模型与协议检测');
@@ -91,7 +107,7 @@ const upstream = http.createServer(async (req, res) => {
   await page.locator('#features a[href="/image-quality/"]').click();
   await page.locator('#prompt').waitFor();
   await page.goto(base+'/');
-  await page.locator('#features a').nth(7).waitFor();
+  await page.locator('#features a').nth(8).waitFor();
   await page.screenshot({path:path.join(data,'workbench-home-desktop.png'),fullPage:true});
   await page.setViewportSize({width:390,height:844});
   assert.equal(await page.evaluate(()=>document.documentElement.scrollWidth>innerWidth+2),false);
@@ -107,11 +123,28 @@ const upstream = http.createServer(async (req, res) => {
   const channels = await (await fetch(base+'/api/registry/channels')).json(); assert.equal(channels.channels.length,1); assert.equal(channels.channels[0].status,'online');
   assert.ok(!JSON.stringify(channels).includes('ui-saved-reference-key'));
   const channelId = channels.channels[0].id;
+  const catalog = await fetch(base+'/api/model-coverage/models',{method:'POST',headers:{'Content-Type':'application/json'},
+    body:JSON.stringify({model:'demo-model',label:'Synthetic demo model',family:'synthetic',protocol:'openai'})});
+  assert.ok(catalog.ok,'Synthetic model is registered for trusted Token comparisons');
+  for (const [model,protocol] of [['demo-model','openai'],['gpt-6-astra','responses']]) {
+    const binding = await fetch(base+'/api/token-usage/bindings',{method:'POST',headers:{'Content-Type':'application/json'},
+      body:JSON.stringify({model,protocol,reference_channel_id:channelId,confirm_trusted:true})});
+    assert.ok(binding.ok,'Token reference trust is configured explicitly');
+  }
+  assert.equal(requests.length,0,'Catalog and trusted binding configuration never sends tests');
+  async function submitAdmission() {
+    const accepted = page.waitForResponse(response=>new URL(response.url()).pathname==='/admission/api/jobs' && response.request().method()==='POST');
+    await page.locator('#start').click();
+    const response=await accepted; assert.equal(response.status(),202);
+    const created=await response.json(); assert.ok(Number.isInteger(created.id)); return created.id;
+  }
+  phase = 'admission';
   await page.goto(base+'/admission/'); await page.locator('#candidate-import').fill(JSON.stringify({base_url:upstreamUrl,api_key:'ui-ephemeral-candidate-key'}));
   await page.locator('#extract').click(); await page.waitForFunction(()=>document.querySelector('#candidate-import').value==='');
   await page.locator('#candidate-model').fill('demo-model'); await page.locator('#reference-model').fill('demo-model');
   await page.locator('#reference-id').selectOption(String(channelId));
-  await page.locator('#start').click(); await page.waitForFunction(()=>document.querySelector('#run-status').textContent.includes('本轮测试完成'),{},{timeout:40000});
+  const admissionJob = await submitAdmission();
+  await page.waitForFunction(id=>document.querySelector('#run-status').textContent.includes(`任务 #${id} · 已完成`),admissionJob,{timeout:40000});
   assert.equal(await page.locator('#summary-cards .summary-card').count(),8);
   assert.equal(await page.locator('#pair-summary tr').count(),6);
   assert.equal(await page.locator('#results .evidence-card').count(),12);
@@ -120,8 +153,11 @@ const upstream = http.createServer(async (req, res) => {
   assert.equal(await historyPanel.getAttribute('open'),null); await historySummary.click();
   await page.locator('#report-history article').waitFor({state:'visible'});
   await historySummary.click(); await page.locator('#report-history article').waitFor({state:'hidden'});
-  assert.equal(requests.length,24); assert.equal(requests.filter(x=>x.key==='Bearer ui-ephemeral-candidate-key').length,12);
-  assert.equal(requests.filter(x=>x.key==='Bearer ui-saved-reference-key').length,12);
+  const tokenRequest = item => (typeof item.body.input === 'string' ? item.body.input : item.body.messages?.at(-1)?.content || '').startsWith('Read the synthetic inventory below. Reply only OK.\nrecord-0000:');
+  assert.equal(requests.length,26); assert.equal(requests.filter(x=>x.key==='Bearer ui-ephemeral-candidate-key').length,13);
+  assert.equal(requests.filter(x=>x.key==='Bearer ui-saved-reference-key').length,13);
+  assert.equal(requests.filter(tokenRequest).length,2,'Token专项发送一次双端题对');
+  assert.equal(requests.filter(item=>!tokenRequest(item)).length,24,'默认六题两轮双端仍发送24次');
   assert.equal((await (await fetch(base+'/api/registry/channels')).json()).channels.length,1);
   const admissionReports = await (await fetch(base+'/admission/api/reports')).json(); assert.equal(admissionReports.reports.length,1);
   assert.ok(!JSON.stringify(admissionReports).includes('ui-ephemeral-candidate-key')); assert.ok(!JSON.stringify(admissionReports).includes('ui-saved-reference-key'));
@@ -133,15 +169,16 @@ const upstream = http.createServer(async (req, res) => {
   assert.ok(!ordinary.includes('Test answer 391')); assert.ok(!ordinary.includes(upstreamUrl));
   await page.screenshot({path:path.join(data,'admission-desktop.png'),fullPage:true});
   await page.goto(base+'/reasoning/'); await page.locator('#channel_id').selectOption(String(channelId)); await page.locator('#model').fill('demo-model');
-  await page.locator('#start_btn').click(); await page.locator('#results').waitFor({state:'visible'}); assert.equal(requests.length,29);
+  await page.locator('#start_btn').click(); await page.locator('#results').waitFor({state:'visible'}); assert.equal(requests.length,31);
   assert.equal(await page.locator('#details .result-card').count(),5);
   await page.screenshot({path:path.join(data,'reasoning-desktop.png'),fullPage:true});
   await page.goto(base+'/stability/'); await page.locator('[data-view="channels"]').click(); await page.locator('#new-channel').click();
   await page.locator('#channel-name').fill('UI scheduled target'); await page.locator('#channel-registry').selectOption(String(channelId)); await page.locator('#channel-model').fill('demo-model');
   await page.locator('#channel-form button[type="submit"]').click(); await page.locator('#channel-dialog').waitFor({state:'hidden'});
   assert.equal((await (await fetch(base+'/stability/api/channels')).json()).channels.length,1);
-  assert.equal((await (await fetch(base+'/stability/api/schedules')).json()).schedules.length,0); assert.equal(requests.length,29);
+  assert.equal((await (await fetch(base+'/stability/api/schedules')).json()).schedules.length,0); assert.equal(requests.length,31);
   await page.screenshot({path:path.join(data,'stability-desktop.png'),fullPage:true});
+  phase = 'admission_astra';
   await page.goto(base+'/admission/');
   await page.locator('#preset option[value="gpt-6-astra"]').waitFor({state:'attached'});
   await page.locator('#preset').selectOption('gpt-6-astra');
@@ -157,16 +194,22 @@ const upstream = http.createServer(async (req, res) => {
   await page.locator('#candidate-key').fill('ui-ephemeral-astra-key');
   await page.locator('#reference-id').selectOption(String(channelId));
   await page.locator('#rounds').selectOption('1');
-  await page.locator('#start').click();
-  await page.waitForFunction(()=>document.querySelector('#run-status').textContent.includes('本轮测试完成'),{},{timeout:30000});
+  const astraJob = await submitAdmission();
+  await page.waitForFunction(id=>document.querySelector('#run-status').textContent.includes(`任务 #${id} · 已完成`),astraJob,{timeout:30000});
   const astraCalls=requests.filter(item=>item.body.model==='gpt-6-astra');
-  assert.equal(astraCalls.length,12); assert.ok(astraCalls.every(item=>item.path==='/v1/responses'));
+  assert.equal(astraCalls.length,14); assert.ok(astraCalls.every(item=>item.path==='/v1/responses'));
+  assert.equal(astraCalls.filter(tokenRequest).length,2,'Astra adds two specialized Token requests');
+  assert.equal(astraCalls.filter(item=>!tokenRequest(item)).length,12,'Astra retains twelve six-question requests');
+  assert.ok(JSON.stringify(astraCalls.filter(tokenRequest)[0].body)===JSON.stringify(astraCalls.filter(tokenRequest)[1].body),
+    'Token comparison uses identical input, model, protocol and generation settings');
   assert.equal(await page.locator('#pair-summary tr').count(),6);
   const astraJsonEvent=page.waitForEvent('download'); await page.locator('#export-json').click();
   const astraJson=JSON.parse(fs.readFileSync(await (await astraJsonEvent).path(),'utf8'));
   assert.equal(astraJson.candidate.protocol,'responses'); assert.equal(astraJson.reference.protocol,'responses');
   assert.ok(astraJson.measurements.every(item=>item.ok && item.reasoning_tokens===40 && item.max_output_tokens===4096 && !item.speed_data_valid));
   assert.ok(!JSON.stringify(astraJson).includes('ui-ephemeral-astra-key'));
+  assert.equal(astraJson.token_usage.conclusion,'normal');
+  assert.equal(astraJson.token_usage.requests_sent,2);
   const astraHtmlEvent=page.waitForEvent('download'); await page.locator('#export-technical-html').click();
   const astraHtml=fs.readFileSync(await (await astraHtmlEvent).path(),'utf8');
   assert.ok(astraHtml.includes('推理 Token') && astraHtml.includes('4096') && astraHtml.includes('Synthetic Astra answer'));
@@ -179,9 +222,14 @@ const upstream = http.createServer(async (req, res) => {
   await page.screenshot({path:path.join(data,'admission-astra-mobile.png'),fullPage:true});
   await page.setViewportSize({width:1440,height:1000});
   await page.screenshot({path:path.join(data,'admission-astra-desktop.png'),fullPage:true});
-  await page.locator('#start').click(); await page.locator('#stop').waitFor({state:'visible'}); await page.locator('#stop').click();
-  await page.waitForFunction(()=>document.querySelector('#run-status').textContent.includes('部分报告已保存'));
+  phase = 'admission_cancel';
+  await page.locator('#candidate-key').fill('ui-ephemeral-astra-key');
+  const cancelJob = await submitAdmission();
+  await page.waitForFunction(id=>document.querySelector('#run-status').textContent.includes(`任务 #${id} · `),cancelJob);
+  await page.locator('#stop').waitFor({state:'visible'}); await page.locator('#stop').click();
+  await page.waitForFunction(id=>document.querySelector('#run-status').textContent.includes(`任务 #${id} · 已停止`),cancelJob);
   assert.equal(await page.locator('#candidate-protocol').isDisabled(),true);
+  phase = 'capacity_and_image';
   await page.goto(base+'/capacity/'); await page.locator('.platform-nav').waitFor();
   assert.equal(await page.locator('.platform-nav a[aria-current="page"]').textContent(),'\u4e2d\u8f6c\u7ad9\u6781\u9650\u6d4b\u8bd5');
   await page.locator('#preset').selectOption('quick'); await page.locator('#preset').dispatchEvent('change');
@@ -232,9 +280,11 @@ const upstream = http.createServer(async (req, res) => {
   await page.screenshot({path:path.join(data,'image-quality-desktop.png'),fullPage:true});
   await page.locator('#clear').click(); assert.equal(await page.locator('.sample-card').count(),0);
   await page.reload(); assert.equal(await page.locator('#api-key').inputValue(),'');
+  phase = 'shared_theme_responsive';
   for (const width of [390,900,1440,1920]) {
     let theme;
-    for (const url of ['/','/channels/','/admission/protocol/','/admission/','/reasoning/','/stability/','/capacity/','/diagnosis/','/image-quality/']) {
+    for (const url of ['/','/channels/','/admission/protocol/','/admission/','/reasoning/','/stability/','/capacity/','/diagnosis/','/image-quality/','/token-usage/']) {
+      phase = `shared_theme_responsive:${url}:${width}`;
       await page.setViewportSize({width,height:1000}); await page.goto(base+url); await page.locator('.platform-nav').waitFor();
       const appearance = await page.evaluate(() => {
         const body=getComputedStyle(document.body), heading=getComputedStyle(document.querySelector('h1'));
@@ -299,10 +349,26 @@ const upstream = http.createServer(async (req, res) => {
     assert.equal(await page.evaluate(()=>document.documentElement.scrollWidth>innerWidth+2),false,`Capacity batch results at ${width}px`);
     await page.screenshot({path:path.join(data,`capacity-batch-result-${width}.png`),fullPage:true,animations:'disabled'});
   }
-  assert.deepEqual(errors,[]); console.log(JSON.stringify({status:'passed',mockRequests:requests.length,artifacts:data,checks:'frontend channel CRUD, ephemeral admission, report export, reasoning, explicit targets, integrated capacity Mock, image-quality confirmation/generation/export/cancel, desktop/mobile'}));
-})().catch(error=>{console.error(error);if(logs)console.error(logs);process.exitCode=1;}).finally(async()=>{
+  assert.deepEqual(errors,[]);
+  const result = {status:'passed',mockRequests:requests.length,artifacts:data,checks:'frontend channel CRUD, ephemeral admission, trusted Token comparison, job-bound report export/cancel, reasoning, explicit targets, integrated capacity Mock, image-quality confirmation/generation/export/cancel, desktop/mobile'};
+  fs.writeFileSync(path.join(data,'result.json'),JSON.stringify(result,null,2)); console.log(JSON.stringify(result));
+})()]).catch(error=>{
+  let errorCode='owned_browser_operation_failed';
+  if(error.code==='EADDRINUSE') errorCode='ui_port_in_use';
+  else if(error.code==='OWNED_UI_START_FAILED') errorCode='owned_ui_server_start_failed';
+  else if(error instanceof assert.AssertionError) errorCode='browser_assertion_failed';
+  const result={status:'failed',phase,error_name:error.name,error:errorCode,mockRequests:requests.length,stderrBytes:Buffer.byteLength(logs),artifacts:data};
+  fs.writeFileSync(path.join(data,'result.json'),JSON.stringify(result,null,2)); console.error(JSON.stringify(result));process.exitCode=1;
+}).finally(async()=>{
   if(browser) await browser.close();
-  if(app) { if(!appError && app.exitCode===null && app.signalCode===null) app.kill('SIGTERM'); await appExit; }
+  if(app) {
+    if(!appError && app.exitCode===null && app.signalCode===null) app.kill('SIGTERM');
+    let cleanupTimer;
+    const ended = await Promise.race([appExit.then(()=>true),new Promise(resolve=>{cleanupTimer=setTimeout(()=>resolve(false),5000);})]);
+    clearTimeout(cleanupTimer);
+    if(!ended) {app.kill('SIGKILL');await appExit;console.error('Owned UI server exceeded cleanup budget');process.exitCode=1;}
+  }
   for (const response of heldImageResponses) response.destroy();
-  upstream.close();
+  upstream.closeAllConnections();
+  if(upstream.listening) await new Promise(resolve=>upstream.close(resolve));
 });

@@ -9,6 +9,13 @@ from typing import Any
 SIDES = ("candidate", "reference")
 
 
+def public_token_usage(value: Any) -> dict[str, Any] | None:
+    if not isinstance(value, dict):
+        return None
+    return {key: value[key] for key in
+            ("status", "conclusion", "label", "severity", "billing_status", "reason") if key in value}
+
+
 def _number(value: Any) -> float | None:
     if isinstance(value, (int, float)) and not isinstance(value, bool) and math.isfinite(value):
         return float(value)
@@ -240,6 +247,17 @@ def build_summary(report: dict[str, Any], pairs: list[dict[str, Any]]) -> dict[s
         explanations.append("本轮未发现候选端独有异常。")
     explanations.append(speed["label"] + "。")
 
+    token_usage = public_token_usage(report.get("token_usage"))
+    if token_usage:
+        conclusion = token_usage.get("conclusion")
+        if conclusion == "high_risk":
+            overall = {"status": "token_usage_high_risk", "label": "输入 Token 用量上报存在重大异常，实际计费待核实"}
+        elif conclusion == "minor_anomaly":
+            overall = {"status": "token_usage_anomaly", "label": "输入 Token 用量上报存在连续偏差，实际计费待核实"}
+        elif conclusion in {"unable_to_determine", "pending_confirmation"} and overall["status"] == "runtime_similar":
+            overall = {"status": "insufficient", "label": "六题运行表现接近，Token 专项证据尚不足"}
+        explanations.insert(0, str(token_usage.get("label") or "Token 专项检测结果见下方结论。"))
+
     measured = [item for item in report.get("measurements", []) if item.get("round_role") == "evaluated"]
     identities = {
         side: _identity(report.get(side, {}), [item for item in measured if item.get("side") == side])
@@ -267,6 +285,7 @@ def build_summary(report: dict[str, Any], pairs: list[dict[str, Any]]) -> dict[s
             "confidence": "中" if valid else "低",
         },
         "model_identity": identities,
+        **({"token_usage": token_usage} if token_usage is not None else {}),
         "explanations": explanations[:5],
     }
 
@@ -294,6 +313,7 @@ def public_report(report: dict[str, Any]) -> dict[str, Any]:
         "candidate": public_endpoint(finalized.get("candidate")),
         "reference": public_endpoint(finalized.get("reference")),
         "summary": finalized.get("summary", {}),
+        **({"token_usage": public_token_usage(finalized["token_usage"])} if finalized.get("token_usage") is not None else {}),
         "pairs": [
             {key: value for key, value in pair.items() if key not in {"pair_id"}}
             for pair in finalized.get("pairs", [])

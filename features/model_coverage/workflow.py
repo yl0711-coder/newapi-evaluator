@@ -80,6 +80,7 @@ class WorkflowQueue:
             raise RegistryError("任务负载超过 64 KiB 限制")
         now = time.time()
         with self.registry.connect() as conn:
+            conn.execute("BEGIN IMMEDIATE")
             existing = conn.execute("SELECT * FROM eval_workflow_tasks WHERE idempotency_key=?", (idempotency_key,)).fetchone()
             if existing:
                 old = json.loads(existing["payload_json"])
@@ -106,17 +107,30 @@ class WorkflowQueue:
                 raise KeyError("任务不存在")
             if row["state"] in {"succeeded", "failed", "cancelled"}:
                 return self._out(row)
-            state = "cancelled" if row["state"] == "queued" else row["state"]
+            state = "cancelled" if row["state"] in {"queued", "waiting_credentials"} else row["state"]
             now = time.time()
             conn.execute("UPDATE eval_workflow_tasks SET state=?,cancel_requested=1,updated_at=? WHERE id=?", (state, now, task_id))
             row = conn.execute("SELECT * FROM eval_workflow_tasks WHERE id=?", (task_id,)).fetchone()
         return self._out(row)
 
-    def claim_next(self) -> dict[str, Any] | None:
+    def get(self, task_id: int) -> dict[str, Any]:
+        with self.registry.connect() as conn:
+            row = conn.execute("SELECT * FROM eval_workflow_tasks WHERE id=?", (task_id,)).fetchone()
+        if row is None:
+            raise KeyError("任务不存在")
+        return self._out(row)
+
+    def claim_next(self, *, task_type: str | None = None, serial: bool = False) -> dict[str, Any] | None:
         with self.registry.connect() as conn:
             conn.execute("BEGIN IMMEDIATE")
-            row = conn.execute("SELECT * FROM eval_workflow_tasks WHERE state='queued' ORDER BY created_at,id LIMIT 1").fetchone()
+            scope, values = (" AND task_type=?", (task_type,)) if task_type else ("", ())
+            if serial and conn.execute("SELECT 1 FROM eval_workflow_tasks WHERE state='running'" + scope, values).fetchone():
+                return None
+            states = "('queued','waiting_credentials')" if serial else "('queued')"
+            row = conn.execute("SELECT * FROM eval_workflow_tasks WHERE state IN " + states + scope + " ORDER BY created_at,id LIMIT 1", values).fetchone()
             if row is None:
+                return None
+            if row["state"] == "waiting_credentials":
                 return None
             now = time.time()
             changed = conn.execute("UPDATE eval_workflow_tasks SET state='running',attempts=attempts+1,started_at=?,updated_at=? WHERE id=? AND state='queued'", (now, now, row["id"])).rowcount

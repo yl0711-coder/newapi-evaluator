@@ -47,6 +47,9 @@ def _validate(suites: Sequence[SuiteSpec]) -> list[SuiteSpec]:
 def admission(python: str, output: Path, *, sha: str | None = None) -> list[SuiteSpec]:
     """Return the registered admission/workbench verification suites."""
     suites = [
+        SuiteSpec("token-usage-inspect", _python(python, "-m", "features.token_usage", "inspect-config"), 60, "inspect"),
+        SuiteSpec("token-usage-browser", ("node", "scripts/token_usage_ui.cjs"), 300, "browser"),
+        SuiteSpec("admission-queue-browser", ("node", "scripts/admission_queue_ui.cjs"), 300, "browser"),
         SuiteSpec("protocol-inspect", _python(python, "scripts/inspect_protocol_admission.py"), 60, "inspect"),
         SuiteSpec("protocol-browser", ("node", "scripts/protocol_admission_ui.cjs"), 300, "browser"),
         SuiteSpec("admission-inspect", _python(python, "scripts/inspect_admission.py", "--protocol", "openai"), 60, "inspect"),

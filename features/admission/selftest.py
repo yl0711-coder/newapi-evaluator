@@ -487,9 +487,13 @@ class FrontendSafetyTests(unittest.TestCase):
         html = (Path(__file__).parent / "web" / "index.html").read_text(encoding="utf-8")
         source = (Path(__file__).parent / "web" / "app.js").read_text(encoding="utf-8")
         self.assertIn('id="rounds"', html)
-        report_builder = source[source.index("report = {version:"):source.index("liveRows.clear()")]
-        self.assertNotIn("api_key", report_builder)
-        self.assertNotIn("candidate-key", report_builder)
+        self.assertIn("rounds:Number($('rounds').value)", source)
+        # Static boundary regression; UI smoke verifies actual server reports and exports.
+        for declaration in ("async function loadSelectedJob()", "function ordinaryPayload(source)"):
+            self.assertIn(declaration, source)
+            report_flow = source.split(declaration, 1)[1].split("\n}", 1)[0]
+            self.assertNotIn("api_key", report_flow)
+            self.assertNotIn("candidate-key", report_flow)
 
 
 class MultiRoundRouteTests(unittest.IsolatedAsyncioTestCase):

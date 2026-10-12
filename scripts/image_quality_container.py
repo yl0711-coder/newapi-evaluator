@@ -99,6 +99,15 @@ def main():
             assert any(item["id"] == "image-quality" for item in features)
             assert b"image-form" in get("/image-quality/")
             if mode == "all":
+                assert any(item["id"] == "token-usage" for item in features)
+                assert len(get("/token-usage/")) > 100
+                assert len(get("/token-usage/app.js")) > 100
+                token_state = json.loads(get("/api/token-usage/status"))
+                assert token_state["running"] is True
+                assert token_state["active_enabled"] is False
+                assert token_state["scheduled_enabled"] == 0
+                assert token_state["interval_seconds"] == 1800
+                assert json.loads(get("/api/token-usage/results"))["jobs"] == []
                 assert any(item["id"] == "integrity" for item in features)
                 assert b"unified-form" in get("/integrity/")
                 assert len(get("/integrity/app.js")) > 100

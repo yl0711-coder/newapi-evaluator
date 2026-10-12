@@ -53,6 +53,9 @@ class IntegrationTests(unittest.IsolatedAsyncioTestCase):
 
     async def asyncTearDown(self):
         await scheduler.stop()
+        if admission.app.state.admission_manager is not None:
+            await admission.app.state.admission_manager.stop()
+            admission.app.state.admission_manager = None
         admission_storage.close()
         storage.close()
         admission.app.state.upstream_transport = None
@@ -227,8 +230,10 @@ class IntegrationTests(unittest.IsolatedAsyncioTestCase):
         admission.app.state.feishu_settings = admission_feishu.FeishuSettings()
         admission.app.state.feishu_writer = Writer()
 
-        async def fake_run_question(body, question, client):
+        async def fake_run_question(body, question, client, before_send=None):
             for side in ("candidate", "reference"):
+                if before_send is not None:
+                    await before_send(side)
                 yield {
                     "type": "side_finished",
                     "question_id": question["id"],
@@ -271,8 +276,10 @@ class IntegrationTests(unittest.IsolatedAsyncioTestCase):
         admission.app.state.feishu_settings = admission_feishu.FeishuSettings()
         admission.app.state.feishu_writer = FailingWriter()
 
-        async def fake_run_question(body, question, client):
+        async def fake_run_question(body, question, client, before_send=None):
             for side in ("candidate", "reference"):
+                if before_send is not None:
+                    await before_send(side)
                 yield {
                     "type": "side_finished",
                     "question_id": question["id"],
@@ -621,6 +628,8 @@ class IntegrationTests(unittest.IsolatedAsyncioTestCase):
                     expected = [] if mode == "channels" else ["protocol-admission", "admission"] if mode == "admission" else [mode]
                     if mode == "stability":
                         expected.append("integrity")
+                    if mode in {"admission", "stability"}:
+                        expected.append("token-usage")
                     self.assertEqual([f["id"] for f in data["features"]], expected)
                     self.assertEqual((await client.get("/integrity/")).status_code, 200 if mode == "stability" else 404)
                     protocol = [f for f in data["features"] if f["id"] == "protocol-admission"]
@@ -631,6 +640,10 @@ class IntegrationTests(unittest.IsolatedAsyncioTestCase):
                         self.assertEqual((await client.get("/admission/protocol/")).status_code, 404)
                     self.assertEqual((await client.get("/api/registry/channels")).json()["channels"][0]["id"],self.channel["id"])
                     self.assertEqual(scheduler.status()["running"],mode=="stability")
+                    if mode in {"admission", "stability"}:
+                        token_state = (await client.get("/api/token-usage/status")).json()
+                        self.assertEqual(token_state["running"], mode == "stability")
+                        self.assertFalse(token_state["active_enabled"])
                     if mode != "channels":
                         self.assertEqual((await client.get(f"/{mode}/")).status_code,200)
         self.assertFalse(scheduler.status()["running"])
@@ -642,10 +655,12 @@ class IntegrationTests(unittest.IsolatedAsyncioTestCase):
             self.assertEqual(response.json()["features"],
                              ["admission", "stability", "reasoning", "capacity", "diagnosis", "image-quality"])
             platform = (await self.client.get("/api/platform")).json()
-            self.assertEqual([item["id"] for item in platform["features"]], ["protocol-admission", *response.json()["features"], "integrity"])
+            self.assertEqual([item["id"] for item in platform["features"]], ["protocol-admission", *response.json()["features"], "integrity", "token-usage"])
             for feature in platform["features"]:
                 self.assertEqual((await self.client.get(feature["url"])).status_code, 200)
             self.assertTrue(scheduler.status()["running"])
+            self.assertTrue(response.json()["token_usage_executor"]["running"])
+            self.assertFalse(response.json()["token_usage_executor"]["active_enabled"])
         self.assertFalse(scheduler.status()["running"])
 
 

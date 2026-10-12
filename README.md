@@ -45,6 +45,8 @@ python3 -m venv .venv
 
 ## 模型与协议检测
 
+准入新增服务器 FIFO 队列，切页、刷新或关闭浏览器后继续；服务重启后等待补临时 Key，队首等待时阻塞后续。准入及定时监控共用输入 Token 双端对照，固定可信参照需先在 `/token-usage/` 配置。定时默认半小时，Monitor 可通过签名接口立即发起复测并消费持久结果事件；重大异常首次即发布。没有账单证据时只认定用量上报异常。详见 [功能、接口与验收](docs/token-usage-queue.md)。
+
 从公共渠道或准入页面进入 `/admission/protocol/`，选择已有渠道或填写 URL 和 Key，手动获取上游模型，再勾选最多5个模型检测。模型列表与常用模型覆盖共用缓存；也可手动输入模型。结果以“模型 × Chat Completions / Responses / Claude Messages”展示，分别查看普通调用、流式、工具及搜索。无需供应商、NewAPI类型或分组配置，不输出配置建议。默认Mock；真实请求需本次明确确认，先预览请求数量。历史报告及JSON/HTML下载保留。详见 [功能说明](docs/protocol-admission.md) 与 [测试清单](docs/protocol-admission-testing.md)。
 
 ## 常用模型覆盖
@@ -74,7 +76,7 @@ data/
   channels.db             公共连接资料、常用模型清单与人工获取快照；无定时计划
   channels.key            渠道密钥的加密主密钥
   admission/
-    reports.db            最近 30 条准入报告及飞书待写队列，不含 API Key
+    reports.db            准入任务 FIFO、请求检查点、最近 30 条报告及飞书待写队列，不含 API Key
   stability/
     stability.db          巡检目标、计划、结果、通知设置
     secret.key            飞书 Webhook 的加密主密钥（配置后生成）
@@ -82,6 +84,8 @@ data/
     console/runs/         极限测试脱敏请求指标、汇总和报告
   diagnosis/
     diagnosis.db          请求特征案例、计划快照和测量指标，不含请求/响应正文
+  token-usage/
+    token-usage.db        可信参照、半小时配置、双端请求许可及 Monitor 结果事件，不含 API Key 或正文
 ```
 
 `PLATFORM_DATA_DIR` 可指定其他数据目录；准入、定时和非流式工具使用相同值即可共享公共渠道。极限测试共用工作台的登录和进程，但不会自动读取公共渠道密钥。定时目标只引用公共渠道 ID，执行时读取最新地址和密钥。停用公共渠道会阻止后续使用；已发出的请求不被强制中断。模型名、协议、频率、轮次归各测试任务配置，导入模板模型名不会写入公共渠道资料。公共渠道页面另维护常用模型目录和精确映射，通过人工获取更新上游清单；实测状态复用定时测试结果。

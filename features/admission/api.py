@@ -1,20 +1,19 @@
 import asyncio
 from contextlib import asynccontextmanager
 from pathlib import Path
-from typing import Any, AsyncIterator, Literal
-from uuid import uuid4
+from typing import Any, Literal
 
-import httpx
 from fastapi import FastAPI, HTTPException, Request
-from fastapi.responses import StreamingResponse
+from fastapi.exceptions import RequestValidationError
+from fastapi.responses import JSONResponse, StreamingResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, ConfigDict, Field, SecretStr, model_validator
 
-from shared.api import Selection, resolve
-from shared.network import guarded_transport
-from shared.redaction import EventRedactor
-from shared.registry import RegistryError, normalize
+from shared.api import Selection
+from shared.registry import Conflict, RegistryError, get_registry
 from . import feishu, main as engine, reporting, storage
+from .jobs import AdmissionManager
+from features.token_usage.transport import run_paired_check
 from features.protocol_admission.api import app as protocol_app
 
 
@@ -97,6 +96,7 @@ class AdmissionReportInput(BaseModel):
     responses: list[ReportResponseInput] = Field(default_factory=list, max_length=60)
     summary: dict[str, Any] = Field(default_factory=dict)
     pairs: list[dict[str, Any]] = Field(default_factory=list, max_length=30)
+    token_usage: dict[str, Any] | None = None
 
 
 def _contains_secret_field(value: Any) -> bool:
@@ -158,10 +158,13 @@ async def lifespan(_app):
         app.state.feishu_writer = None
     for entry in storage.list_unsynced_feishu_records():
         _schedule_feishu_record(entry["id"])
+    manager = await _manager()
     try:
         async with protocol_app.router.lifespan_context(protocol_app):
             yield
     finally:
+        await manager.stop()
+        app.state.admission_manager = None
         if _feishu_tasks:
             await asyncio.gather(*tuple(_feishu_tasks), return_exceptions=True)
         app.state.feishu_writer = None
@@ -172,7 +175,14 @@ app = FastAPI(docs_url=None, redoc_url=None, openapi_url=None, lifespan=lifespan
 app.state.upstream_transport = None
 app.state.feishu_settings = feishu.FeishuSettings()
 app.state.feishu_writer = None
+app.state.admission_manager = None
+app.state.token_usage_check = run_paired_check
 app.get("/api/meta")(engine.meta)
+
+
+@app.exception_handler(RequestValidationError)
+async def validation_error(_request, _exc):
+    return JSONResponse({"detail": "请求字段格式无效"}, status_code=422)
 
 
 class ExtractInput(BaseModel):
@@ -187,73 +197,105 @@ async def extract_channel(body: ExtractInput):
         raise HTTPException(400, "无法提取候选端信息，请检查文本或手动填写") from exc
 
 
+def _submission_record(base_url: str, model: str) -> None:
+    test_group = feishu.group_for_model(model)
+    try:
+        fields = feishu.build_fields(base_url, test_group, app.state.feishu_settings)
+    except ValueError:
+        fields = {feishu.DEFAULT_CHANNEL_FIELD: feishu.channel_group_value(base_url),
+                  feishu.DEFAULT_GROUP_FIELD: test_group}
+    entry = storage.enqueue_feishu_record(base_url, test_group, fields,
+                                          delivery_configured=app.state.feishu_writer is not None)
+    _schedule_feishu_record(entry["id"])
+
+
+async def _manager() -> AdmissionManager:
+    manager = app.state.admission_manager
+    if manager is not None and (manager.store.path != storage.DB_PATH or manager.registry is not get_registry()
+                                or not manager.running):
+        await manager.stop()
+        manager = None
+    if manager is None:
+        manager = AdmissionManager(storage.DB_PATH, get_registry(), transport=app.state.upstream_transport,
+                                   token_check=app.state.token_usage_check, on_submit=_submission_record)
+        await manager.start()
+        app.state.admission_manager = manager
+    manager.transport = app.state.upstream_transport
+    manager.token_check = app.state.token_usage_check
+    return manager
+
+
+def _job_error(exc):
+    if isinstance(exc, KeyError):
+        return HTTPException(404, "准入任务不存在")
+    if isinstance(exc, Conflict):
+        return HTTPException(409, str(exc))
+    return HTTPException(400, str(exc))
+
+
+async def _enqueue(body: CompareInput, request: Request):
+    try:
+        manager = await _manager()
+        job = await manager.enqueue(body, idempotency_key=request.headers.get("Idempotency-Key"))
+        return manager, job
+    except (RegistryError, KeyError) as exc:
+        raise _job_error(exc) from None
+
+
+@app.post("/api/jobs", status_code=202)
+async def create_job(body: CompareInput, request: Request):
+    _manager_instance, job = await _enqueue(body, request)
+    return job
+
+
+@app.get("/api/jobs")
+async def list_jobs():
+    return {"jobs": (await _manager()).list()}
+
+
+@app.get("/api/jobs/{task_id}")
+async def job_detail(task_id: int):
+    try:
+        return (await _manager()).public(task_id)
+    except KeyError as exc:
+        raise _job_error(exc) from None
+
+
+@app.get("/api/jobs/{task_id}/events")
+async def job_events(task_id: int, after: int = 0):
+    if after < 0:
+        raise HTTPException(400, "事件游标必须为非负整数")
+    try:
+        return (await _manager()).store.events(task_id, after)
+    except KeyError as exc:
+        raise _job_error(exc) from None
+
+
+@app.post("/api/jobs/{task_id}/cancel")
+async def cancel_job(task_id: int):
+    try:
+        return await (await _manager()).cancel(task_id)
+    except KeyError as exc:
+        raise _job_error(exc) from None
+
+
+class CredentialsInput(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    api_key: SecretStr
+
+
+@app.post("/api/jobs/{task_id}/credentials")
+async def job_credentials(task_id: int, body: CredentialsInput):
+    try:
+        return (await _manager()).supply(task_id, body.api_key.get_secret_value())
+    except (RegistryError, KeyError) as exc:
+        raise _job_error(exc) from None
+
+
 @app.post("/api/compare")
 async def compare(body: CompareInput, request: Request):
-    if body.candidate.model != body.reference.model:
-        raise HTTPException(400, "成对测试要求候选端与参照端使用相同的请求模型名")
-    try:
-        clean = normalize({"base_url": body.candidate.base_url,
-                           "api_key": body.candidate.api_key.get_secret_value()})
-    except RegistryError as exc:
-        raise HTTPException(400, str(exc)) from exc
-    candidate = {"base_url": clean["base_url"], "api_key": clean["api_key"],
-                 "model": body.candidate.model, "protocol": body.candidate.protocol}
-    reference = resolve(body.reference)
-    test_group = feishu.group_for_model(body.candidate.model)
-    try:
-        fields = feishu.build_fields(clean["base_url"], test_group, app.state.feishu_settings)
-    except ValueError:
-        fields = {
-            feishu.DEFAULT_CHANNEL_FIELD: feishu.channel_group_value(clean["base_url"]),
-            feishu.DEFAULT_GROUP_FIELD: test_group,
-        }
-    entry = storage.enqueue_feishu_record(
-        clean["base_url"],
-        test_group,
-        fields,
-        delivery_configured=app.state.feishu_writer is not None,
-    )
-    _schedule_feishu_record(entry["id"])
-    run = engine.CompareRequest(candidate=engine.EndpointConfig(**candidate),
-                                reference=engine.EndpointConfig(**reference), rounds=body.rounds)
-    redactor = EventRedactor([candidate["api_key"], reference["api_key"]])
-    run_id = uuid4().hex
-    warmup_rounds = 1 if body.rounds >= 2 else 0
-
-    async def stream() -> AsyncIterator[bytes]:
-        total = len(engine.QUESTIONS) * body.rounds
-        yield engine.encode_event({"type": "run_started", "run_id": run_id,
-            "question_count": len(engine.QUESTIONS), "rounds": body.rounds,
-            "protocols": {"candidate": candidate["protocol"], "reference": reference["protocol"]},
-            "warmup_rounds": warmup_rounds, "total_question_runs": total})
-        timeout = httpx.Timeout(connect=20, read=240, write=20, pool=20)
-        async with httpx.AsyncClient(timeout=timeout, follow_redirects=False, trust_env=False,
-                transport=app.state.upstream_transport or guarded_transport()) as client:
-            for number in range(1, body.rounds + 1):
-                for index, question in enumerate(engine.QUESTIONS, 1):
-                    if await request.is_disconnected():
-                        return
-                    selected = engine.select_question_variant(question, f"{run_id}:{number}")
-                    pair_id = f"{run_id}:{number}:{selected['id']}"
-                    round_role = "warmup" if number <= warmup_rounds else "evaluated"
-                    yield engine.encode_event({"type": "question_started", "question_id": selected["id"],
-                        "pair_id": pair_id, "round_role": round_role,
-                        "variant_id": selected.get("variant_id", "original"),
-                        "prompt": selected["prompt"], "round": number, "index": index})
-                    async for event in engine.run_question(run, selected, client):
-                        for safe in redactor.filter(event):
-                            yield engine.encode_event({**safe, "round": number, "pair_id": pair_id,
-                                "round_role": round_role,
-                                "variant_id": selected.get("variant_id", "original")})
-                    completed = (number - 1) * len(engine.QUESTIONS) + index
-                    yield engine.encode_event({"type": "question_finished", "question_id": selected["id"],
-                        "pair_id": pair_id, "round_role": round_role, "round": number,
-                        "completed_question_runs": completed, "total_question_runs": total})
-                    if completed < total:
-                        await engine.wait_between_questions()
-        yield engine.encode_event({"type": "run_finished"})
-
-    return StreamingResponse(stream(), media_type="application/x-ndjson")
+    manager, job = await _enqueue(body, request)
+    return StreamingResponse(manager.subscribe(job["id"], request), media_type="application/x-ndjson")
 
 
 @app.post("/api/reports", status_code=201)

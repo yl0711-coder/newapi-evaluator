@@ -31,9 +31,9 @@
 | image-inspect | python -m features.image_quality inspect-config --config tests/fixtures/image_quality/config.json | 继承生图只读检查；60s |
 | legacy-acceptance | scripts/acceptance.py --sha 完整SHA --output 分配目录 | 独立验收额外运行既有十组验收，含持续/突发 Mock；1200s |
 
-开发十组总体预算 1800 秒，独立验收十一组总体预算 3000 秒。复用既有失败聚合与进程组清理，超时/取消终止本次子进程，未执行组保留 not_run。共享聚合回归位于 tests/test_diagnosis_verification.py；当前执行器失败聚合和收集/执行中取消回归位于 tests/test_admission_verification.py；Responses 与只读入口回归位于 tests/test_admission_responses.py。只读检查不发请求，不读取渠道库或飞书配置。
+当前开发十七组总体预算 1800 秒，独立验收十八组总体预算 3000 秒；注册清单以 `scripts/inspect_test_plan.py admission` 为准。Token专项和后台队列新增组见 [功能和接口](token-usage-queue.md)。复用既有失败聚合与进程组清理，超时/取消终止本次子进程，未执行组保留 not_run。共享聚合回归位于 tests/test_diagnosis_verification.py；当前执行器失败聚合和收集/执行中取消回归位于 tests/test_admission_verification.py；Responses 与只读入口回归位于 tests/test_admission_responses.py。只读检查不发请求，不读取渠道库或飞书配置。
 
-本次无构建/依赖/启动/容器配置变更、无发布，容器构建不触发；实验室无源码修改。Mock 不证明真实模型可用性或真实推理表现。
+准入参数的基础清单不含容器组。涉及工作台生命周期或容器配置时，采用 [完整性清单](integrity-testing.md) 的开发22组、独立23组，并执行 `build-container`；本轮 Token 专项与服务器队列变更采用该完整清单。实验室引擎无源码修改，五模式回归仍保留。Mock 不证明真实模型可用性或真实推理表现。
 
 ## 六题准入与糖果测试
 

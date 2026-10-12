@@ -1,6 +1,7 @@
 import json
 import os
 from pathlib import Path
+import shlex
 import signal
 import socket
 import subprocess
@@ -268,6 +269,19 @@ class UIBootstrapTests(unittest.TestCase):
                    PYTHON_EXECUTABLE=python, UI_TEST_PORT=str(port))
         return run_process(["node", "scripts/ui_smoke.cjs"], env, 5)
 
+    def assert_startup_failure(self, text, directory, category):
+        records = [json.loads(line) for line in text.splitlines() if line.startswith("{")]
+        self.assertEqual(len(records), 1)
+        result = records[0]
+        self.assertEqual(result["status"], "failed")
+        self.assertEqual(result["phase"], "startup")
+        self.assertEqual(result["error"], category)
+        self.assertEqual(result["mockRequests"], 0)
+        artifacts = Path(result["artifacts"]).resolve()
+        self.assertTrue(artifacts.is_relative_to(directory.resolve()))
+        self.assertEqual(json.loads((artifacts / "result.json").read_text()), result)
+        return result
+
     def test_occupied_port_fails_without_contacting_existing_service(self):
         with tempfile.TemporaryDirectory() as directory, socket.socket() as existing:
             existing.bind(("127.0.0.1", 0))
@@ -275,16 +289,22 @@ class UIBootstrapTests(unittest.TestCase):
             code, text, timed_out = self.run_ui(Path(directory), existing.getsockname()[1], sys.executable)
             self.assertEqual(code, 1)
             self.assertFalse(timed_out)
-            self.assertIn("EADDRINUSE", text)
+            self.assert_startup_failure(text, Path(directory), "ui_port_in_use")
             existing.settimeout(0.1)
             with self.assertRaises(socket.timeout):
                 connection, _ = existing.accept()
                 connection.close()
+            with socket.socket() as another:
+                with self.assertRaises(OSError):
+                    another.bind(existing.getsockname())
 
     def test_failed_child_startup_finishes_cleanup(self):
         with tempfile.TemporaryDirectory() as directory:
             exited = Path(directory) / "exited-python"
-            exited.write_text("#!/bin/sh\nexit 23\n")
+            pid_file = Path(directory) / "child.pid"
+            canary = "synthetic-bootstrap-sensitive-output-canary"
+            exited.write_text(f"#!/bin/sh\nprintf '%s' \"$$\" > {shlex.quote(str(pid_file))}\n"
+                              f"printf '%s\\n' '{canary}'\nprintf '%s\\n' '{canary}' >&2\nexit 23\n")
             exited.chmod(0o700)
             for python in (Path(directory) / "absent-python", exited):
                 with self.subTest(kind=python.name), socket.socket() as available:
@@ -294,4 +314,12 @@ class UIBootstrapTests(unittest.TestCase):
                     code, text, timed_out = self.run_ui(Path(directory), port, str(python))
                     self.assertEqual(code, 1)
                     self.assertFalse(timed_out)
-                    self.assertIn("Owned UI server failed to start", text)
+                    result = self.assert_startup_failure(text, Path(directory), "owned_ui_server_start_failed")
+                    self.assertNotIn(canary, text)
+                    self.assertNotIn(str(python), text)
+                    if python == exited:
+                        self.assertGreater(result["stderrBytes"], 0)
+                        with self.assertRaises(ProcessLookupError):
+                            os.kill(int(pid_file.read_text()), 0)
+                    with socket.socket() as reusable:
+                        reusable.bind(("127.0.0.1", port))

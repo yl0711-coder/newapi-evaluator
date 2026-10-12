@@ -87,6 +87,16 @@ class TestManifestTests(unittest.TestCase):
         self.assertEqual(data["suite_count"], len(suites))
         self.assertEqual(data["plan"], "integrity")
 
+    def test_token_and_queue_consumers_are_registered_in_admission_and_integrity(self):
+        required = {"token-usage-inspect", "token-usage-browser", "admission-queue-browser"}
+        for plan in (admission, integrity):
+            suites = plan(sys.executable, OUTPUT)
+            self.assertTrue(required <= {suite.suite_id for suite in suites})
+            for suite in suites:
+                if suite.suite_id in required:
+                    self.assertTrue(suite.command)
+                    self.assertLessEqual(suite.timeout_seconds, 300)
+
     def test_integrity_container_and_inspection_results_are_classified(self):
         from scripts.verify_image_quality import classify
         from scripts.verify_diagnosis import classify as domain_classify

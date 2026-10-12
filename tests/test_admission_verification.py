@@ -76,7 +76,7 @@ class AdmissionVerificationTests(unittest.TestCase):
             self.assertEqual(verifier.main(), 1)
             data = json.loads((Path(folder) / 'report/verification.json').read_text())
             self.assertEqual(data['status'], 'failed')
-            self.assertEqual(len(data['results']), 14)
+            self.assertEqual(len(data['results']), 17)
             rows = {row['suite_id']: row for row in data['results']}
             self.assertIn('protocol-inspect', rows)
             self.assertIn('protocol-browser', rows)
@@ -126,7 +126,7 @@ sys.exit(v.main())
                     data = json.loads((report / 'verification.json').read_text())
                     self.assertTrue(data['cancelled'])
                     self.assertEqual(data['status'], 'incomplete')
-                    self.assertEqual(len(data['results']), 14)
+                    self.assertEqual(len(data['results']), 17)
                     if stage == 'suite':
                         self.assertEqual(data['results'][0]['reason'], 'cancelled')
                         self.assertEqual(data['results'][0]['status'], 'incomplete')

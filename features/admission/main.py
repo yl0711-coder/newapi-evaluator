@@ -634,15 +634,16 @@ async def measure_side(
     queue: asyncio.Queue[dict[str, Any]],
     client: httpx.AsyncClient,
     start_gate: asyncio.Event | None = None,
+    before_send=None,
 ) -> None:
     if start_gate is not None:
         await start_gate.wait()
     if config.protocol != "responses":
-        await _measure_side(side, config, question, queue, client)
+        await _measure_side(side, config, question, queue, client, before_send)
         return
     started_ms = round(time() * 1000)
     try:
-        await asyncio.wait_for(_measure_side(side, config, question, queue, client),
+        await asyncio.wait_for(_measure_side(side, config, question, queue, client, before_send),
                                timeout=RESPONSES_TOTAL_TIMEOUT_SECONDS)
     except asyncio.TimeoutError:
         payload = build_payload(config, question)
@@ -660,6 +661,7 @@ async def _measure_side(
     question: dict[str, Any],
     queue: asyncio.Queue[dict[str, Any]],
     client: httpx.AsyncClient,
+    before_send=None,
 ) -> None:
     started_at = perf_counter()
     request_started_ms = round(time() * 1000)
@@ -688,6 +690,8 @@ async def _measure_side(
                         "max_output_tokens": payload["max_output_tokens"],
                         "reasoning_effort": payload.get("reasoning", {}).get("effort")}
                        if config.protocol == "responses" else {})
+    if before_send is not None:
+        await before_send(side)
     try:
         async with client.stream(
             "POST",
@@ -926,24 +930,36 @@ async def run_question(
     body: CompareRequest,
     question: dict[str, Any],
     client: httpx.AsyncClient,
+    before_send=None,
 ) -> AsyncIterator[dict[str, Any]]:
     queue: asyncio.Queue[dict[str, Any]] = asyncio.Queue()
     start_gate = asyncio.Event()
     tasks = [
-        asyncio.create_task(measure_side("candidate", body.candidate, question, queue, client, start_gate)),
-        asyncio.create_task(measure_side("reference", body.reference, question, queue, client, start_gate)),
+        asyncio.create_task(measure_side("candidate", body.candidate, question, queue, client, start_gate, before_send)),
+        asyncio.create_task(measure_side("reference", body.reference, question, queue, client, start_gate, before_send)),
     ]
     await asyncio.sleep(0)
     start_gate.set()
     finished = 0
+    event_task = None
     try:
         while finished < 2:
-            event = await queue.get()
+            event_task = asyncio.create_task(queue.get())
+            pending = [task for task in tasks if not task.done()]
+            await asyncio.wait([event_task, *pending], return_when=asyncio.FIRST_COMPLETED)
+            for task in tasks:
+                if task.done():
+                    task.result()
+            event = await event_task
+            event_task = None
             if event["type"] == "side_finished":
                 finished += 1
             yield event
         await asyncio.gather(*tasks)
     finally:
+        if event_task is not None:
+            event_task.cancel()
+            await asyncio.gather(event_task, return_exceptions=True)
         for task in tasks:
             if not task.done():
                 task.cancel()
