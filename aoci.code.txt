@@ -8,7 +8,7 @@
 AGENTS.md[SG9M]: F:规定仓库开发、测试、审查与Git操作须遵守正式规则，要求Python与FastAPI、新功能走特性分支、实验室先行、默认Mock并隔离凭据，同时定义AOCI认知闭环 | R:code:docs/ai-rules/CODING.md,code:docs/ai-rules/TESTING.md,code:README.md | A:作为Agent进入仓库时的范围、授权和AOCI流程入口 | S:完成开发或测试不等于获得合并、推送、发布或真实请求许可
 Dockerfile[OV8T]: F:基于python:3.13-slim安装依赖、创建uid10001的workbench用户、复制应用、创建700权限数据目录并以8090提供健康检查服务 | R:code:requirements.txt,code:scripts/container_healthcheck.py,code:run.py,code:.dockerignore | A:定义生产镜像的运行身份、端口、数据目录和默认启动命令 | S:容器以非root用户运行，/app/data必须可写且权限为700
 Makefile[OV7T]: F:提供Compose启动、开发挂载、停止、重启、日志、状态、生产镜像更新和容器内Python测试命令 | R:code:compose.yml,code:compose.dev.yml,code:compose.prod.yml,code:scripts/test_all.py | A:test显式建立/tmp证据根并传入新输出目录，保留测试进程退出码 | S:test的临时容器使用--rm，/tmp证据不保证宿主持久保留；prod-up先拉取镜像再启动
-README.md[SG8S]: F:说明工作台六工具、六题准入、MT/Nerfed十分钟定时结论、主动Canary、数据和部署入口 | R:code:workbench.py,code:features/integrity/README.md | A:关联用户流程、兼容迁移及本地验证说明 | S:每渠道默认864首次请求、最多3456含连接重试；旧双空保留空；unknown不重发；API未校准不认证身份
+README.md[SG8S]: F:介绍工作台六工具、六题准入、MT/Nerfed半小时默认采样、主动Canary、数据及部署入口 | R:code:workbench.py,code:features/integrity/README.md | A:关联用户流程、配置兼容与本地验证方法 | S:单渠道默认288首次请求、最多1152含连接重试；原窗600秒；已有v3时刻与双空保留；unknown不重发；API未校准不认证身份
 compose.dev.yml[OC7T]: F:覆盖工作台命令为0.0.0.0监听的reload开发模式，并挂载data、features、relay_lab、configs、shared、web及入口文件 | R:code:compose.yml,code:run.py,code:workbench.py | A:在基础Compose服务上提供代码热更新开发形态 | S:开发挂载会暴露宿主源码与数据，不能作为生产部署配置
 compose.prod.yml[OV8T]: F:以可配置GHCR镜像提供工作台端口、持久数据、环境注入、健康检查、优雅退出及轮转日志 | R:code:.env.example,code:Dockerfile,code:scripts/container_healthcheck.py | A:声明仅挂载data的生产服务生命周期和拉取策略 | S:平台密码缺失拒启动；主动消费者默认off不阻挡启用计划；拉取镜像不证明运行版本已替换
 compose.yml[OC8T]: F:构建工作台镜像并配置本机端口、持久data、环境注入、健康检查、重启及日志轮转 | R:code:Dockerfile,code:.env.example,code:scripts/container_healthcheck.py | A:提供本地稳定Compose运行入口和主动执行开关透传 | S:PLATFORM_PASSWORD必填；Monitor与手动完整性默认off，定时启用计划独立运行；开关不代替真实请求授权
@@ -48,7 +48,7 @@ eval-autonomous-development-baseline-20260928.md[SG8T]: F:记录Eval自主开发
 eval-workflow-control-plane.md[SW7T]: F:定义生产覆盖、本地队列、Monitor许可账本、前端入口和六组专项门禁的控制面契约 | R:code:features/model_coverage/workflow.py,code:features/model_coverage/monitor.py,code:docs/monitor-internal-api.md | A:关联E2任务终态与独立Monitor复测，给出有界验证入口 | S:本地快照接受乱序历史，Monitor清单时间须递增；敏感处理器异常拒绝后任务仍running；完整性v2按Registry ID而旧v1身份合同保留
 monitor-internal-api.md[SS8S]: F:规定旧Monitor v1签名、身份清单、探测许可账本、结果事件与独立完整性v2的接口边界 | R:code:features/model_coverage/internal_api.py,code:features/model_coverage/monitor.py,code:shared/access.py,code:docs/integrity-monitor-api.md | A:供Monitor按原始请求字节签名、幂等重试和消费脱敏结果 | S:v1未绑定身份仍拒绝，管理API保留而渠道页无绑定UI；v1生产停用可direct复测但Eval连接须启用；unknown保留预算不重发，登录不替代HMAC
 integrity-monitor-api.md[SS8T]: F:规定HMAC完整性v2的Registry异步任务、HLwY/KBF主动复核、nerfed API与官方账号离线证据接口 | R:code:features/model_coverage/internal_api.py,code:features/integrity/monitor_adapter.py,code:features/integrity/service.py | A:定义严格目标、principal隔离、幂等查询取消恢复和错误语义 | S:v1合同不变；v2允许启用recorded渠道，旧身份原任务拒恢复；live只控主动消费，token/day预估不截停；旧unknown不补发；HMAC不证明证据真伪，离线零出站
-integrity-testing.md[SG8T]: F:登记完整性开发19组与独立20组，覆盖v3采样重试、保守结论、旧计划迁移、主动Canary及六题准入 | R:code:scripts/test_manifest.py,code:scripts/verify_integrity.py | A:将用户需求映射到领域、真实回环HTTP、浏览器与容器验收 | S:开发3000秒、独立4200秒；仅替换上游与时钟；Mock不证明真实模型身份、API校准或全天容量
+integrity-testing.md[SG8T]: F:登记完整性开发19组与独立20组，覆盖半小时默认、十分钟自定义、重试结论、迁移、主动Canary和六题准入 | R:code:scripts/test_manifest.py,code:scripts/verify_integrity.py | A:将产品契约映射到领域、回环HTTP、浏览器及容器验收 | S:开发3000秒、独立4200秒；仅替换上游与时钟；Mock不证明真实身份、API校准或全天容量
 
 ===/Users/lmurder/Desktop/eval/docs/ai-rules/===
 CODING.md[SG9T]: F:定义仓库身份核对、任务范围、Python与FastAPI约定、分支开发、数据与凭据隔离、Mock默认、独立审查、报告边界和不自动合并发布的共用编码规则 | R:code:AGENTS.md,code:docs/ai-rules/TESTING.md,code:docs/ai-rules/REVIEW.md,code:docs/ai-rules/HANDOFF.md | A:作为所有开发、测试、Git和交付动作的正式边界 | S:测试通过或完成开发不自动获得合并、推送、部署或真实接口授权
@@ -161,7 +161,7 @@ transport.py[IN8M]: F:构造Chat与Messages探测、分派Responses，执行预�
 integrity.py[AW9M]: F:将周期tick转交v3执行器，复验冻结online目标并生成方法条件成绩，保留旧slot纯报告重建 | R:code:features/stability/app/timetable_executor.py,code:features/stability/app/layered.py | A:连接定时状态、冻结目标、终态发布和历史兼容 | S:旧v1/v2禁止执行及恢复；旧terminal只重建零发送；v3条件标记连接重试；off不关启用定时，unknown不重发
 layered.py[DW8M]: F:保存旧分层历史与连续异常事件，校验并持久化旧Canary及主动Canary的显式可信参照 | R:code:features/stability/app/storage.py,code:features/integrity/unified.py | A:复用完整192题参照存储并保留旧slot和结果读取 | S:参照须completed、192次且有完整条件，无请求异常、unknown或缺测；不自动提升，参照不随报告清理
 timetable.py[DW9M]: F:维护v3独立控制、日期与occurrence表，退休旧任务，协调排期取消恢复、许可守护和记账预估 | R:code:features/stability/app/timetable_contract.py,code:features/integrity/durable.py | A:收敛已提交计划镜像并冻结首次许可名称倍率及UTC身份 | S:仅未来零尝试槽可重开，过去不追赶；旧已提交纯重建，许可未确认转unknown；归档不重建；预算时区冻结，revision不入槽身份
-timetable_contract.py[DW8T]: F:纯校验MT/Nerfed同步十分钟集合，升级旧配置并按IANA时区构建v3独立采样图 | R:code:features/stability/app/timetable.py,code:scripts/inspect_integrity.py | A:给保存、预览、调度和零数据库检查提供唯一时间合同 | S:双空保持零请求；默认全天144轮3+3，无health或Canary；DST gap跳过fold取首次；原due起600秒，两集合须相同
+timetable_contract.py[DW8T]: F:提供半小时默认时刻，校验MT/Nerfed同步十分钟刻度，升级旧配置并按IANA时区构建v3采样图 | R:code:features/stability/app/timetable.py,code:scripts/inspect_integrity.py | A:作为保存、预览、调度与零数据库检查的唯一时间合同 | S:默认48轮3+3，无health或Canary；双空零请求；DST gap跳过fold取首次；原due起600秒，两集合须相同
 timetable_executor.py[AW9M]: F:按题调度v3 MT/Nerfed连接重试，恢复日期图、公平claim、发布逻辑分母和终态，管理取消原窗恢复 | R:code:features/stability/app/timetable.py,code:features/integrity/retries.py | A:持两把共享容量后选择，提交一题让出，以最终逻辑结果评分 | S:每题至多4次，成功停止；unknown不重发，原due窗不延长；终态纯发布；进度SQL不重评分；未确认终点不表示上游结束
 timetable_report.py[DO8S]: F:从冻结occurrence证据生成渠道时刻行、MT/Nerfed综合结论和技术投影，兼容旧Canary历史与筛选 | R:code:features/integrity/conclusions.py,code:features/stability/app/timetable.py | A:按run和UTC due组合独立方法，保留各方法历史名称倍率及采样时段 | S:10001行上限删完整边界group，归档不显示；缺倍率为null；v3保守结论由唯一函数生成；历史成绩不套v3判据
 
@@ -169,8 +169,8 @@ timetable_report.py[DO8S]: F:从冻结occurrence证据生成渠道时刻行、MT
 selftest.py[TQ7M]: F:在临时目录和MockTransport中回归URL补全、存储加密幂等、任务领取恢复、协议解析、并发限制和阈值失败统计 | R:code:features/stability/app/scheduler.py,code:features/stability/app/storage.py,code:features/stability/app/transport.py | A:验证定时稳定性模块的本地契约而不依赖真实上游 | S:自测将出口白名单固定为127.0.0.1且不打开真实端口或发送外部请求
 
 ===/Users/lmurder/Desktop/eval/features/stability/web/===
-app.js[EU8L]: F:管理v3同步MT/Nerfed计划、定时状态、仅结论的时间总览明细、演示及兼容历史导出与参照操作 | R:code:features/stability/app/main.py,code:features/stability/web/timetable_demo.js | A:连接日期渠道异常筛选、同步刻度配置和独立运行记录 | S:双空不回默认；矩阵按日期时区UTC保留多run；演示零API，退出清数据且503不沿用；generation拒旧响应；旧Canary证据仍可读
-index.html[EU7S]: F:提供稳定性历史报告、渠道目标通知、v3同步十分钟计划表单和主动Canary跳转入口 | R:code:features/stability/web/app.js,code:web/common.css | A:承载时间总览明细演示及计划运行详情对话框 | S:新计划只含MT/Nerfed及ins-v2；默认十分钟且双空合法；演示显式合成无真实下载；页面不收集渠道Key
+app.js[EU8L]: F:管理同步MT/Nerfed计划、定时状态、结论总览明细、合成演示及历史导出与参照操作 | R:code:features/stability/app/main.py,code:features/stability/web/timetable_demo.js | A:从meta读取新建与恢复默认时刻，连接日期渠道筛选及运行记录 | S:显式时刻和双空不回默认；全选144刻度而恢复默认48；演示零API，退出清数据且503不沿用；generation拒旧响应；旧Canary仍可读
+index.html[EU7S]: F:提供稳定性历史、渠道目标通知、半小时默认与十分钟自定义计划表单及主动Canary入口 | R:code:features/stability/web/app.js,code:web/common.css | A:承载时间总览、明细演示和运行详情对话框 | S:新计划仅MT/Nerfed或ins-v2；双空合法；采样间隔与十分钟执行窗分别说明；演示标记合成且无真实下载；页面不收集渠道Key
 styles.css[EU5S]: F:定义稳定性页头、计划历史、弹窗、十分钟网格、时间矩阵状态及多宽度布局样式 | R:code:features/stability/web/index.html,code:features/stability/web/app.js,code:web/common.css | A:复用公共主题并提供局部横滚、格内长句换行和合成提示样式 | S:矩阵单元scoped white-space:normal，hidden强制隐藏，避免公共表格nowrap与flex使演示控件或长句串列
 timetable_demo.js[EU6T]: F:生成三渠道六时刻18行固定合成结论，展示接近Astra、其他模型、冲突及等待状态 | R:code:features/stability/web/app.js | A:提供与真实报告一致的记录身份与结论字段供两视图演示 | S:零fetch、存储、计划及评分；synthetic标记始终保留，展示结论不能作为模型检测证据
 
@@ -227,11 +227,11 @@ verify_diagnosis.py[TQ9S]: F:依据诊断清单收集测试、运行受限环境
 verify_image_quality.py[TQ9M]: F:执行生图注册清单，核验框架和浏览器容器结果，复用有界进程、源码语法与外置证据路径验证 | R:code:scripts/test_manifest.py,code:scripts/test_all.py,code:scripts/image_quality_container.py | A:汇总failed、incomplete及取消，保存源指纹和依赖证据 | S:证据根可作为候选父目录，但实际输出必须新建且仓外；非macOS需显式映射；仅杀自有进程组；缺组、清理失败或源码变化不报通过
 verify_workflow_control_plane.py[TQ8M]: F:依六组控制面清单执行Python收集、语法、安全、Web及两组浏览器检查，核对七模块与结果证据并持续保存有界门禁汇总 | R:code:scripts/test_manifest.py,code:scripts/test_all.py,code:scripts/verify_image_quality.py,code:scripts/monitor_control_plane_ui.cjs | A:按组隔离HOME和数据目录，实施单组与整体预算，保留失败、缺口和not_run的独立状态 | S:complete仅表示汇总收尾；已知失败优先，取消返回130且不抹失败；浏览器必须有正数Mock请求；默认整体1800秒，仅接受正有限预算
 monitor_control_plane_ui.cjs[TW8M]: F:启动隔离工作台、合成签名调用方和回环上游，以Playwright验证生产覆盖、队列与旧Monitor复测 | R:code:run.py,code:web/model-coverage.js,code:features/model_coverage/internal_api.py,code:features/model_coverage/monitor.py | A:覆盖快照乱序、任务幂等取消、绑定UI移除、v1管理API和签名执行结果反馈 | S:旧v1夹具仅经既有管理API绑定合成身份；live只用于自有回环Mock，不证明真实Monitor或上游；清理核验进程终止，失败不得报passed
-inspect_integrity.py[TO7T]: F:只读输出冻结策略hash及v3同步时间图、每日864首次和3456含重试额度与配置指纹 | R:code:features/integrity/strategies.py,code:features/stability/app/timetable_contract.py | A:提供候选交接的零副作用配置检查 | S:不打开数据库或凭据、不联网；输出source合同，不代替运行容量或API校准证据
+inspect_integrity.py[TO7T]: F:只读输出固定策略hash、v3默认时间图、每日288首次及1152含重试额度和配置指纹 | R:code:features/integrity/strategies.py,code:features/stability/app/timetable_contract.py | A:从时间合同派生候选交接的无副作用检查结果 | S:不打开数据库或凭据、不联网；输出source合同，不代替运行容量或API校准证据
 integrity_browser_fixture.py[TW7T]: F:准备授权合成参考或驱动自有未来v3时间图，以真实HTTP评分持久化产生浏览器夹具报告 | R:code:features/stability/app/timetable_executor.py,code:tests/test_kbf_review.py | A:用受控时钟启用自有暂停计划、执行未来槽并复位暂停 | S:仅仓外integrity-ui数据；未来revision防并发后台争抢；不替换评分，不发真实上游或通知
 integrity_ui.cjs[TU8S]: F:以Playwright回环HTTP验证recorded三项首测、主动Canary完整193请求、参照锁定及参考离线复核流程 | R:code:scripts/integrity_browser_fixture.py,code:features/integrity/api.py | A:覆盖独立分母、取消unknown恢复、历史导出和多宽度页面 | S:首测无旧生产身份绑定；无自动可信参照，目标匹配才可选择；unknown不重发；凭据导出及浏览器错误须零
 verify_integrity.py[TQ8T]: F:将完整性验证CLI转交共享准入执行器并默认选择integrity注册清单 | R:code:scripts/verify_admission.py,code:scripts/test_manifest.py | A:提供开发18组或带SHA独立19组的统一入口 | S:本入口不自建第二套结果和预算规则，退出码由共享执行器返回
-integrity_timetable_ui.cjs[TU8S]: F:以Playwright回环HTTP验证v3同步刻度、864默认额度、六轮36独立请求、结论历史导出和合成演示布局 | R:code:scripts/integrity_browser_fixture.py,code:features/stability/web/app.js | A:校验零定时Canary、在途1、真实记录身份与宽窄屏前端行为 | S:持目标日期响应证明旧六行DOM不能满足就绪；评分与许可真实；演示零API零计划，退出503不沿用；仅Mock不证明真实容量
+integrity_timetable_ui.cjs[TU8S]: F:以Playwright回环HTTP验证48默认时刻、288首次额度、全选恢复、自定义双空、六轮36请求和报告演示布局 | R:code:scripts/integrity_browser_fixture.py,code:features/stability/web/app.js | A:核验定时零Canary、在途1、真实记录身份及宽窄屏前端行为 | S:持目标日期响应防旧六行DOM满足就绪；评分与许可真实；演示零API零计划，退出503不沿用；仅Mock不证明真实容量
 
 ===/Users/lmurder/Desktop/eval/shared/===
 __init__.py[CG3T]: F:标识工作台共享基础包 | R:code:shared/config.py,code:shared/api.py,code:shared/registry.py | A:提供公共模块的包身份 | S:-
@@ -259,7 +259,7 @@ nav.css[CU6T]: F:定义工作台导航链接、当前页面状态、品牌权重
 ===/Users/lmurder/Desktop/eval/features/integrity/===
 LICENSE[SG6S]: F:保存新Eval完整性集成的Apache-2.0许可正文，规定版权专利授权、修改声明、通知和免责条款 | R:code:features/integrity/NOTICE.md | A:为独立集成代码提供完整随附许可 | S:此许可不替代assets内MIT或HLwY适配组件的LGPL义务
 NOTICE.md[SG8T]: F:列出ModelTrace、nerfed、TraceOne、HLwY固定版本与许可、KBF独立实现来源和本地适配修改记录 | R:code:features/integrity/LICENSE,code:features/integrity/assets/provenance.json,code:features/integrity/hlwy.py | A:区分Apache集成、MIT数值资产及LGPL适配，保留逐资产归属 | S:不分发KBF公共参考回答或Meow材料；canary逐题来源未独立确立，发布功效是条件计算而非API实测
-README.md[SG8T]: F:说明MT/Nerfed十分钟采样、保守结论、旧计划迁移、主动Canary和原三项参考离线复核 | R:code:features/integrity/unified.py,code:features/stability/app/timetable.py | A:定义用户入口、独立分母、固定窗口和费用记账边界 | S:v3每轮独立3+3题，断联至多追加3次；主动Canary健康1加完整192且零重试；unknown不重发，API未校准
+README.md[SG8T]: F:说明MT/Nerfed半小时默认采样、保守结论、计划兼容、主动Canary及参考与账号离线复核 | R:code:features/integrity/unified.py,code:features/stability/app/timetable.py | A:定义用户入口、独立分母、固定窗口与费用记账边界 | S:v3每轮3+3题，连接失败至多追加3次；采样间隔不延长600秒原窗；主动Canary健康1加完整192且零重试；unknown不重发，API未校准
 __init__.py[EA6T]: F:标识完整性行为观察Python包并声明不进行模型权重认证 | R:code:features/integrity/api.py,code:features/integrity/scoring.py | A:提供完整性模块导入身份 | S:-
 api.py[EA8S]: F:提供统一三项、主动Canary及显式参照锁定、授权参考复核和账号证据任务管理导出 | R:code:features/integrity/unified.py,code:features/integrity/service.py | A:严格校验工作台输入并映射领域错误为HTTP状态 | S:主动Canary仅Astra且需confirm_live；Registry ID严格整数，拒未知字段；普通登录不授予Monitor签名权限
 durable.py[PR9L]: F:事务保存固定完整性任务、attempt与usage账本，管理租约许可取消恢复、筛选领取及旧定时任务退休 | R:code:features/integrity/execution.py,code:shared/registry.py | A:冻结目标与请求身份，原子提交安全投影和记账 | S:退休清owner并把未确认许可记unknown以阻止旧提交；unknown不重发；预算仅记账；原deadline不延长，缺usage为null

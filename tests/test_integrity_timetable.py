@@ -28,11 +28,12 @@ class TimetableContractTests(unittest.TestCase):
         for day in (date(2026, 10, 8), date(2026, 10, 10)):
             plan = self.plan(channels=range(1, 6))
             rows = timetable.build_slots(plan, day)
-            self.assertEqual(len(rows), 1440)
+            self.assertEqual(len(rows), 480)
+            self.assertEqual({r['clock'][3:] for r in rows}, {'00', '30'})
             self.assertEqual({r['method'] for r in rows}, {'modeltrace', 'nerfed'})
             self.assertTrue(all(r['dependency'] is None for r in rows))
             p = timetable.preview(plan['layered_config'], plan['timezone'], day)
-            self.assertEqual((p['initial_requests'], p['max_requests']), (4320, 17280))
+            self.assertEqual((p['initial_requests'], p['max_requests']), (1440, 5760))
             self.assertEqual(p['max_retries'], 3)
 
     def test_synchronized_empty_invalid_and_dst(self):
@@ -55,12 +56,12 @@ class TimetableContractTests(unittest.TestCase):
             with self.subTest(mt=mt, canary=canary):
                 old = {'modeltrace_times': mt, 'canary_times': canary, 'baseline_ids': {'1': 7}}
                 upgraded = upgrade_config(old, 'layered-integrity-v2')
-                expected = [] if not mt and not canary else timetable.GRID
+                expected = [] if not mt and not canary else timetable.DEFAULTS['modeltrace_times']
                 self.assertEqual(upgraded['modeltrace_times'], expected)
                 self.assertEqual(upgraded['nerfed_times'], expected)
                 self.assertEqual(upgraded['legacy_plan']['config'], old)
                 self.assertNotIn('baseline_ids', upgraded)
-        self.assertEqual(upgrade_config({}, 'layered-integrity-v1')['modeltrace_times'], timetable.GRID)
+        self.assertEqual(upgrade_config({}, 'layered-integrity-v1')['modeltrace_times'], timetable.DEFAULTS['modeltrace_times'])
 
 
 class TimetableExecutionTests(unittest.IsolatedAsyncioTestCase):
@@ -279,8 +280,8 @@ class TimetableExecutionTests(unittest.IsolatedAsyncioTestCase):
         migrated = storage.get_schedule(self.id)
         self.assertEqual(migrated['plan_version'], timetable.VERSION)
         self.assertFalse(migrated['enabled'])
-        self.assertEqual(migrated['layered_config']['modeltrace_times'], timetable.GRID)
-        self.assertEqual(migrated['layered_config']['nerfed_times'], timetable.GRID)
+        self.assertEqual(migrated['layered_config']['modeltrace_times'], timetable.DEFAULTS['modeltrace_times'])
+        self.assertEqual(migrated['layered_config']['nerfed_times'], timetable.DEFAULTS['nerfed_times'])
         self.assertEqual(migrated['layered_config']['target_bindings'], config['target_bindings'])
         self.assertEqual(migrated['layered_config']['legacy_plan']['config'], config)
         storage.close()

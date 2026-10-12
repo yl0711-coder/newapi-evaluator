@@ -1,4 +1,4 @@
-"""Pure ten-minute configuration and DST occurrence graph; no database or credentials."""
+"""Half-hour defaults on a ten-minute grid; no database or credentials."""
 from __future__ import annotations
 import re
 from datetime import datetime
@@ -9,13 +9,14 @@ VERSION = "layered-integrity-v3"
 LEGACY_VERSIONS = ("layered-integrity-v1", "layered-integrity-v2")
 METHODS = ("modeltrace", "nerfed")
 GRID = [f"{hour:02d}:{minute:02d}" for hour in range(24) for minute in range(0, 60, 10)]
-DEFAULTS = {"modeltrace_times": GRID, "nerfed_times": GRID, "reasoning_effort": "low"}
+DEFAULT_TIMES = GRID[::3]
+DEFAULTS = {"modeltrace_times": DEFAULT_TIMES, "nerfed_times": DEFAULT_TIMES, "reasoning_effort": "low"}
 WINDOWS = {"modeltrace": 600, "nerfed": 600}
 
 
 def upgrade_config(config, version):
     empty = version == "layered-integrity-v2" and all(config.get(method + "_times") == [] for method in ("modeltrace", "canary"))
-    times = [] if empty else GRID
+    times = [] if empty else DEFAULT_TIMES
     return {**{k: config[k] for k in ("registry_channel_ids", "target_bindings", "channel_names", "channel_multipliers") if k in config},
             "channel_names": dict(config.get("channel_names", {})),
             "channel_multipliers": dict(config.get("channel_multipliers", {})),

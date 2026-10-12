@@ -1,6 +1,6 @@
 const state = {
   inventory: [], channels: [], candidates: [], baselines: [], baselineIds: {}, schedules: [], runs: [], reportGroups: [],
-  maxConcurrentProbes: 2, timetable: {modeltrace_times: [], nerfed_times: []}, previewGeneration: 0,
+  maxConcurrentProbes: 2, timetable: {modeltrace_times: [], nerfed_times: []}, timetableDefaults: null, previewGeneration: 0,
   reportView: "overview", reportDemo: false, reportData: null, reportGeneration: 0, realReportFilters: null,
 };
 const $ = (selector) => document.querySelector(selector);
@@ -168,7 +168,7 @@ function renderSchedules() {
     if (schedule.plan_version === "layered-integrity-v3") {
       const c = schedule.layered_config, n = c.registry_channel_ids.length;
       const total = n * 6 * c.modeltrace_times.length;
-      card.append(text("p", `每天 · ${n} 渠道 · MT / Nerfed 同轮采样 · ${c.modeltrace_times.length} 个十分钟时刻`));
+      card.append(text("p", `每天 · ${n} 渠道 · MT / Nerfed 同轮采样 · ${c.modeltrace_times.length} 个采样时刻`));
       card.append(text("p", `${schedule.timezone} · 首次 ${total} 次，断联最多再重试三次 · 用户报告仅展示结论`));
     } else if (schedule.plan_version === "layered-integrity-v1") {
       const config = schedule.layered_config;
@@ -316,7 +316,7 @@ function renderTimetable() {
     const group = document.createElement("fieldset"); group.append(text("legend", "MT / Nerfed 同步采样时刻"));
     const actions = text("div", "", "actions");
     const select = chosen => {state.timetable = {modeltrace_times: [...chosen], nerfed_times: [...chosen]}; renderTimetable(); updateTimetablePreview();};
-    actions.append(action("全选", () => select([...times])), action("清空", () => select([])), action("恢复默认", () => select([...times])), action("仅整点", () => select(times.filter((_, i) => i % 6 === 0))));
+    actions.append(action("全选", () => select([...times])), action("清空", () => select([])), action("恢复默认", () => select([...state.timetableDefaults.modeltrace_times])), action("仅整点", () => select(times.filter((_, i) => i % 6 === 0))));
     const start = document.createElement("select"), end = document.createElement("select");
     for (const clock of times) {start.add(new Option(clock, clock)); end.add(new Option(clock, clock));}
     start.value = "09:00"; end.value = "18:00";
@@ -500,12 +500,13 @@ async function openSchedule(schedule = null) {
   $("#schedule-slow-ratio").value = schedule?.speed_slow_ratio ?? 1.5;
   $("#schedule-p95").value = schedule?.max_p95_ms ?? 30000;
   $("#schedule-enabled").checked = schedule ? Boolean(schedule.enabled) : true;
-  const [candidateData, baselineData] = await Promise.all([api("/api/candidates"), api("/api/baselines")]);
+  const [candidateData, baselineData, metaData] = await Promise.all([api("/api/candidates"), api("/api/baselines"), api("/api/meta")]);
   state.candidates = candidateData.candidates; state.baselines = baselineData.baselines;
+  state.timetableDefaults = metaData.timetable_defaults;
   $("#schedule-pack").value = schedule?.plan_version || "layered-integrity-v3";
   const config = schedule?.layered_config || {};
   state.baselineIds = {...(config.baseline_ids ?? {})};
-  state.timetable = {modeltrace_times: [...(config.modeltrace_times ?? timetableGridTimes())], nerfed_times: [...(config.nerfed_times ?? config.modeltrace_times ?? timetableGridTimes())]};
+  state.timetable = {modeltrace_times: [...(config.modeltrace_times ?? state.timetableDefaults.modeltrace_times)], nerfed_times: [...(config.nerfed_times ?? config.modeltrace_times ?? state.timetableDefaults.nerfed_times)]};
   renderTimetable();
   renderChannelPicker(schedule?.channel_ids || [], config.registry_channel_ids || []);
   $("#schedule-error").textContent = "";

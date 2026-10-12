@@ -129,9 +129,9 @@
         <label class="check"><input type="checkbox" id="schedule-enabled" checked> 启用计划</label>
       </div>
       <fieldset><legend>套餐与采样上限</legend>
-        <label>套餐<select id="schedule-pack"><option value="layered-integrity-v3">MT / Nerfed 十分钟采样（默认）</option><option value="ins-v2">旧 ins-v2 稳定性</option></select></label>
+        <label>套餐<select id="schedule-pack"><option value="layered-integrity-v3">MT / Nerfed 半小时采样（默认）</option><option value="ins-v2">旧 ins-v2 稳定性</option></select></label>
         <div id="timetable-fields">
-          <p class="hint">MT 与 Nerfed 在同一十分钟时刻独立采样。默认每十分钟一次；可选择时段或清空。断联后最多再重试三次，成功即停止重试，原采样窗为十分钟。结论显示“更接近 Astra / 更接近某模型 / 无法判定”，证据不足不强判。<a href="/integrity/#canary-title">主动 Canary 测试</a></p>
+          <p class="hint">MT 与 Nerfed 同轮独立采样，默认每半小时一次（整点、半点）；可按十分钟刻度自定义或清空。断联后最多再重试三次，成功即停止重试，原采样窗为十分钟。结论显示“更接近 Astra / 更接近某模型 / 无法判定”，证据不足不强判。<a href="/integrity/#canary-title">主动 Canary 测试</a></p>
           <div class="timetable-tools" id="timetable-tools"></div>
           <div class="local-scroll"><table id="timetable-grid" class="timetable-grid" aria-label="每天十分钟采样调度表"></table></div>
           <p id="timetable-preview" role="status"></p>

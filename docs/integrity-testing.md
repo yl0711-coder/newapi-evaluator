@@ -1,4 +1,4 @@
-# 完整性、十分钟采样与主动 Canary 测试清单
+# 完整性、半小时默认采样与主动 Canary 测试清单
 
 适用规则 `docs/ai-rules` v1.0。本功能属于工作台定时、准入及完整性模块，不改 `relay_lab` 共享引擎；实验室五模式继续纳入既有 E2E 和独立 legacy acceptance。环境、数据、日志、截图和证据使用仓外新目录，不加载业务 `.env`、渠道库、凭据或通知设置。上游源码核对不替代产品测试。
 
@@ -16,19 +16,19 @@
 | workbench-browser | `scripts/ui_smoke.cjs` | 原导航、主题、六题准入、双端报告、各导出与窄屏；600秒 |
 | protocol-browser / diagnosis-browser / model-coverage-browser / monitor-control-browser | 清单对应 `.cjs` | 实际HTTP、旧HMAC、控制面与覆盖兼容；各300秒 |
 | integrity-browser | `scripts/integrity_ui.cjs` | 三项首测、主动Canary完整193请求、显式参照、取消恢复、导出、重载、HLwY/KBF及账号离线；600秒 |
-| integrity-timetable-browser | `scripts/integrity_timetable_ui.cjs` | v3同步网格、双空、默认864、六轮36独立请求、零Canary、历史名称倍率、结论及筛选导出、合成演示与窄屏；600秒 |
+| integrity-timetable-browser | `scripts/integrity_timetable_ui.cjs` | v3同步网格、双空、默认整点/半点48轮及288首次请求、恢复默认、六轮36独立请求、零Canary、历史名称倍率、结论及筛选导出、合成演示与窄屏；600秒 |
 | build-container | `scripts/image_quality_container.py --output` | 当前镜像all/image-quality健康、完整性页面/API、主动默认off、定时状态、离线零出站，自有容器精确清理；900秒 |
 | legacy-acceptance | `scripts/acceptance.py --sha --output` | 仅独立干净SHA，既有实验室全量、持续与混合负载；1200秒 |
 
 ## 定时采样与结论
 
-`test_integrity_timetable` 验证 `layered-integrity-v3` 每个选定十分钟时刻各执行MT三题和Nerfed三题，互不复用答案，无health或Canary。默认全天144轮，单渠道首次864请求；已确认连接故障、超时或断流每题再重试三次，最多3456物理请求。成功立即停止重试；HTTP错误、格式无效及unknown不重发。固定逻辑分母与物理尝试、最终错误分别计数；早期断联后成功只用最终结果评分。
+`test_integrity_timetable` 验证 `layered-integrity-v3` 每个选定时刻各执行MT三题和Nerfed三题，互不复用答案，无health或Canary。默认全天48轮（整点/半点），单渠道首次288请求；已确认连接故障、超时或断流每题再重试三次，最多1152物理请求。十分钟刻度仍可显式自定义，已有配置与双空保留。成功立即停止重试；HTTP错误、格式无效及unknown不重发。固定逻辑分母与物理尝试、最终错误分别计数；早期断联后成功只用最终结果评分。
 
 同模块覆盖同步集合与显式空、非法刻度、DST gap/fold、原due起600秒窗口、两把共享发送容量、题边界公平轮转、保存/暂停/删除许可竞态、未来零尝试重开、过去不追赶、跨库重关联、日期归档保留attempt/消费、终态纯重建及取消恢复unknown不重发。`test_scheduled_executor_enabled` 通过正常workbench lifespan与真实受保护回环HTTP确认：主动消费者未设置或off时，已启用计划仍自动执行MT3+Nerfed3；暂停/删除后零发送，退出停止调度。
 
 结论回归验证两方法完成、每法至少两有效答、无缺测/unknown/最终请求异常、同采样条件、排名与预测一致、top概率至少0.8且分数领先至少0.5。两法一致才显示“更接近 Astra / 更接近某模型”；不足、冲突、异常均为“无法判定”。这些是保守闭集行为指纹规则，普通API校准仍为unvalidated，不认证模型身份。定时页面仅展示结论；技术分母保留在受鉴权报告和导出，旧报告继续可读。
 
-`test_scheduled_integrity` 与迁移回归覆盖旧v1/v2计划启动升级，保留enabled、冻结绑定和legacy原配置；仅旧v2两集合都空时保留零采样，其余升级全天十分钟。退休旧待运行槽，已提交终态纯重建、未确认许可转unknown并清租约，旧执行器后续提交拒绝。旧Canary成绩、可信参照、名称、倍率、时区与旧详情/export冻结；重复初始化幂等；同日v3身份独立，升级前时刻不补采。
+`test_scheduled_integrity` 与迁移回归覆盖旧v1/v2计划启动升级，保留enabled、冻结绑定和legacy原配置；仅旧v2两集合都空时保留零采样，其余升级全天半小时。退休旧待运行槽，已提交终态纯重建、未确认许可转unknown并清租约，旧执行器后续提交拒绝。旧Canary成绩、可信参照、名称、倍率、时区与旧详情/export冻结；重复初始化幂等；同日v3身份独立，升级前时刻不补采。
 
 ## 主动 Canary 与原完整性功能
 

@@ -39,10 +39,16 @@ async function until(fn, message, timeout = 30000) {const end = performance.now(
   page.on('pageerror', e => errors.push(e.message));
   await page.goto(base + '/stability/'); await page.locator('[data-view="schedules"]').click(); await page.locator('#new-schedule').click();
   await page.locator('#schedule-dialog').waitFor(); check(await page.locator('#schedule-pack').inputValue() === 'layered-integrity-v3', 'new plans default v3');
-  check(await page.locator('#timetable-grid input:checked').count() === 144, 'default ten-minute synchronized sampling');
+  check(await page.locator('#timetable-grid input:checked').count() === 48, 'default half-hour synchronized sampling');
+  check(await page.getByRole('checkbox', {name: 'MT / Nerfed 09:00', exact: true}).isChecked() && await page.getByRole('checkbox', {name: 'MT / Nerfed 09:30', exact: true}).isChecked(), 'default selects the hour and half hour');
+  check(!(await page.getByRole('checkbox', {name: 'MT / Nerfed 09:10', exact: true}).isChecked()), 'ten-minute points remain available but unselected');
   await page.locator('#schedule-name').fill('Synthetic irregular timetable');
   await page.getByRole('checkbox', {name: '选择公共渠道 Synthetic timetable browser', exact: true}).check(); await page.locator('#schedule-enabled').uncheck();
-  await until(async () => (await page.locator('#timetable-preview').innerText()).includes('864'), 'default 864 initial requests per channel');
+  await until(async () => (await page.locator('#timetable-preview').innerText()).includes('首次 288 次'), 'default 288 initial requests per channel');
+  await page.getByRole('group', {name:'MT / Nerfed 同步采样时刻',exact:true}).getByRole('button', {name:'全选',exact:true}).click();
+  check(await page.locator('#timetable-grid input:checked').count() === 144, 'explicit all selects the ten-minute grid');
+  await page.getByRole('group', {name:'MT / Nerfed 同步采样时刻',exact:true}).getByRole('button', {name:'恢复默认',exact:true}).click();
+  check(await page.locator('#timetable-grid input:checked').count() === 48, 'restore defaults returns to half-hour sampling');
   const clear = async () => page.getByRole('group', {name:'MT / Nerfed 同步采样时刻',exact:true}).getByRole('button', {name:'清空',exact:true}).click();
   await clear();
   const wanted = ['09:10','09:20','09:50','11:00','14:30','16:40'];
