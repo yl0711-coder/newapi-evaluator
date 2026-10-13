@@ -6,6 +6,7 @@ from pathlib import Path
 import subprocess
 import sys
 import time
+import unittest
 
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT))
@@ -13,6 +14,38 @@ from scripts.verify_diagnosis import classify, snapshot
 from scripts.verify_image_quality import (aggregate_status, cancellation_signals,
                                           classify as classify_image, run_process)
 from scripts.test_manifest import admission, integrity
+
+
+def collect_unittests():
+    loader = unittest.TestLoader()
+    suite = loader.discover("tests")
+    modules = {}
+
+    def visit(group):
+        for case in group:
+            if isinstance(case, unittest.TestSuite):
+                visit(case)
+            else:
+                module = type(case).__module__
+                if module.startswith("test_"):
+                    module = "tests." + module
+                modules[module] = modules.get(module, 0) + 1
+
+    visit(suite)
+    return {"count": suite.countTestCases(), "modules": modules, "errors": len(loader.errors)}
+
+
+def validated_collection_count(value, required_modules):
+    if not isinstance(value, dict) or type(value.get("errors")) is not int or value["errors"] != 0:
+        return 0
+    count, modules = value.get("count"), value.get("modules")
+    if type(count) is not int or count <= 0 or not isinstance(modules, dict):
+        return 0
+    if any(type(number) is not int or number <= 0 for number in modules.values()):
+        return 0
+    if sum(modules.values()) != count or any(module not in modules for module in required_modules):
+        return 0
+    return count
 
 
 def main(argv=None, *, default_plan="admission"):
@@ -39,8 +72,9 @@ def main(argv=None, *, default_plan="admission"):
                PLATFORM_DATA_DIR=str(output / "platform"), RELAY_LAB_DATA_DIR=str(output),
                PYTHON_EXECUTABLE=sys.executable)
     plan = integrity if args.plan == "integrity" else admission
-    commands = [(suite.suite_id, list(suite.command), suite.timeout_seconds, suite.kind)
-                for suite in plan(sys.executable, output, sha=sha if args.sha else None)]
+    suites = plan(sys.executable, output, sha=sha if args.sha else None)
+    required_modules = sorted({module for suite in suites for module in suite.expected_modules})
+    commands = [(suite.suite_id, list(suite.command), suite.timeout_seconds, suite.kind) for suite in suites]
     budget = (4200 if args.sha else 3000) if args.plan == "integrity" else (3000 if args.sha else 1800)
     before = snapshot()
     rows = [{"suite_id": name, "command": command, "timeout_seconds": timeout, "status": "not_run"}
@@ -48,6 +82,7 @@ def main(argv=None, *, default_plan="admission"):
     result = {"source_sha": sha, "source_files": before, "independent": bool(args.sha), "rules_version": "1.0",
               "python": sys.version, "expected_unittest_cases": 0, "results": rows, "status": "incomplete",
               "plan": args.plan, "real_upstream_tested": False, "execution_budget_seconds": budget, "cancelled": False,
+              "required_modules": required_modules,
               "not_applicable": {} if args.plan == "integrity" else {"diagnosis-container": "No build, dependency, startup or container changes",
                                  "image-container": "No build, dependency, startup or container changes"}}
     def save():
@@ -77,9 +112,14 @@ def main(argv=None, *, default_plan="admission"):
     active = None
     with cancellation_signals():
         try:
-            code, text, timed_out = run_process([sys.executable, "-c", "import unittest; print(unittest.TestLoader().discover('tests').countTestCases())"], env, 60)
+            code, text, timed_out = run_process([sys.executable, "-c", "import json; from scripts.verify_admission import collect_unittests; print(json.dumps(collect_unittests()))"], env, 60)
             (output / "collection.log").write_text(text)
-            result["expected_unittest_cases"] = int(text.strip()) if code == 0 and not timed_out and text.strip().isdigit() else 0
+            try:
+                collection = json.loads(text) if code == 0 and not timed_out else {}
+            except ValueError:
+                collection = {}
+            result["collection"] = collection
+            result["expected_unittest_cases"] = validated_collection_count(collection, required_modules)
             save()
             for row, (_, command, timeout, kind) in zip(rows, commands):
                 remaining = budget - (time.monotonic() - start)

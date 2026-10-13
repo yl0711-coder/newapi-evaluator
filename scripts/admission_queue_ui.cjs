@@ -14,7 +14,7 @@ assert.ok(evidenceRoot !== root && !evidenceRoot.startsWith(root + path.sep), 'B
 const data = fs.mkdtempSync(path.join(evidenceRoot, 'admission-queue-ui-'));
 const python = process.env.PYTHON_EXECUTABLE || path.join(root, '.venv', 'bin', 'python');
 const requests = [], active = new Map(), held = new Map(), errors = [];
-const gated = new Set(['fifo-one', 'fifo-two', 'restart-head']);
+const gated = new Set(['fifo-one', 'fifo-two', 'restart-head', 'stop-visible', 'stop-pending']);
 const candidateKeys = new Set();
 let app, appExit, appError, browser, base, upstreamUrl, port, maxActiveJobs = 0, fixtureError;
 let stderrBytes = 0, phase = 'startup';
@@ -143,6 +143,7 @@ function card(page, id) {
 
 async function submit(page, owner, channelId) {
   const key = `synthetic-candidate-${owner}`; candidateKeys.add(key);
+  await page.locator('#candidate-name').fill(`候选 ${owner} <script>/..`);
   await page.locator('#candidate-url').fill(`${upstreamUrl}/${owner}/candidate/v1`);
   await page.locator('#candidate-key').fill(key);
   await page.locator('#candidate-model').fill('synthetic-queue-model');
@@ -157,6 +158,7 @@ async function submit(page, owner, channelId) {
   assert.equal(response.status(), 202, 'Form submissions create server-owned jobs');
   const snapshot = await response.json();
   assert.ok(Number.isInteger(snapshot.id) && snapshot.id > 0);
+  assert.equal(snapshot.candidate.name, `候选 ${owner} <script>/..`, 'Channel name is frozen on creation');
   assert.ok(response.request().headers()['idempotency-key'], 'Form submits an idempotency key');
   if (owner === 'fifo-one') {
     const replay = await request('/admission/api/jobs', {expected:202, headers:{'Idempotency-Key':response.request().headers()['idempotency-key']}, body:response.request().postDataJSON()});
@@ -232,7 +234,7 @@ async function run() {
   port = probe.address().port; await new Promise(resolve => probe.close(resolve));
   base = `http://127.0.0.1:${port}`;
   await startApp();
-  const owners = ['fifo-one', 'fifo-two', 'fifo-three', 'restart-head', 'restart-next'];
+  const owners = ['fifo-one', 'fifo-two', 'fifo-three', 'restart-head', 'restart-next', 'stop-visible', 'stop-pending'];
   const channels = {};
   for (const owner of owners) {
     channels[owner] = (await request('/api/registry/channels', {body:{name:`Synthetic ${owner}`, base_url:`${upstreamUrl}/${owner}/reference/v1`, api_key:`synthetic-reference-${owner}`, multiplier:1}})).id;
@@ -252,6 +254,11 @@ async function run() {
   assert.equal((await jobs()).filter(item => item.state === 'running').length, 1);
   checks.push('three_submissions_fifo');
   await screenshot(page, 'queue-running');
+  assert.ok(!(await card(page, first).textContent()).includes('排队第 1 位'), 'Running job is never labeled queued first');
+  assert.ok((await card(page, first).textContent()).includes('候选 fifo-one <script>/..'));
+  assert.equal(await card(page, first).locator('script').count(), 0, 'Names render as text');
+  assert.ok((await page.locator('#token-precheck').textContent()).includes('可信绑定'), 'Token prerequisite is visible before execution');
+  checks.push('channel_identity_partial_coverage_precheck');
   await page.goto(base + '/channels/'); await page.reload();
   assert.equal((await job(first)).state, 'running');
   assert.equal(requests.length, 2, 'Navigation and refresh leave the gated job running');
@@ -268,7 +275,7 @@ async function run() {
   await card(page, second).getByText('测试进行中', {exact:false}).waitFor();
   checks.push('navigation_refresh_browser_close_continue');
   const canceledResponse = page.waitForResponse(response => new URL(response.url()).pathname === `/admission/api/jobs/${third}/cancel`);
-  await card(page, third).getByRole('button', {name:'取消任务', exact:true}).click();
+  await card(page, third).getByRole('button', {name:`取消排队 #${third} · 候选 fifo-three <script>/..`, exact:true}).click();
   assert.equal((await canceledResponse).status(), 200);
   const cancelled = await until(async () => {const snapshot = await job(third); return snapshot.state === 'cancelled' && snapshot;}, 'Queued cancellation finishes');
   assert.ok(cancelled.report_id, 'Queued cancellation stores its partial report');
@@ -285,6 +292,38 @@ async function run() {
   const download = page.waitForEvent('download'); await page.locator('#export-json').click();
   const exported = JSON.parse(fs.readFileSync(await (await download).path(), 'utf8'));
   assert.equal(exported.id, firstResult.report_id); assert.equal(exported.measurements.length, 12); assertNoCandidateKeys(exported);
+  assert.equal(exported.candidate.name, '候选 fifo-one <script>/..');
+  assert.equal(exported.reference.name, 'Synthetic fifo-one');
+  for (const selector of ['#export-html', '#export-technical-html']) {
+    const pending = page.waitForEvent('download'); await page.locator(selector).click();
+    const artifact = await pending;
+    const html = fs.readFileSync(await artifact.path(), 'utf8');
+    assert.ok(html.includes('候选 fifo-one &lt;script&gt;/..'));
+    assert.ok(html.includes('Synthetic fifo-one'));
+    assert.ok(!html.includes('<script>'), 'Exported name cannot inject markup');
+    assert.ok(!artifact.suggestedFilename().includes('/'), 'Export filename is safe');
+    assertNoCandidateKeys(html);
+  }
+  checks.push('named_safe_html_json_exports');
+  const historyCard = owner => page.locator('#report-history article').filter({has:page.getByRole('heading', {name:new RegExp(`^候选 ${owner} `)})});
+  await historyCard('fifo-one').getByRole('button', {name:'查看报告', exact:true}).click();
+  await page.waitForFunction(id=>document.querySelector('#run-status').textContent.includes(`历史报告 #${id} ·`), firstResult.report_id);
+  assert.equal(await page.locator('#stop').isVisible(), false, 'History viewing has no stale task stop control');
+  let releaseOrdinary;
+  const ordinaryGate = new Promise(resolve=>{releaseOrdinary=resolve;});
+  const ordinaryPattern = `**/admission/api/reports/${firstResult.report_id}/ordinary`;
+  await page.route(ordinaryPattern, async route=>{await ordinaryGate;await route.continue();});
+  const ordinaryRequest=page.waitForRequest(req=>new URL(req.url()).pathname===`/admission/api/reports/${firstResult.report_id}/ordinary`);
+  const frozenDownload=page.waitForEvent('download');
+  await page.locator('#export-html').click(); await ordinaryRequest;
+  await historyCard('fifo-two').getByRole('button', {name:'查看报告', exact:true}).click();
+  await page.waitForFunction(()=>document.querySelector('#report-channels').textContent.includes('候选 fifo-two'));
+  releaseOrdinary();
+  const frozenArtifact=await frozenDownload;
+  assert.ok(frozenArtifact.suggestedFilename().includes('fifo-one'), 'Pending download filename stays tied to its original report');
+  assert.ok(fs.readFileSync(await frozenArtifact.path(),'utf8').includes('候选 fifo-one &lt;script&gt;/..'));
+  await page.unroute(ordinaryPattern);
+  checks.push('history_controls_and_export_snapshot_identity');
   await screenshot(page, 'queue-completed');
   checks.push('report_history_export_desktop_mobile');
   phase = 'restart_waiting_credentials';
@@ -316,6 +355,8 @@ async function run() {
     await pause(250);
   }
   await screenshot(page, 'queue-waiting-key');
+  assert.ok((await card(page, head).textContent()).includes('队首暂停，后续 1 个任务等待'));
+  assert.ok((await card(page, next).textContent()).includes(`等待队首 #${head}`));
   checks.push('restart_key_loss_fifo_head_blocks');
   phase = 'restart_resume_unknown';
   await supply(page, head, 'restart-head');
@@ -327,7 +368,39 @@ async function run() {
   assert.equal(maxActiveJobs, 1);
   assert.equal(requests.filter(item => item.owner === 'restart-next').length, 12);
   checks.push('unknown_sends_not_replayed_single_running');
-  const snapshots = await jobs(); assert.equal(snapshots.length, 5); assertNoCandidateKeys(snapshots);
+  phase = 'delayed_selection_stop_target';
+  const visible = await submit(page, 'stop-visible', channels['stop-visible']);
+  await until(() => held.get('stop-visible')?.size === 2, 'Visible stop target reaches its request gate');
+  const pending = await submit(page, 'stop-pending', channels['stop-pending']);
+  await card(page, visible).getByRole('button', {name:'查看进度', exact:true}).click();
+  await page.waitForFunction(id => document.querySelector('#stop').textContent.includes(`#${id} ·`), visible);
+  let releasePending;
+  const pendingGate = new Promise(resolve => {releasePending = resolve;});
+  const pendingPattern = `**/admission/api/jobs/${pending}`;
+  await page.route(pendingPattern, async route => {await pendingGate; await route.continue();});
+  const pendingRequest = page.waitForRequest(req => new URL(req.url()).pathname === `/admission/api/jobs/${pending}` && req.method() === 'GET');
+  await card(page, pending).getByRole('button', {name:'查看进度', exact:true}).click();
+  await pendingRequest;
+  assert.ok((await page.locator('#run-status').textContent()).includes(`任务 #${visible} ·`), 'Delayed selection keeps the visible task details');
+  assert.ok((await page.locator('#stop').textContent()).includes(`#${visible} ·`), 'Stop label stays tied to visible details');
+  const stoppedResponse = page.waitForResponse(response => /\/admission\/api\/jobs\/\d+\/cancel$/.test(new URL(response.url()).pathname) && response.request().method() === 'POST');
+  await page.locator('#stop').click();
+  const stopped = await stoppedResponse;
+  assert.equal(new URL(stopped.url()).pathname, `/admission/api/jobs/${visible}/cancel`, 'Stop cancels the displayed task while another selection is loading');
+  assert.equal(stopped.status(), 200);
+  const pendingResponse = page.waitForResponse(response => new URL(response.url()).pathname === `/admission/api/jobs/${pending}` && response.request().method() === 'GET');
+  releasePending();
+  await pendingResponse;
+  await page.waitForFunction(id => document.querySelector('#run-status').textContent.includes(`任务 #${id} ·`), pending);
+  await page.unroute(pendingPattern);
+  await until(async () => (await job(visible)).state === 'cancelled', 'Displayed task is cancelled');
+  await until(() => held.get('stop-pending')?.size === 2, 'Pending selection remains eligible and starts after its predecessor');
+  assert.ok(!(await job(pending)).cancel_requested, 'Delayed selection is never cancelled by the prior stop control');
+  await screenshot(page, 'queue-stop-target');
+  await card(page, pending).getByRole('button', {name:`停止运行 #${pending} · 候选 stop-pending <script>/..`, exact:true}).click();
+  await until(async () => (await job(pending)).state === 'cancelled', 'Remaining stop fixture closes within its bound');
+  checks.push('delayed_selection_stop_targets_rendered_task');
+  const snapshots = await jobs(); assert.equal(snapshots.length, 7); assertNoCandidateKeys(snapshots);
   for (const snapshot of snapshots) {
     const detail = await job(snapshot.id); assertNoCandidateKeys(detail);
     assert.ok(detail.report_id && detail.report, 'Every terminal job retains its report');

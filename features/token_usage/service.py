@@ -10,6 +10,7 @@ import time
 from features.integrity.execution import resolve_registry_target
 from features.model_coverage.catalog import Catalog, model_name
 from shared.registry import Conflict, RegistryError, get_registry
+from shared.redaction import scrub
 from shared.scheduler_lock import scheduler_lock
 from .domain import INTERVAL_SECONDS, VERSION, classify_pair, condition_hash, digest, empty_result, observation, protocol, thresholds
 from .storage import ScheduleStopped, Store, encode
@@ -50,8 +51,16 @@ class TokenUsageService:
         return self.store.save_binding(model, kind, reference.snapshot, thresholds(threshold_config))
 
     def choices(self):
-        return [{"id": row["id"], "name": row["name"], "enabled": row["enabled"], "credential_status": row["credential_status"]}
-                for row in self.registry.list()]
+        rows = self.registry.list()
+        keys = []
+        for row in rows:
+            if row["credential_status"] == "available":
+                try:
+                    keys.append(self.registry.get(row["id"], secret=True)["api_key"])
+                except (KeyError, RegistryError):
+                    pass  # A concurrent removal/replacement does not break choices.
+        return [{"id": row["id"], "name": scrub(row["name"], keys), "enabled": row["enabled"], "credential_status": row["credential_status"]}
+                for row in rows]
 
     def _spec(self, channel_id, model, wire_protocol, *, source, log_evidence=None):
         kind, model = protocol(wire_protocol), model_name(model)
@@ -66,12 +75,18 @@ class TokenUsageService:
                 "model": model, "protocol": kind, "source": source, "condition_hash": condition_hash(binding["thresholds"]), "thresholds": binding["thresholds"],
                 "log_evidence": log_evidence}
         spec["frozen_hash"] = digest({k: spec[k] for k in ("candidate", "reference", "binding_revision", "condition_hash")})
+        # Display names belong to the historical record, not connection identity.
+        paired_secrets = [candidate.channel["api_key"], reference.channel["api_key"]]
+        spec["display_identity"] = {side: {"name": scrub(resolved.channel["name"], paired_secrets), "registry_channel_id": resolved.snapshot["registry_channel_id"],
+                                          "model": resolved.snapshot["canonical_model"], "protocol": kind}
+                                    for side, resolved in (("candidate", candidate), ("reference", reference))}
         return spec
 
     def preview(self, channel_id, model, protocol):
         spec = self._spec(channel_id, model, protocol, source="fixed_retest")
         return {"detection_version": VERSION, "target": spec["candidate"], "reference": spec["reference"],
                 "condition_hash": spec["condition_hash"], "thresholds": spec["thresholds"], "frozen_hash": spec["frozen_hash"],
+                "display_identity": spec["display_identity"],
                 "initial_requests": 2, "max_requests": 4, "max_retries": 0, "interval_seconds": INTERVAL_SECONDS,
                 "billing_status": "unverified"}
 
@@ -101,6 +116,18 @@ class TokenUsageService:
     def save_config(self, channel_id, model, protocol, *, enabled=False, confirm_live=False, config_id=None):
         if enabled and confirm_live is not True:
             raise ValueError("schedule_confirmation_required")
+        if config_id is not None and not enabled:
+            with self.store.connect() as db:
+                db.execute("BEGIN IMMEDIATE")
+                row = db.execute("SELECT spec FROM configs WHERE id=?", (config_id,)).fetchone()
+                if row is None:
+                    raise KeyError("config_not_found")
+                frozen = json.loads(row["spec"])
+                if (channel_id, model, protocol) == (frozen["candidate"]["registry_channel_id"], frozen["model"], frozen["protocol"]):
+                    # Stopping a plan must remain possible after its connection,
+                    # mapping or trusted reference has become invalid.
+                    db.execute("UPDATE configs SET enabled=0 WHERE id=?", (config_id,))
+                    return self._paused_config(db, config_id)
         spec = self._spec(channel_id, model, protocol, source="scheduled")
         next_due = (int(self.clock() // INTERVAL_SECONDS) + 1) * INTERVAL_SECONDS
         with self.store.connect() as db:
@@ -114,6 +141,11 @@ class TokenUsageService:
                     raise KeyError("config_not_found")
                 db.execute("UPDATE configs SET spec=?,enabled=?,next_due=? WHERE id=?", (encode(spec), int(enabled), next_due, config_id))
         return next(row for row in self.configs() if row["id"] == config_id)
+
+    @staticmethod
+    def _paused_config(db, config_id):
+        row = db.execute("SELECT * FROM configs WHERE id=?", (config_id,)).fetchone()
+        return {"id": row["id"], "enabled": False, "next_due": row["next_due"], "interval_seconds": INTERVAL_SECONDS, **json.loads(row["spec"])}
 
     def schedule_tick(self):
         now = self.clock()
@@ -163,6 +195,7 @@ class TokenUsageService:
                                       source=spec["source"], frozen_hash=spec["frozen_hash"], occurrence=row["occurrence"], log_evidence=spec["log_evidence"], threshold_config=spec["thresholds"])
                 result = {**result, **{k: v for k, v in score.items() if k not in {"pairs", "requests_sent"}}}
             return {**result, "source": spec["source"], "target": spec["candidate"], "reference": spec["reference"],
+                    "display_identity": spec.get("display_identity"),
                     "condition_hash": spec["condition_hash"], "thresholds": spec["thresholds"],
                     "frozen_hash": spec["frozen_hash"], "occurrence": row["occurrence"], "log_evidence": spec["log_evidence"]}
 

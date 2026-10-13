@@ -41,4 +41,8 @@ Monitor 的签名合同完整复用 [现有 HMAC API](monitor-internal-api.md)�
 
 任务状态 `queued/running/completed/cancelled` 与检测结论分别评价；completed 可以得出 unable_to_determine。检测结论为 `high_risk/minor_anomaly/pending_confirmation/normal/not_reproduced/unable_to_determine`。逐请求 immutable request_id、permit、confirmed/unknown checkpoint 持久保存；租约过期 sending 保守转 unknown，unknown/confirmed 永不重放，只续 definitely-not-sent 部分。`requests_sent` 包含已恢复的历史许可请求，`new_requests_sent` 仅本次执行新增；unknown 数量可从 attempts 独立核对。
 
-无副作用配置检查：`python -B -m features.token_usage inspect-config`，不初始化数据库、不读取密钥、不联网。开发领域/SQLite/回环HTTP验证：`python -B -m unittest tests.test_token_usage tests.test_token_usage_service`，须设置仓外 `EVAL_TEST_ARTIFACT_ROOT` 或 TMPDIR。页面验证 `node scripts/token_usage_ui.cjs`；本地 Mock 通过不代表真实 Monitor、上游 Token 真实性或实际计费已核验。
+任务及 result 的可选 `display_identity` 分别保存 `candidate`、`reference` 的 `name,registry_channel_id,model,protocol`，名称在创建时脱敏冻结；旧记录可能缺失，应显示“未记录渠道名称”。显示元数据不进入请求/条件/幂等身份，渠道改名不改历史或阻止相同请求复用。结果事件可包含该字段，策略仍以冻结 Registry ID、模型、协议及条件 hash 关联。
+
+取消请求遇到过期租约时，恢复事务直接生成 cancelled 终态和结果事件，不留无法领取的 queued；已发布高风险仍保留。工作台对现存配置执行暂停时不要求连接或可信绑定仍有效。流式证据仅在各协议合法结束后有效；压缩响应在 SSE/JSON 解析前分别限制原始与解压字节，超限、截断、终态后内容或冲突字段只形成无法判定证据。
+
+无副作用配置检查：`python -B -m features.token_usage inspect-config`，不初始化数据库、不读取密钥、不联网。开发领域/SQLite/回环HTTP验证：`python -B -m unittest tests.test_token_usage tests.test_token_usage_service tests.test_token_usage_remediation`，须设置仓外 `EVAL_TEST_ARTIFACT_ROOT`、TMPDIR 和 PLATFORM_DATA_DIR。页面验证 `node scripts/token_usage_ui.cjs` 及 `node scripts/token_usage_ui.cjs --active-off`，均纳入 [完整清单](integrity-testing.md)；off 组验证独立定时与空闲刷新。本地 Mock 通过不代表真实 Monitor、上游 Token 真实性或实际计费已核验。

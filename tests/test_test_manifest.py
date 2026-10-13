@@ -88,7 +88,7 @@ class TestManifestTests(unittest.TestCase):
         self.assertEqual(data["plan"], "integrity")
 
     def test_token_and_queue_consumers_are_registered_in_admission_and_integrity(self):
-        required = {"token-usage-inspect", "token-usage-browser", "admission-queue-browser"}
+        required = {"token-usage-inspect", "token-usage-browser", "token-usage-browser-off", "admission-queue-browser"}
         for plan in (admission, integrity):
             suites = plan(sys.executable, OUTPUT)
             self.assertTrue(required <= {suite.suite_id for suite in suites})
@@ -96,6 +96,25 @@ class TestManifestTests(unittest.TestCase):
                 if suite.suite_id in required:
                     self.assertTrue(suite.command)
                     self.assertLessEqual(suite.timeout_seconds, 300)
+
+    def test_token_off_browser_has_explicit_mode_and_regression_collection_guard(self):
+        from scripts.verify_admission import validated_collection_count
+        suites = admission(sys.executable, OUTPUT)
+        off = next(suite for suite in suites if suite.suite_id == "token-usage-browser-off")
+        self.assertIn("--active-off", off.command)
+        required = next(suite for suite in suites if suite.suite_id == "workbench-python").expected_modules
+        self.assertIn("tests.test_token_usage_remediation", required)
+        collection = {"count": len(required), "modules": {module: 1 for module in required}, "errors": 0}
+        self.assertEqual(validated_collection_count(collection, required), len(required))
+        for invalid in ({**collection, "errors": 1}, {**collection, "count": 0},
+                        {**collection, "modules": {module: 1 for module in required[:-1]}, "count": len(required) - 1}):
+            self.assertEqual(validated_collection_count(invalid, required), 0)
+
+    def test_actual_discovery_includes_every_registered_regression_module(self):
+        from scripts.verify_admission import collect_unittests, validated_collection_count
+        required = next(suite for suite in admission(sys.executable, OUTPUT) if suite.suite_id == "workbench-python").expected_modules
+        collection = collect_unittests()
+        self.assertGreater(validated_collection_count(collection, required), 0)
 
     def test_integrity_container_and_inspection_results_are_classified(self):
         from scripts.verify_image_quality import classify

@@ -34,6 +34,7 @@ async function until(fn,message,timeout=30000){const end=performance.now()+timeo
   async function request(url,body,method='POST'){const res=await fetch(base+url,body===undefined?{}:{method,headers:{'Content-Type':'application/json'},body:JSON.stringify(body)});check(res.ok,`API ${url}: ${res.status}`);return res.json();}
   const channel=await request('/api/registry/channels',{name:'Synthetic first recorded',base_url:`http://127.0.0.1:${upstream.address().port}/v1`,api_key:'synthetic-integrity-ui-credential',multiplier:1,status:'recorded'});
   browser=await chromium.launch({headless:true,channel:process.env.PLAYWRIGHT_CHANNEL||undefined});const page=await browser.newPage({viewport:{width:1440,height:1000}}),errors=[];page.on('pageerror',e=>errors.push(e.message));
+  await page.addInitScript(()=>Object.defineProperty(crypto,'randomUUID',{value:undefined,configurable:true}));
   await page.goto(base+'/');await page.getByRole('link',{name:/模型完整性复核/}).first().waitFor();
   await page.goto(base+'/integrity/');await page.locator('#unified-channel option').nth(1).waitFor({state:'attached'});
   check((await request('/stability/api/channels')).channels.length===0,'recorded channel has zero existing targets');
@@ -44,11 +45,21 @@ async function until(fn,message,timeout=30000){const end=performance.now()+timeo
   await until(async()=>{unifiedResult=await request('/api/integrity/tests/'+unifiedFirst);return unifiedResult.status==='completed';},'unified three methods complete');
   check(unifiedResult.consumed.requests===8,'three methods use eight independent HTTP attempts');
   check(JSON.stringify(unifiedResult.reports.map(r=>r.valid))==='[1,3,3]','three independent valid denominators');
+  check(unifiedResult.display_identity.channel_name==='Synthetic first recorded','channel name frozen at task creation');
+  await request('/api/registry/channels/'+channel.id,{name:'Synthetic renamed recorded',base_url:channel.base_url,api_key:'',multiplier:channel.multiplier,status:channel.status,version:channel.version},'PUT');
+  await page.locator('#refresh').click();
+  const firstCard=page.locator(`[data-unified-id="${unifiedFirst}"]`);
+  await until(async()=> (await firstCard.innerText()).includes('Synthetic first recorded'),'list keeps historical channel name');
+  check(!(await firstCard.innerText()).includes('Synthetic renamed recorded'),'current name does not replace historical identity');
+  await firstCard.getByRole('button',{name:'查看报告',exact:true}).click();
+  await until(async()=> (await page.locator('#unified-detail').innerText()).includes('Synthetic first recorded'),'detail shows frozen channel identity');
+  check(await page.locator('#unified-detail details').count()===1 && !(await page.locator('#unified-detail details').evaluate(e=>e.open)),'JSON evidence is folded below readable detail');
   for(const method of ['traceone','modeltrace','nerfed-api'])await page.locator(`[data-unified-id="${unifiedFirst}"] [data-method="${method}"]`).waitFor();
   const unifiedDownload=page.waitForEvent('download');await page.locator(`[data-unified-id="${unifiedFirst}"] a.export`).click();await(await unifiedDownload).saveAs(path.join(data,'synthetic-unified-export.json'));
   check(!fs.readFileSync(path.join(data,'synthetic-unified-export.json'),'utf8').includes('synthetic-integrity-ui-credential'),'unified report export excludes credential');
   await page.locator('#unified-new').click();delayUnified=true;const beforeCancel=calls;
   const unifiedSecond=await unifiedSubmit();await until(()=>calls>=beforeCancel+3,'unified first fingerprint in flight');
+  check((await request('/api/integrity/tests/'+unifiedSecond)).display_identity.channel_name==='Synthetic renamed recorded','new task captures renamed channel');
   await page.locator(`[data-unified-id="${unifiedSecond}"]`).getByRole('button',{name:'取消任务'}).click();
   await until(async()=> (await request('/api/integrity/tests/'+unifiedSecond)).status==='cancelled','unified cancellation');
   await page.locator(`[data-unified-id="${unifiedSecond}"]`).getByRole('button',{name:'安全恢复任务'}).click();

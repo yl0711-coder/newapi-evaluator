@@ -16,6 +16,12 @@ from scripts import verify_admission as verifier
 from scripts.test_manifest import SuiteSpec
 
 
+REQUIRED_MODULES = next(suite for suite in verifier.admission(sys.executable, Path("/EXTERNAL_TEST_EVIDENCE"))
+                        if suite.suite_id == "workbench-python").expected_modules
+SYNTHETIC_COLLECTION = json.dumps({"count": len(REQUIRED_MODULES),
+                                   "modules": {module: 1 for module in REQUIRED_MODULES}, "errors": 0}) + "\n"
+
+
 class AdmissionVerificationTests(unittest.TestCase):
     def test_external_artifact_root_is_forwarded_without_business_configuration(self):
         with tempfile.TemporaryDirectory() as folder:
@@ -27,7 +33,7 @@ class AdmissionVerificationTests(unittest.TestCase):
                 self.assertEqual(env["EVAL_TEST_ARTIFACT_ROOT"], str(root))
                 self.assertNotIn("EVAL_MONITOR_SECRET", env)
                 if "-c" in command:
-                    return 0, "1\n", False
+                    return 0, SYNTHETIC_COLLECTION, False
                 return 0, "UI contract tests passed: synthetic\n", False
 
             suites = [SuiteSpec("workbench-web", ("synthetic-node", "scripts/test_web.js"), 1, "web")]
@@ -45,7 +51,7 @@ class AdmissionVerificationTests(unittest.TestCase):
 
             def fake_run(command, env, timeout):
                 if "-c" in command:
-                    return 0, "1\n", False
+                    return 0, SYNTHETIC_COLLECTION, False
                 return -15, "Ran 1 test in 0.1s\nFAILED (failures=1)\n", True
 
             suites = [SuiteSpec("workbench-python", (sys.executable, "scripts/test_all.py"), 1, "python")]
@@ -61,11 +67,11 @@ class AdmissionVerificationTests(unittest.TestCase):
     def test_failed_group_survives_later_passed_groups(self):
         def fake_run(command, env, timeout):
             if '-c' in command:
-                return 0, '1\n', False
+                return 0, SYNTHETIC_COLLECTION, False
             if 'scripts/test_web.js' in command:
                 return 3, 'UI contract tests passed:\n', False
             if 'scripts/test_all.py' in command:
-                return 0, ''.join(f'Ran {n} tests in 0.1s\n\nOK\n' for n in [34, 41, 1]) + '  OK check\n' * 22 + 'All engine and integration checks passed.', False
+                return 0, ''.join(f'Ran {n} tests in 0.1s\n\nOK\n' for n in [34, 41, len(REQUIRED_MODULES)]) + '  OK check\n' * 22 + 'All engine and integration checks passed.', False
             if 'scripts/e2e.py' in command:
                 return 0, 'Running x\nx passed: 1\n' * 5 + 'All five Mock CLI modes passed', False
             return 0, json.dumps({'status': 'passed', 'checks': 1, 'skipped': 0, 'requests_sent': 0,
@@ -76,7 +82,7 @@ class AdmissionVerificationTests(unittest.TestCase):
             self.assertEqual(verifier.main(), 1)
             data = json.loads((Path(folder) / 'report/verification.json').read_text())
             self.assertEqual(data['status'], 'failed')
-            self.assertEqual(len(data['results']), 17)
+            self.assertEqual(len(data['results']), len(verifier.admission(sys.executable, Path(folder))))
             rows = {row['suite_id']: row for row in data['results']}
             self.assertIn('protocol-inspect', rows)
             self.assertIn('protocol-browser', rows)
@@ -102,7 +108,7 @@ from scripts import verify_admission as v
 real_run = v.run_process
 def run(command, env, timeout):
     if {stage!r} == 'suite' and '-c' in command:
-        return 0, '1\\n', False
+        return 0, {SYNTHETIC_COLLECTION!r}, False
     return real_run([sys.executable, '-c', {child!r}], env, timeout)
 v.run_process = run
 sys.argv = ['verify', '--output', {str(report)!r}]
@@ -126,7 +132,7 @@ sys.exit(v.main())
                     data = json.loads((report / 'verification.json').read_text())
                     self.assertTrue(data['cancelled'])
                     self.assertEqual(data['status'], 'incomplete')
-                    self.assertEqual(len(data['results']), 17)
+                    self.assertEqual(len(data['results']), len(verifier.admission(sys.executable, root)))
                     if stage == 'suite':
                         self.assertEqual(data['results'][0]['reason'], 'cancelled')
                         self.assertEqual(data['results'][0]['status'], 'incomplete')
@@ -138,3 +144,20 @@ sys.exit(v.main())
                         except ProcessLookupError:
                             pass
                     process.communicate(timeout=5)
+
+    def test_missing_required_module_stops_execution_before_any_suite(self):
+        with tempfile.TemporaryDirectory() as folder:
+            root, commands = Path(folder), []
+
+            def fake_run(command, env, timeout):
+                commands.append(command)
+                self.assertIn("-c", command)
+                return 0, json.dumps({"count": 1, "modules": {"tests.synthetic_other": 1}, "errors": 0}), False
+
+            with patch.object(verifier, "run_process", fake_run), contextlib.redirect_stdout(io.StringIO()):
+                self.assertEqual(verifier.main(["--output", str(root / "report")]), 1)
+            data = json.loads((root / "report/verification.json").read_text())
+            self.assertEqual(len(commands), 1)
+            self.assertEqual(data["status"], "incomplete")
+            self.assertEqual(data["expected_unittest_cases"], 0)
+            self.assertTrue(all(row["status"] == "not_run" for row in data["results"]))

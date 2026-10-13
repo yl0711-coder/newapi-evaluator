@@ -33,6 +33,38 @@ class UnifiedIntegrityTests(unittest.IsolatedAsyncioTestCase):
         text = "OK" if probe["max_tokens"] == 32 else json.dumps([[42]*35]*9) if probe["max_tokens"] == 2500 else " ".join(["42"]*331)
         return {"status":"completed", "text":text, "input_tokens_reported":10, "output_tokens_reported":10}
 
+    async def test_historical_channel_name_survives_rename_without_changing_execution(self):
+        task = self.submit(key="display-name-snapshot")
+        self.assertEqual(task.get("display_identity", {}).get("channel_name"), "Synthetic zero history")
+        current = self.registry.get(self.channel["id"])
+        self.registry.save({**current, "name": "Synthetic renamed channel", "api_key": ""},
+                           self.channel["id"], current["version"])
+        repeated = self.submit(key="display-name-snapshot")
+        self.assertEqual(repeated["job_id"], task["job_id"])
+        self.assertEqual(repeated["display_identity"]["channel_name"], "Synthetic zero history")
+        await self.svc.run_pending(self.send)
+        final = UnifiedService(self.registry).get(task["job_id"])
+        self.assertEqual((final["status"], len(self.sent)), ("completed", 8))
+        self.assertEqual(final["target_snapshot"], task["target_snapshot"])
+        self.assertEqual(final["display_identity"]["channel_name"], "Synthetic zero history")
+
+    async def test_display_name_does_not_persist_the_channel_credential(self):
+        current = self.registry.get(self.channel["id"])
+        self.registry.save({**current, "name": "Synthetic synthetic-unified-credential channel", "api_key": ""},
+                           self.channel["id"], current["version"])
+        task = self.submit(key="redacted-display-name")
+        name = task.get("display_identity", {}).get("channel_name", "")
+        self.assertTrue(name)
+        self.assertNotIn("synthetic-unified-credential", name)
+
+    async def test_legacy_task_without_display_name_is_not_backfilled_from_current_registry(self):
+        task = self.submit(key="legacy-display-name")
+        with self.registry.connect() as conn:
+            conn.execute("UPDATE integrity_jobs SET display_identity_json=NULL WHERE job_id=?", (task["job_id"],))
+        current = self.registry.get(self.channel["id"])
+        self.registry.save({**current, "name": "Synthetic new name", "api_key": ""}, self.channel["id"], current["version"])
+        self.assertEqual(UnifiedService(self.registry).get(task["job_id"])["display_identity"], {})
+
     async def test_one_first_use_task_has_three_independent_results_and_eight_attempts(self):
         with self.registry.connect() as conn:
             self.assertFalse(conn.execute("SELECT 1 FROM sqlite_master WHERE name IN ('production_coverage_snapshots','monitor_channel_identities')").fetchone())

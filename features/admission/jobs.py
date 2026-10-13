@@ -14,7 +14,7 @@ from shared.network import guarded_transport
 from shared.redaction import EventRedactor, scrub
 from shared.registry import Conflict, RegistryError, normalize
 from shared.scheduler_lock import scheduler_lock
-from . import main as engine, reporting, storage
+from . import main as engine, reporting, storage, request_contract
 
 
 TERMINAL = {"succeeded", "failed", "cancelled"}
@@ -50,6 +50,12 @@ class AdmissionManager:
         self._lock = lock
         try:
             self.store.recover()
+            for job in self.store.list():
+                if job["state"] not in TERMINAL:
+                    try:
+                        self._verify_contract(job["configuration"])
+                    except (Conflict, KeyError, ValueError):
+                        self.store.reject_contract(job["id"])
             self._closing = False
             self._consumer = asyncio.create_task(self._consume())
         except BaseException:
@@ -91,6 +97,26 @@ class AdmissionManager:
             self._token_service = TokenUsageService(self.registry)
         return self._token_service.admission_binding_for(model, protocol)
 
+    def _verify_contract(self, configuration):
+        frozen = configuration.get("request_contract")
+        recorded = configuration.get("request_contract_fingerprint")
+        if not frozen or not recorded or request_contract.fingerprint(frozen) != recorded or request_contract.fingerprint(request_contract.snapshot(configuration, token_enabled=self.token_check is not None)) != recorded:
+            raise Conflict("请求构造合同已改变或未记录，拒绝恢复旧任务；请重新创建")
+
+    def token_precheck(self, *, model, candidate_protocol, reference_model, reference_protocol, reference_channel_id):
+        result = {"available": False, "configuration_url": "/token-usage/"}
+        if self.token_check is None:
+            return {**result, "reason": "token_check_disabled", "label": "Token 专项未启用；仍可创建六题测试。"}
+        if model != reference_model or candidate_protocol != reference_protocol:
+            return {**result, "reason": "conditions_mismatch", "label": "Token 专项要求双端模型与协议一致；六题测试仍可使用不同协议。"}
+        try:
+            binding = self._trusted_reference(reference_model, reference_protocol)
+            if binding["resolved"].snapshot["registry_channel_id"] != reference_channel_id:
+                raise Conflict("trusted_reference_mismatch")
+            return {**result, "available": True, "reason": "ready", "label": "Token 可信参照条件已满足；执行时会再次核验。"}
+        except (KeyError, RegistryError, ValueError):
+            return {**result, "reason": "trusted_reference_missing_or_mismatch", "label": "当前参照未匹配 Token 可信绑定；Token 专项将无法判定，六题测试仍可执行。"}
+
     @staticmethod
     def _binding_configuration(binding):
         return {"snapshot": binding["resolved"].snapshot, "revision": binding["revision"],
@@ -108,8 +134,8 @@ class AdmissionManager:
         run_id = identity[:32]
         configuration = {
             "run_id": run_id, "rounds": body.rounds,
-            "candidate": {"base_url": candidate["base_url"], "model": body.candidate.model, "protocol": body.candidate.protocol},
-            "reference": body.reference.model_dump(),
+            "candidate": {"base_url": candidate["base_url"], "name": body.candidate.name or "未记录渠道名称", "model": body.candidate.model, "protocol": body.candidate.protocol},
+            "reference": {**body.reference.model_dump(), "name": channel["name"] or "未记录渠道名称", "base_url": channel["base_url"]},
             "candidate_identity": self.registry.connection_fingerprint(candidate),
             "reference_identity": self.registry.connection_fingerprint(channel),
         }
@@ -119,7 +145,12 @@ class AdmissionManager:
                 configuration["token_reference"] = self._binding_configuration(binding)
             except (KeyError, RegistryError, ValueError):
                 configuration["token_reference"] = None
-        digest = hashlib.sha256(json.dumps(configuration, sort_keys=True, ensure_ascii=False).encode()).hexdigest()
+        configuration["request_contract"] = request_contract.snapshot(configuration, token_enabled=self.token_check is not None)
+        configuration["request_contract_fingerprint"] = request_contract.fingerprint(configuration["request_contract"])
+        identity_configuration = {**configuration,
+            **{side: {key: value for key, value in configuration[side].items() if key != "name"}
+               for side in ("candidate", "reference")}}
+        digest = hashlib.sha256(json.dumps(identity_configuration, sort_keys=True, ensure_ascii=False).encode()).hexdigest()
         budget = self.budget_seconds or min(86400, 300 * (len(engine.QUESTIONS) * body.rounds + 2))
         task = self.store.queue.enqueue(storage.JOB_TYPE, {"run_id": run_id, "configuration_digest": digest},
                                         idempotency_key="admission:" + identity, budget_seconds=budget)
@@ -157,6 +188,12 @@ class AdmissionManager:
         result.update(status=job["state"], needs_credentials=job["state"] == "waiting_credentials",
                       model=job["configuration"]["candidate"]["model"], candidate_model=job["configuration"]["candidate"]["model"],
                       progress={"total_steps": len(job["steps"]), **counts, "completed_steps": counts["confirmed"] + counts["unknown"] + counts["not_needed"]})
+        result.update(candidate=reporting.endpoint_identity(job["configuration"]["candidate"]),
+                      reference=reporting.endpoint_identity(job["configuration"]["reference"]),
+                      report_removed=bool(job["report_id"] and not job["report"]))
+        sending = [step for step, state in job["steps"].items() if state == "sending"]
+        result["progress"]["current_steps"] = sending
+        result["progress"]["phase"] = "token" if any(step.startswith("token:") for step in sending) else "questions" if sending else "waiting"
         if include_report:
             result["report"] = reporting.finalize_report(job["report"]) if job["report"] else None
         return result
@@ -172,6 +209,7 @@ class AdmissionManager:
         if self.registry.connection_fingerprint(clean) != job["configuration"]["candidate_identity"]:
             raise Conflict("候选凭据与原任务不一致，请提供同一 Key 或重新创建任务")
         self._reference(job["configuration"])
+        self._verify_contract(job["configuration"])
         self.store.supply(task_id)
         self._credentials[task_id] = clean["api_key"]
         self._wake.set()
@@ -185,7 +223,7 @@ class AdmissionManager:
         if task["state"] == "cancelled":
             report = job["report"]
             report["status"] = "canceled"
-            self.store.finish(task_id, reporting.finalize_report(report), "cancelled")
+            self.store.finish(task_id, report, "cancelled")
             self._credentials.pop(task_id, None)
         elif self._active_id == task_id and self._active is not None:
             self._active.cancel()
@@ -197,6 +235,10 @@ class AdmissionManager:
         after = 0
         while True:
             replay = self.store.events(task_id, after)
+            if replay["truncated"]:
+                yield engine.encode_event({"type": "error", "ok": False, "error_category": "event_history_gap",
+                    "error": "事件历史已裁剪，订阅不完整；请读取任务快照获取完整报告", "snapshot_url": f"/admission/api/jobs/{task_id}"})
+                return
             for event in replay["events"]:
                 after = event["id"]
                 yield engine.encode_event({key: value for key, value in event.items() if key != "id"})
@@ -230,6 +272,7 @@ class AdmissionManager:
         configuration = job["configuration"]
         state, error = "succeeded", ""
         try:
+            self._verify_contract(configuration)
             key = self._credentials.get(task_id)
             if key is None:
                 self.store.recover()
@@ -252,12 +295,14 @@ class AdmissionManager:
             state, report["status"] = "cancelled", "canceled"
         except asyncio.TimeoutError:
             state, report["status"], error = "failed", "failed", "准入任务超过运行预算"
+        except Conflict as exc:
+            state, report["status"], error = "failed", "failed", str(exc)
         except (RegistryError, KeyError):
             state, report["status"], error = "failed", "failed", "任务连接已失效或改变，请重新创建任务"
         except Exception:
             state, report["status"], error = "failed", "failed", "准入执行或报告保存失败"
         try:
-            self.store.finish(task_id, reporting.finalize_report(report), state, error)
+            self.store.finish(task_id, report, state, error)
         except ValueError:
             saved = self.store.get(task_id)["report"]
             saved["status"] = "failed"
@@ -288,6 +333,7 @@ class AdmissionManager:
                     started = {"type": "question_started", "question_id": question["id"], "prompt": selected["prompt"], "index": index, **metadata}
                     self._record(task_id, report, started)
                     async def before_send(side):
+                        self._verify_contract(job["configuration"])
                         self._reference(job["configuration"])
                         if not self.store.begin_step(task_id, f"{number}:{question['id']}:{side}"):
                             raise asyncio.CancelledError
@@ -386,6 +432,7 @@ class AdmissionManager:
             self.store.checkpoint(task_id, report, {"type": "token_usage_finished"}, step_id="token:complete", state="confirmed", result={"complete": True})
             return
         async def before_send(side, pair_index):
+            self._verify_contract(configuration)
             self._reference(self.store.get(task_id)["configuration"])
             resolve_trusted()
             if not self.store.begin_step(task_id, f"token:{side}:{pair_index}"):

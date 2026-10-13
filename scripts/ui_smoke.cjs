@@ -144,7 +144,7 @@ Promise.race([fixtureFailure,(async () => {
   await page.locator('#candidate-model').fill('demo-model'); await page.locator('#reference-model').fill('demo-model');
   await page.locator('#reference-id').selectOption(String(channelId));
   const admissionJob = await submitAdmission();
-  await page.waitForFunction(id=>document.querySelector('#run-status').textContent.includes(`任务 #${id} · 已完成`),admissionJob,{timeout:40000});
+  await page.waitForFunction(id=>{const text=document.querySelector('#run-status').textContent;return text.includes(`任务 #${id} ·`) && text.includes('已完成');},admissionJob,{timeout:40000});
   assert.equal(await page.locator('#summary-cards .summary-card').count(),8);
   assert.equal(await page.locator('#pair-summary tr').count(),6);
   assert.equal(await page.locator('#results .evidence-card').count(),12);
@@ -191,11 +191,19 @@ Promise.race([fixtureFailure,(async () => {
   await page.locator('#candidate-model').fill('gpt-6-astra');
   assert.equal(await page.locator('#candidate-protocol').isDisabled(),true);
   await page.locator('#candidate-url').fill(upstreamUrl+'/responses');
+  await page.locator('#candidate-name').fill('UI Astra candidate');
   await page.locator('#candidate-key').fill('ui-ephemeral-astra-key');
   await page.locator('#reference-id').selectOption(String(channelId));
   await page.locator('#rounds').selectOption('1');
   const astraJob = await submitAdmission();
-  await page.waitForFunction(id=>document.querySelector('#run-status').textContent.includes(`任务 #${id} · 已完成`),astraJob,{timeout:30000});
+  await page.waitForFunction(id=>{
+    const text=document.querySelector('#run-status').textContent;
+    return document.querySelector('#stop').dataset.jobId===String(id) && text.includes(`任务 #${id} ·`) && text.includes('已完成');
+  },astraJob,{timeout:30000});
+  const astraTask=await (await fetch(base+`/admission/api/jobs/${astraJob}`)).json();
+  assert.equal(astraTask.status,'succeeded');
+  assert.ok((await page.locator('#run-status').textContent()).includes(astraTask.candidate.name));
+  assert.ok((await page.locator('#run-status').textContent()).includes(astraTask.reference.name));
   const astraCalls=requests.filter(item=>item.body.model==='gpt-6-astra');
   assert.equal(astraCalls.length,14); assert.ok(astraCalls.every(item=>item.path==='/v1/responses'));
   assert.equal(astraCalls.filter(tokenRequest).length,2,'Astra adds two specialized Token requests');
@@ -227,7 +235,7 @@ Promise.race([fixtureFailure,(async () => {
   const cancelJob = await submitAdmission();
   await page.waitForFunction(id=>document.querySelector('#run-status').textContent.includes(`任务 #${id} · `),cancelJob);
   await page.locator('#stop').waitFor({state:'visible'}); await page.locator('#stop').click();
-  await page.waitForFunction(id=>document.querySelector('#run-status').textContent.includes(`任务 #${id} · 已停止`),cancelJob);
+  await page.waitForFunction(id=>{const text=document.querySelector('#run-status').textContent;return text.includes(`任务 #${id} ·`) && text.includes('已停止');},cancelJob);
   assert.equal(await page.locator('#candidate-protocol').isDisabled(),true);
   phase = 'capacity_and_image';
   await page.goto(base+'/capacity/'); await page.locator('.platform-nav').waitFor();

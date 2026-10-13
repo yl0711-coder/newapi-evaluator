@@ -9,6 +9,12 @@ from typing import Any
 SIDES = ("candidate", "reference")
 
 
+def endpoint_identity(value: Any) -> dict[str, Any]:
+    endpoint = value if isinstance(value, dict) else {}
+    return {"name": endpoint.get("name") or "未记录渠道名称",
+            **{key: endpoint[key] for key in ("channel_id", "model", "protocol") if endpoint.get(key) is not None}}
+
+
 def public_token_usage(value: Any) -> dict[str, Any] | None:
     if not isinstance(value, dict):
         return None
@@ -61,6 +67,8 @@ def _attribution(
     reference_ok = bool(reference and reference.get("ok"))
     if candidate_ok and reference_ok:
         return "normal", "双端均正常"
+    if any(item and item.get("status") == "unknown" for item in (candidate, reference)):
+        return "unknown", "请求结果未知，不能归责候选端"
     if not candidate_ok and reference_ok:
         return "candidate", "候选端独有异常"
     if candidate_ok and not reference_ok:
@@ -193,6 +201,9 @@ def _identity(endpoint: dict[str, Any], measurements: list[dict[str, Any]]) -> d
 def build_summary(report: dict[str, Any], pairs: list[dict[str, Any]]) -> dict[str, Any]:
     evaluated = [pair for pair in pairs if pair["round_role"] == "evaluated"]
     counts = Counter(pair["attribution"] for pair in evaluated)
+    planned = max(0, int(report.get("rounds") or 0) - int(report.get("warmup_rounds") or 0)) * len(report.get("questions", []))
+    covered = sum(pair["candidate_status"] != "missing" and pair["reference_status"] != "missing" for pair in evaluated)
+    complete = bool(planned and covered == planned and report.get("status") == "completed")
     valid = [pair for pair in evaluated if pair["attribution"] == "normal"]
     comparable = [pair for pair in valid if pair["total_ratio"] is not None]
     candidate_slower = sum(pair["total_ratio"] > 1.2 for pair in comparable)
@@ -247,6 +258,14 @@ def build_summary(report: dict[str, Any], pairs: list[dict[str, Any]]) -> dict[s
         explanations.append("本轮未发现候选端独有异常。")
     explanations.append(speed["label"] + "。")
 
+    if not complete:
+        running = report.get("status") in {"running", "queued", "waiting_credentials"}
+        overall = {"status": "in_progress" if running else "insufficient",
+                   "label": "测试进行中，仅展示已完成部分；整轮结论尚未形成" if running else "测试未完整完成，证据不足，建议人工复核"}
+        speed = {**speed, "label": "已完成部分：" + speed["label"]}
+        stability = {**stability, "label": "已完成部分：" + stability["label"]}
+        explanations.insert(0, f"已记录 {covered} / {planned} 个完整评测题对；当前为未完成快照。")
+
     token_usage = public_token_usage(report.get("token_usage"))
     if token_usage:
         conclusion = token_usage.get("conclusion")
@@ -277,12 +296,15 @@ def build_summary(report: dict[str, Any], pairs: list[dict[str, Any]]) -> dict[s
             "both_normal": counts["normal"],
         },
         "evidence": {
+            "planned_pairs": planned,
+            "covered_pairs": covered,
+            "coverage_complete": complete,
             "test_rounds": int(report.get("rounds") or 0),
             "warmup_rounds": int(report.get("warmup_rounds") or 0),
             "evaluated_rounds": len({pair["round"] for pair in evaluated}),
             "evaluated_pairs": len(evaluated),
             "valid_pairs": len(valid),
-            "confidence": "中" if valid else "低",
+            "confidence": "中" if valid and complete else "低",
         },
         "model_identity": identities,
         **({"token_usage": token_usage} if token_usage is not None else {}),
@@ -292,6 +314,8 @@ def build_summary(report: dict[str, Any], pairs: list[dict[str, Any]]) -> dict[s
 
 def finalize_report(report: dict[str, Any]) -> dict[str, Any]:
     result = dict(report)
+    for side in SIDES:
+        result[side] = {**result.get(side, {}), **endpoint_identity(result.get(side, {}))}
     result.setdefault("warmup_rounds", 0)
     pairs = build_pairs(result)
     result["pairs"] = pairs
@@ -302,8 +326,7 @@ def finalize_report(report: dict[str, Any]) -> dict[str, Any]:
 def public_report(report: dict[str, Any]) -> dict[str, Any]:
     finalized = finalize_report(report)
     def public_endpoint(value: Any) -> dict[str, Any]:
-        endpoint = value if isinstance(value, dict) else {}
-        return {key: endpoint.get(key) for key in ("name", "model", "protocol") if endpoint.get(key) is not None}
+        return endpoint_identity(value)
     return {
         "version": finalized.get("version"),
         "created_at": finalized.get("created_at"),

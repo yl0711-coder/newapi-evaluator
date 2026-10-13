@@ -146,7 +146,7 @@ class IntegrityStore:
             for table, additions in {
                 "integrity_jobs": {"pricing_json": "TEXT", "budget_scope": "TEXT", "budget_key": "TEXT",
                     "budget_date": "TEXT", "timezone": "TEXT", "daily_limit_micro": "INTEGER", "plan_version": "TEXT",
-                    "principal": "TEXT NOT NULL DEFAULT 'workbench'"},
+                    "principal": "TEXT NOT NULL DEFAULT 'workbench'", "display_identity_json": "TEXT"},
                 "integrity_attempts": {"reserved_cost_micro": "INTEGER NOT NULL DEFAULT 0",
                     "reported_cost_micro": "INTEGER", "charged_cost_micro": "INTEGER NOT NULL DEFAULT 0",
                     "pricing_hash": "TEXT", "plan_version": "TEXT"},
@@ -239,6 +239,17 @@ class IntegrityStore:
             conn.execute("UPDATE integrity_jobs SET pricing_json=?,budget_scope=?,budget_key=?,budget_date=?,timezone=?,daily_limit_micro=?,plan_version=?,principal=? WHERE job_id=?",
                          (_json(pricing), budget_scope, budget_key, budget_date, timezone, None, plan_version, principal, job_id))
             conn.execute("UPDATE integrity_jobs SET daily_limits_json=? WHERE job_id=?", (_json(daily_limits), job_id))
+            channel = conn.execute("SELECT name,key_enc FROM channels WHERE id=?", (target["registry_channel_id"],)).fetchone()
+            if channel is not None:
+                from shared.redaction import scrub
+                try:
+                    credential = self.registry._cipher.decrypt(channel["key_enc"].encode()).decode()
+                except Exception:
+                    display = {}
+                else:
+                    display = {"channel_name": scrub(channel["name"], [credential])}
+                # Display metadata is frozen here and excluded from request identity and send guards.
+                conn.execute("UPDATE integrity_jobs SET display_identity_json=? WHERE job_id=?", (_json(display), job_id))
             return self._job(conn, conn.execute("SELECT * FROM integrity_jobs WHERE job_id=?", (job_id,)).fetchone())
 
     def _job(self, conn, row):
@@ -249,6 +260,7 @@ class IntegrityStore:
                 "reason": row["reason"], "owner": row["owner"], "lease_until": row["lease_until"],
                 "deadline": row["deadline"], "cancel_requested": bool(row["cancel_requested"]),
                 "target_snapshot": json.loads(row["target_json"]), "strategy": json.loads(row["strategy_json"]),
+                "display_identity": json.loads(row["display_identity_json"]) if row["display_identity_json"] else {},
                 "request_manifest": json.loads(row["manifest_json"]), "limits": json.loads(row["limits_json"]),
                 "results": results, "skipped": json.loads(row["skipped_json"]), "principal": row["principal"],
                 "execution_mode": row["execution_mode"],

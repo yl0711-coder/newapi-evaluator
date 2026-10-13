@@ -38,6 +38,16 @@ def base_report():
 
 
 class AdmissionReportingTests(unittest.TestCase):
+    def test_remediation_running_one_pair_never_claims_final_similarity(self):
+        report = base_report()
+        report["status"] = "running"
+        report["questions"] += [{"id": "q2", "title": "题二", "difficulty": "hard", "prompt": ""}]
+        report["measurements"] = [measurement(2, "q1", side) for side in reporting.SIDES]
+        summary = reporting.finalize_report(report)["summary"]
+        self.assertEqual(summary["overall"]["status"], "in_progress")
+        self.assertEqual(summary["evidence"]["planned_pairs"], 2)
+        self.assertFalse(summary["evidence"]["coverage_complete"])
+
     def test_warmup_is_excluded_and_candidate_failure_is_attributed(self):
         report = base_report()
         report["measurements"] = [

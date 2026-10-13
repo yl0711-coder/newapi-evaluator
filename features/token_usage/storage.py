@@ -105,9 +105,10 @@ class Store:
 
     @staticmethod
     def _job(row):
+        spec = json.loads(row["spec"])
         return {"job_id": row["id"], "status": row["status"], "result": json.loads(row["result"]) if row["result"] else None,
-                "created_at": row["created_at"], "updated_at": row["updated_at"], "source": json.loads(row["spec"])["source"],
-                "target": json.loads(row["spec"])["candidate"], "reference": json.loads(row["spec"])["reference"],
+                "created_at": row["created_at"], "updated_at": row["updated_at"], "source": spec["source"],
+                "target": spec["candidate"], "reference": spec["reference"], "display_identity": spec.get("display_identity"),
                 "config_id": row["config_id"], "occurrence": row["occurrence"]}
 
     def get(self, job_id, *, principal="workbench", administrative=False):
@@ -132,11 +133,24 @@ class Store:
         now = time.time() if now is None else now
         with self.connect() as db:
             db.execute("BEGIN IMMEDIATE")
-            expired = db.execute("SELECT id FROM jobs WHERE status='running' AND lease_until<?", (now,)).fetchall()
+            expired = db.execute("SELECT * FROM jobs WHERE (status='running' AND (lease_until IS NULL OR lease_until<?)) OR (status='queued' AND cancelled=1)", (now,)).fetchall()
             for row in expired:
                 unknown = observation([], status="unknown", transport_status="lease_expired")
                 db.execute("UPDATE attempts SET state='unknown',result=? WHERE job_id=? AND state='sending'", (encode(unknown), row["id"]))
-                db.execute("UPDATE jobs SET status='queued',owner=NULL,lease_until=NULL WHERE id=?", (row["id"],))
+                if row["cancelled"]:
+                    spec = json.loads(row["spec"])
+                    sent = db.execute("SELECT COUNT(*) FROM attempts WHERE job_id=? AND state IN ('confirmed','unknown','sending')", (row["id"],)).fetchone()[0]
+                    result = empty_result("cancelled_unknown" if sent else "cancelled_not_sent", source=spec["source"], log_evidence=spec.get("log_evidence"))
+                    result.update(target=spec["candidate"], reference=spec["reference"], display_identity=spec.get("display_identity"),
+                                  condition_hash=spec["condition_hash"], frozen_hash=spec["frozen_hash"],
+                                  thresholds=spec["thresholds"], occurrence=row["occurrence"], requests_sent=sent, new_requests_sent=0)
+                    previous = json.loads(row["result"]) if row["result"] else None
+                    if previous and previous.get("severity") == "high_risk":
+                        result = {**previous, "verification_status": "cancelled_unknown", "requests_sent": max(sent, previous.get("requests_sent", 0)), "new_requests_sent": 0}
+                    db.execute("UPDATE jobs SET status='cancelled',result=?,owner=NULL,lease_until=NULL,updated_at=? WHERE id=?", (encode(result), now, row["id"]))
+                    db.execute("INSERT INTO events(principal,job_id,kind,payload,created_at) VALUES(?,?,'result',?,?)", (row["principal"], row["id"], encode(result), now))
+                else:
+                    db.execute("UPDATE jobs SET status='queued',owner=NULL,lease_until=NULL,updated_at=? WHERE id=?", (now, row["id"]))
             row = db.execute("SELECT * FROM jobs WHERE status='queued' AND cancelled=0" +
                              (" AND config_id IS NULL" if active_only else " AND config_id IS NOT NULL" if scheduled_only or not active else "") + " ORDER BY CASE WHEN config_id IS NULL THEN 0 ELSE 1 END,created_at LIMIT 1").fetchone()
             if not row:
@@ -153,7 +167,12 @@ class Store:
         if config_id is None:
             return None
         config = db.execute("SELECT enabled,spec FROM configs WHERE id=?", (config_id,)).fetchone()
-        if config is None or config["spec"] != frozen_spec:
+        if config is None:
+            return "schedule_config_changed"
+        current, frozen = json.loads(config["spec"]), json.loads(frozen_spec)
+        current.pop("display_identity", None)
+        frozen.pop("display_identity", None)
+        if current != frozen:
             return "schedule_config_changed"
         return None if config["enabled"] else "schedule_paused"
 
@@ -216,6 +235,8 @@ class Store:
             if row["status"] == "queued":
                 spec = json.loads(row["spec"])
                 result = json.loads(row["result"]) if row["result"] else empty_result("cancelled_not_sent", source=spec["source"], log_evidence=spec["log_evidence"])
+                result = {**result, "target": spec["candidate"], "reference": spec["reference"], "display_identity": spec.get("display_identity"),
+                          "condition_hash": spec["condition_hash"], "frozen_hash": spec["frozen_hash"], "thresholds": spec["thresholds"], "occurrence": row["occurrence"]}
                 db.execute("UPDATE jobs SET cancelled=1,status='cancelled',result=?,updated_at=? WHERE id=?", (encode(result), time.time(), job_id))
                 db.execute("INSERT INTO events(principal,job_id,kind,payload,created_at) VALUES(?,?,'result',?,?)", (row["principal"],job_id,encode(result),time.time()))
             elif row["status"] == "running":

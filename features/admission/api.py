@@ -26,6 +26,7 @@ class CandidateInput(BaseModel):
     api_key: SecretStr
     model: str = Field(min_length=1, max_length=160)
     protocol: engine.AdmissionProtocol
+    name: str = Field(default="", max_length=160)
 
     @model_validator(mode="after")
     def enforce_model_protocol(self):
@@ -251,6 +252,13 @@ async def create_job(body: CompareInput, request: Request):
 @app.get("/api/jobs")
 async def list_jobs():
     return {"jobs": (await _manager()).list()}
+
+
+@app.get("/api/token-precheck")
+async def token_precheck(model: str, candidate_protocol: engine.AdmissionProtocol,
+                         reference_model: str, reference_protocol: engine.AdmissionProtocol, reference_channel_id: int):
+    return (await _manager()).token_precheck(model=model, candidate_protocol=candidate_protocol,
+        reference_model=reference_model, reference_protocol=reference_protocol, reference_channel_id=reference_channel_id)
 
 
 @app.get("/api/jobs/{task_id}")

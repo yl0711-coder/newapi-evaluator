@@ -11,6 +11,7 @@ from typing import Any, Iterator
 from shared.config import DATA_DIR
 from features.model_coverage.workflow import WorkflowQueue
 from shared.registry import Conflict
+from . import reporting
 
 
 REPORT_DIR = DATA_DIR / "admission"
@@ -112,6 +113,10 @@ def _summary(row: sqlite3.Row) -> dict[str, Any]:
     if "report_json" in row.keys():
         try:
             report = json.loads(row["report_json"])
+            for side in ("candidate", "reference"):
+                endpoint = reporting.endpoint_identity(report.get(side, {}))
+                result[side] = endpoint
+                result[f"{side}_name"] = endpoint["name"]
             summary = report.get("summary") if isinstance(report, dict) else {}
             counts = summary.get("counts", {}) if isinstance(summary, dict) else {}
             evidence = summary.get("evidence", {}) if isinstance(summary, dict) else {}
@@ -133,6 +138,7 @@ def save_report(report: dict[str, Any]) -> dict[str, Any]:
     candidate = report["candidate"]
     reference = report["reference"]
     with cursor() as cur:
+        cur.execute("BEGIN IMMEDIATE")
         cur.execute(
             "INSERT INTO reports(created_at,reported_at,status,candidate_url,candidate_model,"
             "reference_name,reference_model,report_json) VALUES(?,?,?,?,?,?,?,?)",
@@ -144,11 +150,7 @@ def save_report(report: dict[str, Any]) -> dict[str, Any]:
             ),
         )
         report_id = int(cur.lastrowid)
-        cur.execute(
-            "DELETE FROM reports WHERE id IN ("
-            "SELECT id FROM reports ORDER BY created_at DESC,id DESC LIMIT -1 OFFSET ?)",
-            (MAX_REPORTS,),
-        )
+        _prune_reports(cur)
         row = cur.execute("SELECT * FROM reports WHERE id=?", (report_id,)).fetchone()
     assert row is not None
     return _summary(row)
@@ -177,7 +179,33 @@ def get_report(report_id: int) -> dict[str, Any] | None:
 
 def delete_report(report_id: int) -> bool:
     with cursor() as cur:
-        return cur.execute("DELETE FROM reports WHERE id=?", (report_id,)).rowcount > 0
+        cur.execute("BEGIN IMMEDIATE")
+        return _remove_reports(cur, [report_id]) > 0
+
+
+def _remove_reports(conn, report_ids):
+    """Remove every terminal body copy in the same transaction as history deletion."""
+    if not report_ids:
+        return 0
+    if conn.execute("SELECT 1 FROM sqlite_master WHERE name='admission_jobs'").fetchone():
+        for report_id in report_ids:
+            rows = conn.execute("SELECT j.task_id,j.configuration_json FROM admission_jobs j JOIN eval_workflow_tasks t ON t.id=j.task_id WHERE j.report_id=? AND t.state IN ('succeeded','failed','cancelled')", (report_id,)).fetchall()
+            for row in rows:
+                config = json.loads(row["configuration_json"])
+                config.pop("request_contract", None)
+                config.pop("request_contract_fingerprint", None)
+                conn.execute("UPDATE admission_jobs SET report_json='{}',configuration_json=? WHERE task_id=?", (json.dumps(config, ensure_ascii=False), row["task_id"]))
+                conn.execute("DELETE FROM admission_events WHERE task_id=?", (row["task_id"],))
+                conn.execute("DELETE FROM admission_step_results WHERE task_id=?", (row["task_id"],))
+    deleted = 0
+    for report_id in report_ids:
+        deleted += conn.execute("DELETE FROM reports WHERE id=?", (report_id,)).rowcount
+    return deleted
+
+
+def _prune_reports(conn):
+    ids = [row[0] for row in conn.execute("SELECT id FROM reports ORDER BY created_at DESC,id DESC LIMIT -1 OFFSET ?", (MAX_REPORTS,)).fetchall()]
+    _remove_reports(conn, ids)
 
 
 def _feishu_entry(row: sqlite3.Row | None) -> dict[str, Any] | None:
@@ -336,6 +364,10 @@ CREATE TABLE IF NOT EXISTS admission_step_results (
   result_json TEXT NOT NULL,
   PRIMARY KEY(task_id,step_id)
 );
+CREATE TABLE IF NOT EXISTS admission_event_state (
+  task_id INTEGER PRIMARY KEY,
+  last_pruned_id INTEGER NOT NULL DEFAULT 0
+);
 """
 
 
@@ -350,6 +382,13 @@ class JobStore:
         with self.connect() as conn:
             conn.execute("PRAGMA journal_mode=WAL")
             conn.executescript(SCHEMA + JOB_SCHEMA)
+            # Reconcile terminal copies left by older delete/retention paths.
+            conn.execute("BEGIN IMMEDIATE")
+            stale = conn.execute("SELECT DISTINCT j.report_id FROM admission_jobs j JOIN eval_workflow_tasks t ON t.id=j.task_id WHERE j.report_id IS NOT NULL AND t.state IN ('succeeded','failed','cancelled') AND j.report_id NOT IN (SELECT id FROM reports)").fetchall()
+            _remove_reports(conn, [row[0] for row in stale])
+            # Old databases have no trustworthy origin/watermark. Event types
+            # can recur after restart, so a fresh subscription must use snapshot.
+            conn.execute("INSERT INTO admission_event_state(task_id,last_pruned_id) SELECT task_id,MIN(id) FROM admission_events WHERE task_id NOT IN (SELECT task_id FROM admission_event_state) GROUP BY task_id")
 
     @contextmanager
     def connect(self):
@@ -411,6 +450,10 @@ class JobStore:
         if len(encoded.encode()) > 256 * 1024:
             raise ValueError("准入事件超过大小限制")
         conn.execute("INSERT INTO admission_events(task_id,event_json) VALUES(?,?)", (task_id, encoded))
+        conn.execute("INSERT OR IGNORE INTO admission_event_state(task_id,last_pruned_id) VALUES(?,0)", (task_id,))
+        removed = conn.execute("SELECT MAX(id) FROM admission_events WHERE task_id=? AND id NOT IN (SELECT id FROM admission_events WHERE task_id=? ORDER BY id DESC LIMIT ?)", (task_id, task_id, MAX_JOB_EVENTS)).fetchone()[0]
+        if removed is not None:
+            conn.execute("INSERT INTO admission_event_state(task_id,last_pruned_id) VALUES(?,?) ON CONFLICT(task_id) DO UPDATE SET last_pruned_id=MAX(last_pruned_id,excluded.last_pruned_id)", (task_id, removed))
         conn.execute("DELETE FROM admission_events WHERE task_id=? AND id NOT IN (SELECT id FROM admission_events WHERE task_id=? ORDER BY id DESC LIMIT ?)",
                      (task_id, task_id, MAX_JOB_EVENTS))
 
@@ -485,6 +528,7 @@ class JobStore:
                     "round_role": "warmup" if int(number) <= report.get("warmup_rounds", 0) else "evaluated",
                     "ok": False, "status": "unknown", "transport_completed": False, "error_category": "unknown",
                     "error": "请求已发送但结果未确认，未重放"})
+        report = reporting.finalize_report(report)
         encoded = self._encode(report)
         candidate, reference = report["candidate"], report["reference"]
         cur = conn.execute("INSERT INTO reports(created_at,reported_at,status,candidate_url,candidate_model,reference_name,reference_model,report_json) VALUES(?,?,?,?,?,?,?,?)",
@@ -494,8 +538,16 @@ class JobStore:
         conn.execute("UPDATE eval_workflow_tasks SET state=?,result_json=?,error=?,updated_at=?,finished_at=? WHERE id=?",
                      (state, json.dumps({"report_id": report_id}), error, now, now, task_id))
         self._event(conn, task_id, {"type": "run_finished", "status": report["status"], "report_id": report_id})
-        conn.execute("DELETE FROM reports WHERE id IN (SELECT id FROM reports ORDER BY created_at DESC,id DESC LIMIT -1 OFFSET ?)", (MAX_REPORTS,))
-        conn.execute("UPDATE admission_jobs SET report_json='{}' WHERE task_id IN (SELECT id FROM eval_workflow_tasks WHERE state IN ('succeeded','failed','cancelled')) AND report_id NOT IN (SELECT id FROM reports)")
+        _prune_reports(conn)
+
+    def reject_contract(self, task_id):
+        with self.connect() as conn:
+            conn.execute("BEGIN IMMEDIATE")
+            row = conn.execute("SELECT j.report_json,t.state FROM admission_jobs j JOIN eval_workflow_tasks t ON t.id=j.task_id WHERE j.task_id=?", (task_id,)).fetchone()
+            if row and row["state"] in {"queued", "waiting_credentials"}:
+                report = json.loads(row["report_json"])
+                report["status"] = "failed"
+                self._finish_transaction(conn, task_id, report, "failed", "请求构造合同已改变或未记录，拒绝恢复旧任务；请重新创建", time.time())
 
     def finish(self, task_id, report, state, error=""):
         now = time.time()
@@ -517,7 +569,8 @@ class JobStore:
     def events(self, task_id, after=0, limit=200):
         self.get(task_id)
         with self.connect() as conn:
-            first = conn.execute("SELECT MIN(id) FROM admission_events WHERE task_id=?", (task_id,)).fetchone()[0]
+            pruned = conn.execute("SELECT last_pruned_id FROM admission_event_state WHERE task_id=?", (task_id,)).fetchone()
             rows = conn.execute("SELECT id,event_json FROM admission_events WHERE task_id=? AND id>? ORDER BY id LIMIT ?", (task_id, after, min(500, max(1, limit)))).fetchall()
         return {"events": [{"id": row["id"], **json.loads(row["event_json"])} for row in rows],
-                "after": rows[-1]["id"] if rows else after, "truncated": bool(first and after and after < first - 1)}
+                "after": rows[-1]["id"] if rows else after,
+                "truncated": bool((pruned and after < pruned[0]) or (rows and not pruned))}

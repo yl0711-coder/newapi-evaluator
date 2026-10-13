@@ -12,7 +12,7 @@ import httpx
 
 from shared import registry as registry_module
 from shared.registry import Conflict, Registry
-from features.admission import api, main as engine, storage
+from features.admission import api, main as engine, storage, reporting
 from features.admission.jobs import AdmissionManager
 
 
@@ -584,6 +584,256 @@ class AdmissionQueueTests(unittest.IsolatedAsyncioTestCase):
                 self.assertTrue(all(job["report_id"] for job in jobs))
         candidates = [host for host, _ in self.sent if host != "reference.example"]
         self.assertEqual(candidates, ["first.example"] * 6 + ["second.example"] * 6)
+
+    async def test_remediation_delete_clears_all_terminal_body_copies(self):
+        job = await self.manager.enqueue(self.body())
+        final = await self.wait_terminal(job["id"])
+        marker = "terminal-body-deletion-marker"
+        self.manager.store.checkpoint(job["id"], final["report"], {"type": "chunk", "content": marker},
+                                      step_id="token:complete", state="confirmed", result={"content": marker})
+        with patch.object(storage, "DB_PATH", self.path):
+            storage.close()
+            self.assertTrue(storage.delete_report(final["report_id"]))
+            storage.close()
+        saved = self.manager.store.get(job["id"])
+        self.assertEqual(saved["report"], {})
+        self.assertEqual(saved["step_results"], {})
+        self.assertNotIn(marker, json.dumps(self.manager.store.events(job["id"])))
+        replay = await self.manager.enqueue(self.body(), idempotency_key="new-independent-intent")
+        self.assertNotEqual(replay["id"], job["id"])
+
+    async def test_remediation_legacy_retention_clears_terminal_copies_preserves_active(self):
+        first = await self.manager.enqueue(self.body())
+        final = await self.wait_terminal(first["id"])
+        await self.manager.stop()
+        active = await self.manager.enqueue(self.body("second"))
+        with patch.object(storage, "DB_PATH", self.path), patch.object(storage, "MAX_REPORTS", 1):
+            storage.close()
+            storage.save_report(final["report"])
+            storage.close()
+        self.assertEqual(self.manager.store.get(first["id"])["report"], {})
+        self.assertEqual(self.manager.store.get(first["id"])["step_results"], {})
+        self.assertEqual(self.manager.store.events(first["id"])["events"], [])
+        self.assertEqual(len(self.manager.store.get(active["id"])["report"]["questions"]), 6)
+
+    async def test_remediation_cancel_summary_equals_persisted_detail(self):
+        self.block_first_pair = True
+        job = await self.manager.enqueue(self.body())
+        await asyncio.wait_for(self.started.wait(), 2)
+        final = await self.manager.cancel(job["id"])
+        saved = self.manager.store.get(job["id"])["report"]
+        self.assertEqual(saved["summary"], final["report"]["summary"])
+        self.assertEqual(saved["pairs"], final["report"]["pairs"])
+        self.assertEqual(reporting.public_report(saved)["summary"], saved["summary"])
+        with patch.object(storage, "DB_PATH", self.path):
+            storage.close()
+            self.assertEqual(storage.list_reports()[0]["overall_label"], saved["summary"]["overall"]["label"])
+            self.assertEqual(storage.get_report(final["report_id"])["summary"], saved["summary"])
+            storage.close()
+        self.assertEqual(saved["summary"]["counts"]["unknown"], 1)
+        self.assertNotEqual(saved["summary"]["overall"]["status"], "runtime_similar")
+
+    async def test_remediation_restart_rejects_contract_drift_without_sending(self):
+        await self.manager.stop()
+        job = await self.manager.enqueue(self.body())
+        with patch.object(engine, "SYSTEM_PROMPT", engine.SYSTEM_PROMPT + " changed"):
+            self.manager = AdmissionManager(self.path, self.registry, transport=self.transport)
+            await self.manager.start()
+            self.assertEqual(self.manager.public(job["id"])["state"], "failed")
+            self.assertIn("构造合同", self.manager.public(job["id"])["error"])
+        self.assertEqual(len(self.sent), 0)
+
+    async def test_remediation_retained_event_gap_is_non_success(self):
+        job = await self.manager.enqueue(self.body())
+        await self.wait_terminal(job["id"])
+        with self.manager.store.connect() as conn:
+            for number in range(storage.MAX_JOB_EVENTS + 2):
+                self.manager.store._event(conn, job["id"], {"type": "chunk", "content": str(number)})
+        class Connected:
+            async def is_disconnected(self):
+                return False
+        events = [json.loads(line) async for line in self.manager.subscribe(job["id"], Connected())]
+        self.assertEqual(events[0]["type"], "error")
+        self.assertEqual(events[0]["error_category"], "event_history_gap")
+        self.assertIn(f"/api/jobs/{job['id']}", events[0]["snapshot_url"])
+        self.assertFalse(any(event["type"] == "run_finished" for event in events))
+
+    async def test_remediation_finish_retention_clears_events_results_and_contract(self):
+        with patch.object(storage, "MAX_REPORTS", 1):
+            first = await self.manager.enqueue(self.body())
+            await self.wait_terminal(first["id"])
+            second = await self.manager.enqueue(self.body("second"))
+            await self.wait_terminal(second["id"])
+        deleted = self.manager.store.get(first["id"])
+        self.assertEqual(deleted["report"], {})
+        self.assertEqual(deleted["step_results"], {})
+        self.assertNotIn("request_contract", deleted["configuration"])
+        self.assertEqual(self.manager.store.events(first["id"])["events"], [])
+
+    async def test_remediation_slow_subscriber_gap_never_ends_with_success(self):
+        self.block_first_pair = True
+        job = await self.manager.enqueue(self.body())
+        await asyncio.wait_for(self.started.wait(), 2)
+        class Connected:
+            async def is_disconnected(self):
+                return False
+        stream = self.manager.subscribe(job["id"], Connected())
+        first = json.loads(await anext(stream))
+        self.assertEqual(first["type"], "run_started")
+        with self.manager.store.connect() as conn:
+            for number in range(storage.MAX_JOB_EVENTS + 2):
+                self.manager.store._event(conn, job["id"], {"type": "chunk", "content": str(number)})
+        self.release.set()
+        await self.wait_terminal(job["id"])
+        events = [json.loads(line) async for line in stream]
+        self.assertEqual(events[-1]["error_category"], "event_history_gap")
+        self.assertFalse(any(event["type"] == "run_finished" for event in events))
+        self.assertTrue(self.manager.store.events(job["id"], 0)["truncated"])
+
+    async def test_remediation_frozen_names_survive_registry_rename(self):
+        body = self.body()
+        body.candidate.name = "候选 A <script>"
+        original_name = self.channel["name"] or "未记录渠道名称"
+        job = await self.manager.enqueue(body)
+        self.registry.save({"name": "改名后的参照", "base_url": self.channel["base_url"], "api_key": self.reference_key, "multiplier": 1}, self.channel["id"], self.channel["version"])
+        final = await self.wait_terminal(job["id"])
+        self.assertEqual(final["candidate"]["name"], body.candidate.name)
+        self.assertEqual(final["report"]["candidate"]["name"], body.candidate.name)
+        self.assertEqual(final["reference"]["name"], original_name)
+        self.assertEqual(final["report"]["reference"]["name"], original_name)
+        self.assertTrue(all("name" not in payload for _, payload in self.sent))
+
+    async def test_remediation_contract_rejects_variants_payload_headers_and_legacy(self):
+        import copy
+        from features.admission import request_contract
+        await self.manager.stop()
+        job = await self.manager.enqueue(self.body())
+        config = self.manager.store.get(job["id"])["configuration"]
+        questions = copy.deepcopy(engine.QUESTIONS)
+        questions[0].setdefault("variants", []).append("changed variant")
+        with patch.object(engine, "QUESTIONS", questions):
+            with self.assertRaises(Conflict):
+                self.manager._verify_contract(config)
+        original = engine.build_payload
+        def changed_payload(endpoint, question):
+            return {**original(endpoint, question), "temperature": .7}
+        with patch.object(engine, "build_payload", changed_payload):
+            with self.assertRaises(Conflict):
+                self.manager._verify_contract(config)
+        with patch.object(engine, "ANTHROPIC_VERSION", "different-version"):
+            anthropic = copy.deepcopy(config)
+            for side in ("candidate", "reference"):
+                anthropic[side]["protocol"] = "anthropic"
+            anthropic["request_contract"] = request_contract.snapshot(anthropic, token_enabled=False)
+            anthropic["request_contract_fingerprint"] = request_contract.fingerprint(anthropic["request_contract"])
+        with self.assertRaises(Conflict):
+            self.manager._verify_contract(anthropic)
+        legacy = copy.deepcopy(config)
+        legacy.pop("request_contract_fingerprint")
+        with self.manager.store.connect() as conn:
+            conn.execute("UPDATE admission_jobs SET configuration_json=? WHERE task_id=?", (json.dumps(legacy), job["id"]))
+        self.manager = AdmissionManager(self.path, self.registry, transport=self.transport)
+        await self.manager.start()
+        self.assertEqual(self.manager.public(job["id"])["state"], "failed")
+        self.assertEqual(len(self.sent), 0)
+        self.assertTrue(self.manager.public(job["id"])["report"]["questions"])
+
+    async def test_remediation_contract_change_during_run_prevents_next_pair(self):
+        self.block_first_pair = True
+        job = await self.manager.enqueue(self.body())
+        await asyncio.wait_for(self.started.wait(), 2)
+        with patch.object(engine, "SYSTEM_PROMPT", "Changed while running"):
+            self.release.set()
+            final = await self.wait_terminal(job["id"])
+        self.assertEqual(final["state"], "failed")
+        self.assertIn("构造合同", final["error"])
+        self.assertEqual(len(self.sent), 2)
+
+    async def test_remediation_token_precheck_is_read_only_and_does_not_filter_six_questions(self):
+        self.manager.token_check = AsyncMock()
+        self.manager.token_reference = self.trusted
+        kwargs = dict(model="synthetic-model", reference_model="synthetic-model", candidate_protocol="openai", reference_protocol="openai", reference_channel_id=self.channel["id"])
+        self.assertTrue(self.manager.token_precheck(**kwargs)["available"])
+        kwargs["candidate_protocol"] = "anthropic"
+        self.assertFalse(self.manager.token_precheck(**kwargs)["available"])
+        self.assertEqual(len(self.sent), 0)
+        self.assertEqual(self.manager.list(), [])
+
+    async def test_remediation_contract_rejects_astra_effective_output_and_reasoning(self):
+        from features.admission import request_contract
+        await self.manager.stop()
+        body = self.body()
+        body.candidate.model = body.reference.model = engine.GPT6_MODEL
+        body.candidate.protocol = body.reference.protocol = "responses"
+        job = await self.manager.enqueue(body)
+        configuration = self.manager.store.get(job["id"])["configuration"]
+        body_payload = configuration["request_contract"]["requests"][0]["body"]
+        self.assertEqual(body_payload["reasoning"]["effort"], "low")
+        for name, value in (("GPT6_OUTPUT_LIMIT", 16384), ("GPT6_REASONING_EFFORT", "high")):
+            with patch.object(engine, name, value):
+                self.assertNotEqual(request_contract.fingerprint(request_contract.snapshot(configuration, token_enabled=False)), configuration["request_contract_fingerprint"])
+                with self.assertRaises(Conflict):
+                    self.manager._verify_contract(configuration)
+        self.assertEqual(len(self.sent), 0)
+
+    async def test_remediation_drift_after_interrupted_send_keeps_unknown_without_replay(self):
+        self.block_first_pair = True
+        job = await self.manager.enqueue(self.body())
+        await asyncio.wait_for(self.started.wait(), 2)
+        await self.manager.stop()
+        with patch.object(engine, "SYSTEM_PROMPT", "new-contract-after-restart"):
+            self.manager = AdmissionManager(self.path, self.registry, transport=self.transport)
+            await self.manager.start()
+            final = self.manager.public(job["id"])
+        self.assertEqual(final["state"], "failed")
+        self.assertEqual(final["progress"]["unknown"], 2)
+        self.assertEqual(len(self.sent), 2)
+        self.assertEqual(len([item for item in final["report"]["measurements"] if item["status"] == "unknown"]), 2)
+
+    async def test_remediation_initialization_cleans_old_deleted_terminal_copies(self):
+        job = await self.manager.enqueue(self.body())
+        final = await self.wait_terminal(job["id"])
+        with self.manager.store.connect() as conn:
+            conn.execute("DELETE FROM reports WHERE id=?", (final["report_id"],))
+        self.assertTrue(self.manager.store.get(job["id"])["report"])
+        migrated = storage.JobStore(self.path)
+        tombstone = migrated.get(job["id"])
+        self.assertEqual(tombstone["report"], {})
+        self.assertEqual(tombstone["step_results"], {})
+        self.assertNotIn("request_contract", tombstone["configuration"])
+        self.assertEqual(migrated.events(job["id"])["events"], [])
+
+    async def test_remediation_display_rename_does_not_change_idempotent_identity(self):
+        self.block_first_pair = True
+        body = self.body()
+        body.candidate.name = "原候选名"
+        first = await self.manager.enqueue(body, idempotency_key="display-independent-intent")
+        old_name = first["reference"]["name"]
+        self.registry.save({"name": "只改参照名", "base_url": self.channel["base_url"], "api_key": self.reference_key, "multiplier": 1}, self.channel["id"], self.channel["version"])
+        body.candidate.name = "只改候选名"
+        replay = await self.manager.enqueue(body, idempotency_key="display-independent-intent")
+        self.assertEqual(replay["id"], first["id"])
+        self.assertEqual(replay["candidate"]["name"], "原候选名")
+        self.assertEqual(replay["reference"]["name"], old_name)
+        await self.manager.cancel(first["id"])
+
+    async def test_remediation_legacy_event_origin_cannot_be_inferred_from_event_type(self):
+        job = await self.manager.enqueue(self.body())
+        await self.wait_terminal(job["id"])
+        with self.manager.store.connect() as conn:
+            conn.execute("DELETE FROM admission_events WHERE task_id=?", (job["id"],))
+            for number in range(storage.MAX_JOB_EVENTS):
+                event = {"type": "credentials_required"} if number == 0 else {"type": "run_finished"} if number == storage.MAX_JOB_EVENTS - 1 else {"type": "chunk", "content": "legacy-tail"}
+                conn.execute("INSERT INTO admission_events(task_id,event_json) VALUES(?,?)", (job["id"], json.dumps(event)))
+            conn.execute("DELETE FROM admission_event_state WHERE task_id=?", (job["id"],))
+        self.manager.store = storage.JobStore(self.path)
+        self.assertTrue(self.manager.store.events(job["id"], 0)["truncated"])
+        class Connected:
+            async def is_disconnected(self):
+                return False
+        events = [json.loads(line) async for line in self.manager.subscribe(job["id"], Connected())]
+        self.assertEqual(len(events), 1)
+        self.assertEqual(events[0]["error_category"], "event_history_gap")
 
 
 if __name__ == "__main__":

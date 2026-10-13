@@ -2,13 +2,14 @@
 
 适用规则 `docs/ai-rules` v1.0。本功能属于工作台定时、准入及完整性模块，不改 `relay_lab` 共享引擎；实验室五模式继续纳入既有 E2E 和独立 legacy acceptance。环境、数据、日志、截图和证据使用仓外新目录，不加载业务 `.env`、渠道库、凭据或通知设置。上游源码核对不替代产品测试。
 
-统一入口：`python -B scripts/verify_integrity.py --output <新外置目录>`。独立验收在干净 detached 候选提交增加 `--sha <40位SHA>`，使用独立环境与新数据。`PLAYWRIGHT_MODULE`、`PLAYWRIGHT_BROWSERS_PATH`、`EVAL_TEST_ARTIFACT_ROOT` 和 `TMPDIR` 显式指向仓外；执行器设置 `PYTHON_EXECUTABLE`。执行器保留收集数、退出码、前后源码指纹及首次失败，实施逐组时限和总预算，失败优先汇总。开发22组、3000秒；独立23组、4200秒。输入 Token 与服务器准入队列的合同见 [功能和接口](token-usage-queue.md)。
+统一入口：`python -B scripts/verify_integrity.py --output <新外置目录>`。独立验收在干净 detached 候选提交增加 `--sha <40位SHA>`，使用独立环境与新数据。`PLAYWRIGHT_MODULE`、`PLAYWRIGHT_BROWSERS_PATH`、`EVAL_TEST_ARTIFACT_ROOT` 和 `TMPDIR` 显式指向仓外；执行器设置 `PYTHON_EXECUTABLE`。执行器保留收集数、退出码、前后源码指纹及首次失败，实施逐组时限和总预算，失败优先汇总。开发23组、3000秒；独立24组、4200秒。输入 Token 与服务器准入队列的合同见 [功能和接口](token-usage-queue.md)。
 
 | suite_id | 入口 | 验证与时限 |
 | --- | --- | --- |
 | protocol-inspect / admission-inspect / diagnosis-inspect / image-inspect / model-coverage-inspect | 清单对应 inspect CLI | 零发送、脱敏配置；各60秒 |
 | token-usage-inspect | `python -m features.token_usage inspect-config` | 固定样本、预算、阈值、协议与半小时间隔，零发送；60秒 |
 | token-usage-browser / admission-queue-browser | `scripts/token_usage_ui.cjs` / `scripts/admission_queue_ui.cjs` | 可信绑定、主动结果、切页后台继续、严格FIFO、重启补Key与unknown不重发；各300秒 |
+| token-usage-browser-off | `scripts/token_usage_ui.cjs --active-off` | 主动按钮禁用与解释、独立定时真实调度、空闲15秒刷新发现结果；300秒 |
 | integrity-inspect | `scripts/inspect_integrity.py` | 全资产及运行hash、17/16类区别、v3图及重试上限；零数据库、凭据与网络；60秒 |
 | workbench-python | `scripts/test_all.py --output` | 三引擎 selftests 与全部 unittest discover，含下列领域回归；900秒 |
 | workbench-web | `scripts/test_web.js` | 既有页面契约；120秒 |
@@ -37,6 +38,8 @@
 `test_active_canary` 验证工作台显式确认后使用Astra/Responses/low、health1加固定完整192题，零重试、原36000秒总窗。无参照仅当前成绩；完整无异常结果可由用户显式锁定可信参照。目标、条件、题集、asset/scorer/sampling/manifest hash漂移在入队前拒绝。取消保留unknown，恢复原任务不延窗、不重发；health失败保留192题分母；请求异常与目标漂移不能锁参照。
 
 `test_unified_integrity` 保留recorded渠道无生产身份绑定的三项首测、最多8次独立请求、幂等冲突、health失败分母、单项invalid不影响后项、Sol unsupported、取消恢复和连接映射漂移。`test_integrity_execution` 保留三协议真实解析、终态与usage、租约fencing、许可原子边界、费用/token仅记账、unknown、正文不落盘与噪声深层投影。
+
+`test_token_usage_remediation` 注册在 workbench 的必需模块清单，发现阶段核对非零用例和收集错误；覆盖 SSE/压缩字节上限、严格协议终态、取消租约与失效暂停、名称冻结与产物 realpath。`test_admission_queue`/`test_admission_reporting` 覆盖报告副本清理、取消摘要一致、请求构造漂移与旧缺指纹拒绝、事件 gap 及旧缺 watermark。浏览器补冻结双端名称、命名导出与转义、具体停止对象、队首阻塞及窄屏；`test_unified_integrity` 验证名称变化不改请求身份，旧名称不回填、凭据不进入显示字段。
 
 `test_integrity_scoring` 验证17/16类不可混用、UNLISTED、两答门槛、配对McNemar、四family Holm、invalid计错/not_run缺测及条件拒比较。`test_kbf_review` 验证授权参考、hash、self-test、覆盖、冷却幂等、unknown及浏览器JSON数字往返。`test_integrity_monitor` 保留HMAC原始body/nonce、principal隔离、旧nerfed错误、nerfed-api主动四尝试、取消恢复和离线契约。
 

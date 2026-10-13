@@ -489,7 +489,7 @@ class FrontendSafetyTests(unittest.TestCase):
         self.assertIn('id="rounds"', html)
         self.assertIn("rounds:Number($('rounds').value)", source)
         # Static boundary regression; UI smoke verifies actual server reports and exports.
-        for declaration in ("async function loadSelectedJob()", "function ordinaryPayload(source)"):
+        for declaration in ("async function loadSelectedJob(jobs=[])", "function ordinaryPayload(source)"):
             self.assertIn(declaration, source)
             report_flow = source.split(declaration, 1)[1].split("\n}", 1)[0]
             self.assertNotIn("api_key", report_flow)

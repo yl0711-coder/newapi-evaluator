@@ -49,11 +49,15 @@ def admission(python: str, output: Path, *, sha: str | None = None) -> list[Suit
     suites = [
         SuiteSpec("token-usage-inspect", _python(python, "-m", "features.token_usage", "inspect-config"), 60, "inspect"),
         SuiteSpec("token-usage-browser", ("node", "scripts/token_usage_ui.cjs"), 300, "browser"),
+        SuiteSpec("token-usage-browser-off", ("node", "scripts/token_usage_ui.cjs", "--active-off"), 300, "browser"),
         SuiteSpec("admission-queue-browser", ("node", "scripts/admission_queue_ui.cjs"), 300, "browser"),
         SuiteSpec("protocol-inspect", _python(python, "scripts/inspect_protocol_admission.py"), 60, "inspect"),
         SuiteSpec("protocol-browser", ("node", "scripts/protocol_admission_ui.cjs"), 300, "browser"),
         SuiteSpec("admission-inspect", _python(python, "scripts/inspect_admission.py", "--protocol", "openai"), 60, "inspect"),
-        SuiteSpec("workbench-python", _python(python, "scripts/test_all.py", "--output", _output_arg(output, "workbench-python")), 900, "python"),
+        SuiteSpec("workbench-python", _python(python, "scripts/test_all.py", "--output", _output_arg(output, "workbench-python")), 900, "python", (
+            "tests.test_token_usage", "tests.test_token_usage_service", "tests.test_token_usage_remediation",
+            "tests.test_admission_queue", "tests.test_admission_reporting", "tests.test_unified_integrity",
+        )),
         SuiteSpec("workbench-web", ("node", "scripts/test_web.js"), 120, "web"),
         SuiteSpec("workbench-security", _python(python, "scripts/repo_security_scan.py", "."), 120, "security"),
         SuiteSpec("syntax", _python(python, "scripts/diagnosis_syntax.py"), 300, "json"),

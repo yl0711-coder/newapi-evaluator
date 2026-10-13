@@ -4,16 +4,64 @@
   const api = (url, options) => Workbench.api('/api/integrity' + url, options);
   const post = (url, body) => api(url, {method:'POST', body:JSON.stringify(body)});
   let metadata = {channels:[], references:[]}, activeTask = '', refreshing = false;
-  let submissionKey = crypto.randomUUID();
-  let unifiedKey = crypto.randomUUID(), unifiedActive = '';
-  let canaryKey = crypto.randomUUID(), canaryBaselines = [];
+  let submissionKey = Workbench.requestId();
+  let unifiedKey = Workbench.requestId(), unifiedActive = '';
+  let canaryKey = Workbench.requestId(), canaryBaselines = [];
   const query = new URLSearchParams(location.search);
-  $('review-source').value = query.get('source_ref') || 'manual:' + crypto.randomUUID();
+  $('review-source').value = query.get('source_ref') || 'manual:' + Workbench.requestId();
   $('review-incident').value = $('review-source').value;
   if (['hlwy','kbf'].includes(query.get('strategy'))) $('review-strategy').value = query.get('strategy');
   function error(value) { $('error').textContent = value?.message || String(value); $('error').hidden = false; }
   function clearError() { $('error').hidden = true; $('error').textContent = ''; }
   function text(tag, value, cls) { return Workbench.node(tag, value, cls); }
+  function statusLabel(status, cancelling = false) {
+    if (cancelling && ['queued', 'running'].includes(status)) return '停止中';
+    return ({queued:'排队中', running:'检测中', completed:'已完成', partially_completed:'部分完成',
+      cancelled:'已停止', failed:'执行失败', rejected:'条件已失效', unknown:'结果未知',
+      skipped:'未执行', not_run:'尚未执行', incomplete:'未完成', unsupported:'当前方法不支持'})[status] || '待确认';
+  }
+  function channelLine(task) {
+    const target = task.target_snapshot || {};
+    const protocol = ({responses:'Responses', openai:'Chat Completions', anthropic:'Messages'})[target.protocol] || '未记录协议';
+    return `${task.display_identity?.channel_name || '未记录渠道名称'} · 渠道 #${target.registry_channel_id ?? '?'} · ${target.canonical_model || target.model || '未记录模型'} · ${protocol}`;
+  }
+  function verdictLabel(score) {
+    const verdict = score?.source_verdict || score?.status;
+    return ({SAME:'未检测到显著差异', DIFF:'检测到行为差异', UNKNOWN:'缺少参考或有效证据',
+      UNDETERMINED:'无法判定', current_only:'仅当前成绩，未选择可信参照', degraded:'检测到能力下降',
+      normal:'本次未检测到明显下降', unknown:'无法判定', unlisted:'无法判定，超出已登记模型范围'})[verdict]
+      || '探索性行为线索，普通 API 尚未校准';
+  }
+  function methodCard(report) {
+    const card = text('section', '', 'method-result'); card.dataset.method = report.method;
+    card.append(text('h4', report.label), text('p', statusLabel(report.status)), text('p', verdictLabel(report.score)),
+      text('p', `有效样本 ${report.valid}/${report.planned} · 结果未知 ${report.unknown} · 尚未执行 ${report.not_run}`),
+      text('p', report.limitation));
+    if (report.method === 'canary') card.append(text('p', `当前成绩 ${report.score.correct ?? 0}/${report.planned}`));
+    return card;
+  }
+  function technicalEvidence(task) {
+    const details = text('details', '');
+    details.append(text('summary', '技术证据（JSON）'), text('p', budgetLine(task)), text('pre', JSON.stringify(task, null, 2)));
+    return details;
+  }
+  function renderDetail(container, task, label) {
+    container.hidden = false;
+    container.replaceChildren(text('h3', `${label} · 任务 ${task.task_id}`), text('p', channelLine(task)),
+      text('p', statusLabel(task.status, task.cancel_requested)));
+    if (['queued','running'].includes(task.status)) container.append(text('p', '检测尚未完成，以下为当前部分结果。'));
+    if (task.next_step) container.append(text('p', task.next_step));
+    if (task.reports) {
+      const results = text('div', '', 'method-results');
+      for (const report of task.reports) results.append(methodCard(report));
+      container.append(results);
+    } else container.append(text('p', reportLine(task.report)));
+    container.append(technicalEvidence(task));
+  }
+  function exportName(task, kind) {
+    const name = (task.display_identity?.channel_name || '未记录渠道名称').replace(/[\x00-\x1f<>:"/\\|?*]/g, '_').slice(0, 80);
+    return `${name}-${kind}-${task.task_id}.json`;
+  }
   async function fileJson(id) {
     const file = $(id).files[0];
     if (!file || file.size > 2000000) throw new Error('请选择不超过 2 MB 的 JSON 文件');
@@ -96,26 +144,23 @@
   }
   async function unifiedDetail(id) {
     unifiedActive=id; const task=await api('/tests/'+id);
-    $('unified-detail').hidden=false; $('unified-detail').replaceChildren(text('h3','主动测试报告 '+id),text('pre',JSON.stringify(task,null,2)));
+    renderDetail($('unified-detail'), task, '主动测试报告');
   }
   async function refreshUnified() {
     const {tasks}=await api('/tests');$('unified-tasks').replaceChildren();
     if(!tasks.length)$('unified-tasks').append(text('p','暂无三项测试历史'));
     for(const task of tasks) {
       const row=text('article','', 'task');row.dataset.unifiedId=task.task_id;
-      row.append(text('h3',`${task.task_version === 'canary-active-v1' ? 'Canary' : '三项测试'} · ${task.status} · ${task.target_snapshot.model} · #${task.target_snapshot.registry_channel_id}`),text('p',budgetLine(task)));
+      row.append(text('h3',`${task.task_version === 'canary-active-v1' ? 'Canary' : '三项测试'} · ${statusLabel(task.status, task.cancel_requested)}`),
+        text('p', channelLine(task)), text('p', `任务 ${task.task_id}`));
+      if (['queued','running'].includes(task.status)) row.append(text('p', '检测尚未完成，以下为当前部分结果。'));
       const results=text('div','', 'method-results');
       for(const report of task.reports) {
-        const card=text('section','', 'method-result');card.dataset.method=report.method;
-        card.append(text('h4',report.label),text('p',`${report.status} · ${report.score.source_verdict || report.score.status} · ${report.reason}`),
-          text('p',`有效 ${report.valid} / 尝试 ${report.attempted} / 计划 ${report.planned} · invalid ${report.invalid} · unknown ${report.unknown} · 未运行 ${report.not_run}`),
-          text('p',`耗时 ${Math.round(report.duration_ms)} ms · input ${report.usage.input_tokens_reported ?? 'unknown'} / output ${report.usage.output_tokens_reported ?? 'unknown'} / reasoning ${report.usage.reasoning_tokens_reported ?? 'unknown'}`),
-          text('p',`版本 ${report.version} · ${report.conditions.protocol} / low · calibration_status=unvalidated · metadata_status=unavailable`),text('p',report.limitation));results.append(card);
+        results.append(methodCard(report));
       }
       row.append(results);
       const canary = task.reports.find(r => r.method === 'canary');
       if (canary) {
-        row.append(text('p', `Canary ${canary.score.correct ?? 0}/192 · ${canary.score.status}`));
         if (task.status === 'completed' && canary.status === 'completed' && !canary.request_errors && !canary.unknown && !canary.not_run) {
           const lock = text('button', '锁定为可信 Canary 参照'); lock.type='button';
           lock.onclick=async()=>{try {
@@ -128,7 +173,7 @@
       const detail=text('button','查看报告');detail.type='button';detail.onclick=()=>unifiedDetail(task.task_id).catch(error);row.append(detail);
       if(['queued','running'].includes(task.status)) {const b=text('button','取消任务');b.type='button';b.onclick=()=>post('/tests/'+task.task_id+'/cancel',{}).then(refreshUnified).catch(error);row.append(b);}
       if(['cancelled','failed','partially_completed'].includes(task.status)) {const b=text('button','安全恢复任务');b.type='button';b.onclick=()=>post('/tests/'+task.task_id+'/resume',{}).then(refreshUnified).catch(error);row.append(b);}
-      const link=text('a','导出 JSON','export');link.href='/api/integrity/tests/'+task.task_id+'/export';link.download='three-method-api.json';row.append(link);$('unified-tasks').append(row);
+      const link=text('a','导出 JSON','export');link.href='/api/integrity/tests/'+task.task_id+'/export';link.download=exportName(task, '完整性测试');row.append(link);$('unified-tasks').append(row);
     }
     if(unifiedActive)await unifiedDetail(unifiedActive);
   }
@@ -146,7 +191,8 @@
     if (!tasks.length) $('tasks').append(text('p','暂无主动复核任务'));
     for (const task of tasks) {
       const row = text('div','', 'task'); row.dataset.taskId = task.task_id;
-      row.append(text('div',`${task.strategy_id.toUpperCase()} · ${task.status} · ${task.source_ref}`, 'task-title'),text('p',budgetLine(task)),text('p',reportLine(task.report)));
+      row.append(text('div',`${task.strategy_id.toUpperCase()} · ${statusLabel(task.status, task.cancel_requested)}`, 'task-title'),
+        text('p', channelLine(task)), text('p', `任务 ${task.task_id} · 来源 ${task.source_ref}`), text('p',reportLine(task.report)));
       const detail = text('button','查看报告'); detail.type='button'; detail.onclick=()=>showDetail(task.task_id).catch(error); row.append(detail);
       if (['queued','running'].includes(task.status)) {
         const cancel=text('button','取消任务'); cancel.type='button'; cancel.onclick=()=>post('/reviews/'+task.task_id+'/cancel',{}).then(refresh).catch(error);row.append(cancel);
@@ -154,13 +200,13 @@
       if (['cancelled','failed','partially_completed'].includes(task.status)) {
         const resume=text('button','安全恢复'); resume.type='button'; resume.onclick=()=>post('/reviews/'+task.task_id+'/resume',{}).then(refresh).catch(error);row.append(resume);
       }
-      const link = text('a','导出 JSON','export'); link.href='/api/integrity/reviews/'+task.task_id+'/export'; link.download='integrity-review.json'; row.append(link);
+      const link = text('a','导出 JSON','export'); link.href='/api/integrity/reviews/'+task.task_id+'/export'; link.download=exportName(task, '完整性复核'); row.append(link);
       $('tasks').append(row);
     }
   }
   async function showDetail(id) {
     activeTask = id; const task=await api('/reviews/'+id);
-    $('task-detail').hidden=false; $('task-detail').replaceChildren(text('h3',`报告 ${id}`),text('p',task.next_step),text('pre',JSON.stringify(task,null,2)));
+    renderDetail($('task-detail'), task, '主动复核报告');
   }
   async function refreshEvidence() {
     const {tasks}=await api('/evidence'); $('evidence-tasks').replaceChildren();
@@ -181,10 +227,10 @@
     try { const data=await api('/reviews');render(data.tasks);if(activeTask) await showDetail(activeTask);await refreshEvidence();await refreshUnified(); }
     finally { refreshing=false; }
   }
-  $('review-channel').onchange=()=>{channelModels();submissionKey=crypto.randomUUID();};
-  $('review-model').onchange=()=>{modelProtocol();submissionKey=crypto.randomUUID();};
-  $('review-strategy').onchange=()=>{referenceOptions();submissionKey=crypto.randomUUID();};
-  $('review-reference').onchange=()=>{referenceConditions();submissionKey=crypto.randomUUID();};
+  $('review-channel').onchange=()=>{channelModels();submissionKey=Workbench.requestId();};
+  $('review-model').onchange=()=>{modelProtocol();submissionKey=Workbench.requestId();};
+  $('review-strategy').onchange=()=>{referenceOptions();submissionKey=Workbench.requestId();};
+  $('review-reference').onchange=()=>{referenceConditions();submissionKey=Workbench.requestId();};
   $('reference-form').onsubmit=async event=>{event.preventDefault();clearError();try {
     const value=await post('/references',{package:await fileJson('reference-file'),expected_sha256:$('reference-sha').value,confirm_authorized:$('reference-authorized').checked});
     $('reference-status').textContent='已验证并导入 '+value.reference_hash.slice(0,12); await loadMeta();$('review-strategy').value=value.strategy_id;referenceOptions();$('review-reference').value=value.reference_hash;referenceConditions();
@@ -196,19 +242,19 @@
     $('review-status').textContent='已受理 '+task.task_id;await refresh();await showDetail(task.task_id);
   }catch(e){error(e);}finally{$('review-submit').disabled=false;}};
   $('evidence-form').onsubmit=async event=>{event.preventDefault();clearError();try {
-    const task=await post('/evidence',{evidence:await fileJson('evidence-file'),idempotency_key:'evidence:'+crypto.randomUUID(),confirm_authorized:$('evidence-authorized').checked});
+    const task=await post('/evidence',{evidence:await fileJson('evidence-file'),idempotency_key:'evidence:'+Workbench.requestId(),confirm_authorized:$('evidence-authorized').checked});
     $('evidence-status').textContent='已受理 '+(task.task_id || task.job_id);await refreshEvidence();
   }catch(e){error(e);}};
   $('refresh').onclick=()=>{clearError();refresh().catch(error);};
-  $('unified-channel').onchange=$('unified-model').onchange=()=>{unifiedKey=crypto.randomUUID();unifiedConditions();};
-  $('unified-new').onclick=()=>{unifiedKey=crypto.randomUUID();$('unified-status').textContent='已准备新一轮；点击开始执行。';$('unified-confirm').checked=false;};
+  $('unified-channel').onchange=$('unified-model').onchange=()=>{unifiedKey=Workbench.requestId();unifiedConditions();};
+  $('unified-new').onclick=()=>{unifiedKey=Workbench.requestId();$('unified-status').textContent='已准备新一轮；点击开始执行。';$('unified-confirm').checked=false;};
   $('unified-form').onsubmit=async event=>{event.preventDefault();clearError();$('unified-submit').disabled=true;try {
     const task=await post('/tests',{registry_channel_id:Number($('unified-channel').value),model:$('unified-model').value,protocol:'responses',idempotency_key:unifiedKey,confirm_live:$('unified-confirm').checked});
     $('unified-status').textContent='已受理统一任务 '+task.task_id;await refreshUnified();await unifiedDetail(task.task_id);
   }catch(e){error(e);}finally{unifiedConditions();}};
-  $('canary-channel').onchange=()=>{canaryKey=crypto.randomUUID();canaryBaselineOptions();$('canary-confirm').checked=false;};
-  $('canary-baseline').onchange=()=>{canaryKey=crypto.randomUUID();$('canary-confirm').checked=false;};
-  $('canary-new').onclick=()=>{canaryKey=crypto.randomUUID();$('canary-confirm').checked=false;$('canary-status').textContent='已准备新一轮 Canary。';};
+  $('canary-channel').onchange=()=>{canaryKey=Workbench.requestId();canaryBaselineOptions();$('canary-confirm').checked=false;};
+  $('canary-baseline').onchange=()=>{canaryKey=Workbench.requestId();$('canary-confirm').checked=false;};
+  $('canary-new').onclick=()=>{canaryKey=Workbench.requestId();$('canary-confirm').checked=false;$('canary-status').textContent='已准备新一轮 Canary。';};
   $('canary-form').onsubmit=async event=>{event.preventDefault();clearError();$('canary-submit').disabled=true;try {
     const task=await post('/canary',{registry_channel_id:Number($('canary-channel').value), model:'gpt-6-astra',protocol:'responses',
       idempotency_key:canaryKey,baseline_id:Number($('canary-baseline').value)||null,confirm_live:$('canary-confirm').checked});
