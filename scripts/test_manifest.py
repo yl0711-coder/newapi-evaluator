@@ -60,6 +60,7 @@ def admission(python: str, output: Path, *, sha: str | None = None) -> list[Suit
             "tests.test_token_usage", "tests.test_token_usage_service", "tests.test_token_usage_remediation",
             "tests.test_admission_queue", "tests.test_admission_reporting", "tests.test_unified_integrity",
             "tests.test_feishu_channels",
+            "tests.test_daily_checks",
         )),
         SuiteSpec("workbench-web", ("node", "scripts/test_web.js"), 120, "web"),
         SuiteSpec("workbench-security", _python(python, "scripts/repo_security_scan.py", "."), 120, "security"),
@@ -142,6 +143,8 @@ def integrity(python: str, output: Path, *, sha: str | None = None) -> list[Suit
     """Layered integrity changes exercise the whole workbench and new consumers."""
     suites = admission(python, output, sha=sha)
     suites.extend([
+        SuiteSpec("daily-checks-inspect", _python(python, "scripts/inspect_daily_checks.py"), 60, "inspect"),
+        SuiteSpec("daily-checks-browser", ("node", "scripts/daily_checks_ui.cjs"), 180, "browser"),
         SuiteSpec("integrity-inspect", _python(python, "scripts/inspect_integrity.py"), 60, "inspect"),
         SuiteSpec("integrity-browser", ("node", "scripts/integrity_ui.cjs"), 600, "browser"),
         SuiteSpec("integrity-timetable-browser", ("node", "scripts/integrity_timetable_ui.cjs"), 600, "browser"),

@@ -235,6 +235,22 @@ const queueCards = new Map();
 let queuePollBusy = false;
 const completedHistory = new Set();
 
+function sizeQueue() {
+  if (!$('admission-queue-panel').open) return;
+  const root = $('admission-queue'), cards = [...root.children].filter(item => item.matches('article'));
+  const scrollTop = root.scrollTop, atEnd = scrollTop > 0 && root.scrollHeight - root.clientHeight - scrollTop <= 2;
+  root.style.gridAutoRows = '';
+  if (cards.length > 5) {
+    const height = Math.ceil(Math.max(...cards.map(card => card.getBoundingClientRect().height)));
+    root.style.gridAutoRows = `${height}px`;
+    root.style.maxHeight = `${height * 5 + parseFloat(getComputedStyle(root).rowGap) * 4}px`;
+  } else root.style.maxHeight = '';
+  root.scrollTop = atEnd ? root.scrollHeight : scrollTop;
+}
+
+$('admission-queue-panel').addEventListener('toggle', () => requestAnimationFrame(sizeQueue));
+window.addEventListener('resize', () => requestAnimationFrame(sizeQueue));
+
 function renderQueue(jobs) {
   const root = $('admission-queue'), seen = new Set();
   if(jobs.length)for(const element of root.querySelectorAll('.empty'))element.remove();
@@ -267,6 +283,9 @@ function renderQueue(jobs) {
   for (const [id,item] of queueCards) if(!seen.has(id)){item.card.remove();queueCards.delete(id);}
   if (!jobs.length) root.replaceChildren(Workbench.node('p','暂无任务。提交后按创建顺序执行。','empty'));
   else for(const element of root.querySelectorAll('.empty'))element.remove();
+  const active = jobs.filter(job => ['queued','running','waiting_credentials'].includes(job.state || job.status));
+  $('queue-count').textContent = `${jobs.length} 个任务 · ${active.filter(job => job.state === 'running').length} 个运行中 · ${active.filter(job => job.state !== 'running').length} 个等待`;
+  requestAnimationFrame(sizeQueue);
 }
 
 async function loadSelectedJob(jobs=[]) {

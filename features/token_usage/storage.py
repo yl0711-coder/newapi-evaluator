@@ -129,7 +129,7 @@ class Store:
                               () if administrative else (principal,)).fetchall()
         return [self._job(row) for row in rows]
 
-    def claim(self, owner, *, active=True, scheduled_only=False, active_only=False, now=None):
+    def claim(self, owner, *, active=True, scheduled_only=False, active_only=False, now=None, job_id=None):
         now = time.time() if now is None else now
         with self.connect() as db:
             db.execute("BEGIN IMMEDIATE")
@@ -151,8 +151,11 @@ class Store:
                     db.execute("INSERT INTO events(principal,job_id,kind,payload,created_at) VALUES(?,?,'result',?,?)", (row["principal"], row["id"], encode(result), now))
                 else:
                     db.execute("UPDATE jobs SET status='queued',owner=NULL,lease_until=NULL,updated_at=? WHERE id=?", (now, row["id"]))
-            row = db.execute("SELECT * FROM jobs WHERE status='queued' AND cancelled=0" +
-                             (" AND config_id IS NULL" if active_only else " AND config_id IS NOT NULL" if scheduled_only or not active else "") + " ORDER BY CASE WHEN config_id IS NULL THEN 0 ELSE 1 END,created_at LIMIT 1").fetchone()
+            selection = " AND id=?" if job_id is not None else " AND principal NOT LIKE 'daily:%'" + (
+                " AND config_id IS NULL" if active_only else " AND config_id IS NOT NULL" if scheduled_only or not active else "")
+            row = db.execute("SELECT * FROM jobs WHERE status='queued' AND cancelled=0" + selection +
+                             " ORDER BY CASE WHEN config_id IS NULL THEN 0 ELSE 1 END,created_at LIMIT 1",
+                             (job_id,) if job_id is not None else ()).fetchone()
             if not row:
                 return None
             db.execute("UPDATE jobs SET status='running',owner=?,lease_until=?,updated_at=? WHERE id=?", (owner, now + 90, now, row["id"]))
@@ -186,6 +189,11 @@ class Store:
             row = db.execute("SELECT * FROM jobs WHERE id=?", (job_id,)).fetchone()
             if row is None or row["owner"] != owner or row["status"] != "running" or row["cancelled"] or row["lease_until"] < time.time():
                 raise RuntimeError("send_not_permitted")
+            spec = json.loads(row["spec"])
+            if spec["source"] == "daily_scheduled":
+                binding = db.execute("SELECT revision FROM bindings WHERE model=? AND protocol=?", (spec["model"], spec["protocol"])).fetchone()
+                if binding is None or binding[0] != spec["binding_revision"]:
+                    raise ScheduleStopped("reference_changed")
             reason = self._schedule_stop_reason(db, row["config_id"], row["spec"])
             if reason:
                 raise ScheduleStopped(reason)

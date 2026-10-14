@@ -2,10 +2,11 @@
 
 适用规则 `docs/ai-rules` v1.0。本功能属于工作台定时、准入及完整性模块，不改 `relay_lab` 共享引擎；实验室五模式继续纳入既有 E2E 和独立 legacy acceptance。环境、数据、日志、截图和证据使用仓外新目录，不加载业务 `.env`、渠道库、凭据或通知设置。上游源码核对不替代产品测试。
 
-统一入口：`python -B scripts/verify_integrity.py --output <新外置目录>`。独立验收在干净 detached 候选提交增加 `--sha <40位SHA>`，使用独立环境与新数据。`PLAYWRIGHT_MODULE`、`PLAYWRIGHT_BROWSERS_PATH`、`EVAL_TEST_ARTIFACT_ROOT` 和 `TMPDIR` 显式指向仓外；执行器设置 `PYTHON_EXECUTABLE`。执行器保留收集数、退出码、前后源码指纹及首次失败，实施逐组时限和总预算，失败优先汇总。开发25组、3000秒；独立26组、4200秒。输入 Token 与服务器准入队列的合同见 [功能和接口](token-usage-queue.md)。
+统一入口：`python -B scripts/verify_integrity.py --output <新外置目录>`。独立验收在干净 detached 候选提交增加 `--sha <40位SHA>`，使用独立环境与新数据。`PLAYWRIGHT_MODULE`、`PLAYWRIGHT_BROWSERS_PATH`、`EVAL_TEST_ARTIFACT_ROOT` 和 `TMPDIR` 显式指向仓外；执行器设置 `PYTHON_EXECUTABLE`。执行器保留收集数、退出码、前后源码指纹及首次失败，实施逐组时限和总预算，失败优先汇总。开发27组、3000秒；独立28组、4200秒。输入 Token 与服务器准入队列的合同见 [功能和接口](token-usage-queue.md)，四批报告见 [每日检测合同](../features/daily_checks/README.md)。
 
 | suite_id | 入口 | 验证与时限 |
 | --- | --- | --- |
+| daily-checks-inspect / daily-checks-browser | `scripts/inspect_daily_checks.py` / `scripts/daily_checks_ui.cjs` | 四时段零发送检查，实际回环 HTTP 的配置确认、报告、飞书分片、导出及窄屏；60/180秒 |
 | feishu-channels-inspect / feishu-channels-browser | `scripts/inspect_feishu_channels.py` / `scripts/feishu_channels_ui.cjs` | 只读合同检查及合成飞书的设置、筛选、同步、换 Key、下线与失败保留；60/180 秒 |
 | protocol-inspect / admission-inspect / diagnosis-inspect / image-inspect / model-coverage-inspect | 清单对应 inspect CLI | 零发送、脱敏配置；各60秒 |
 | token-usage-inspect | `python -m features.token_usage inspect-config` | 固定样本、预算、阈值、协议与半小时间隔，零发送；60秒 |
@@ -35,6 +36,8 @@
 `test_scheduled_integrity` 与迁移回归覆盖旧v1/v2计划启动升级，保留enabled、冻结绑定和legacy原配置；仅旧v2两集合都空时保留零采样，其余升级全天半小时。退休旧待运行槽，已提交终态纯重建、未确认许可转unknown并清租约，旧执行器后续提交拒绝。旧Canary成绩、可信参照、名称、倍率、时区与旧详情/export冻结；重复初始化幂等；同日v3身份独立，升级前时刻不补采。
 
 ## 主动 Canary 与原完整性功能
+
+`test_daily_checks` 覆盖四轮幂等、原报告 deadline、错窗零补发、完整 online 分母、多家族、可信自对照排除、GPT/Claude实际解析评分、连续指定时段小偏差、重大证据、缺 usage、等待共享容量时计划/online/Key/映射/参照变化的最终零发送、MT中断续接unknown、原消费者不抢每日任务、通知明确成功/响应上限/unknown显式重发及保留期。浏览器只替换不可控时钟与飞书外部传输，模型调用实际经过回环HTTP、许可、解析、评分与持久化；截图和导出均使用合成数据。
 
 `test_active_canary` 验证工作台显式确认后使用Astra/Responses/low、health1加固定完整192题，零重试、原36000秒总窗。无参照仅当前成绩；完整无异常结果可由用户显式锁定可信参照。目标、条件、题集、asset/scorer/sampling/manifest hash漂移在入队前拒绝。取消保留unknown，恢复原任务不延窗、不重发；health失败保留192题分母；请求异常与目标漂移不能锁参照。
 

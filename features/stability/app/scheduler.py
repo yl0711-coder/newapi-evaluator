@@ -10,6 +10,7 @@ from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
 import httpx
 from shared.network import guarded_transport
+from shared.feishu_notify import send_text
 
 from . import storage, transport
 from .config import CATCHUP_HOURS, MAX_ACTIVE_RUNS, RETENTION_DAYS, TIMEZONE
@@ -393,15 +394,7 @@ async def notify(run_id: int, run: dict[str, Any], summary: dict[str, Any]) -> N
     error = ""
     for attempt in range(1, 4):
         try:
-            async with httpx.AsyncClient(timeout=15, follow_redirects=False, trust_env=False) as client:
-                response = await client.post(
-                    webhook,
-                    json={"msg_type": "text", "content": {"text": render_notification(run, summary)}},
-                )
-                response.raise_for_status()
-                data = response.json()
-                if data.get("code", data.get("StatusCode", 0)) != 0:
-                    raise RuntimeError("飞书返回失败状态")
+            await send_text(webhook, render_notification(run, summary))
             storage.update_notification(run_id, "sent")
             return
         except Exception as exc:
@@ -473,6 +466,8 @@ async def tick(now_epoch: float | None = None) -> None:
     now_epoch = time.time() if now_epoch is None else now_epoch
     from . import integrity
     await integrity.tick(now_epoch)
+    from features.daily_checks.service import get_service as daily_service
+    await daily_service().tick(now_epoch)
     if _last_retention_at is None or now_epoch - _last_retention_at >= 3600:
         storage.prune_run_history(now_epoch, RETENTION_DAYS)
         _last_retention_at = now_epoch
@@ -520,11 +515,13 @@ async def start() -> None:
 
 async def stop() -> None:
     global _loop_task
-    from . import integrity
-    await integrity.stop()
     if _loop_task:
         _loop_task.cancel()
         await asyncio.gather(_loop_task, return_exceptions=True)
+    from . import integrity
+    await integrity.stop()
+    from features.daily_checks.service import get_service as daily_service
+    await daily_service().stop()
     for task in list(_active.values()):
         task.cancel()
     await asyncio.gather(*_active.values(), return_exceptions=True)

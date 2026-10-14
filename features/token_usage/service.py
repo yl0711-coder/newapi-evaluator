@@ -3,9 +3,11 @@ from __future__ import annotations
 
 import asyncio
 import json
+import math
 import os
 import secrets
 import time
+from contextlib import nullcontext
 
 from features.integrity.execution import resolve_registry_target
 from features.model_coverage.catalog import Catalog, model_name
@@ -91,21 +93,37 @@ class TokenUsageService:
                 "billing_status": "unverified"}
 
     def submit(self, channel_id, model, protocol, *, confirm_live=False, idempotency_key,
-               principal="workbench", event_id=None, log_evidence=None, reference_channel_id=None):
+               principal="workbench", event_id=None, log_evidence=None, reference_channel_id=None, occurrence=None,
+               display_names=None):
         if confirm_live is not True:
             raise ValueError("live_confirmation_required")
+        daily = principal.startswith("daily:")
+        if daily and (type(occurrence) not in {int, float} or not math.isfinite(occurrence)):
+            raise ValueError("daily_occurrence_required")
+        if not daily and occurrence is not None:
+            raise ValueError("occurrence_requires_daily_principal")
+        if display_names is not None and (not daily or set(display_names) != {"candidate", "reference"}
+                or any(not isinstance(n, str) or len(n) > 160 for n in display_names.values())):
+            raise ValueError("invalid_daily_display_names")
         # Event idempotency binds the submitted public payload, independently of later Registry drift.
-        payload_hash = digest({"channel_id": channel_id, "model": model, "protocol": protocol,
+        payload = {"channel_id": channel_id, "model": model, "protocol": protocol,
                                "reference_channel_id": reference_channel_id, "log_evidence": log_evidence,
-                               "event_id": event_id, "confirm_live": confirm_live})
+                               "event_id": event_id, "confirm_live": confirm_live}
+        if daily:
+            payload["occurrence"] = occurrence
+        payload_hash = digest(payload)
         submitted = self.store.submitted(principal=principal, idem=idempotency_key, event_id=event_id, payload_hash=payload_hash)
         if submitted is not None:
             return submitted
-        source = "monitor_active" if principal.startswith("monitor:") else "fixed_retest"
+        source = "daily_scheduled" if daily else "monitor_active" if principal.startswith("monitor:") else "fixed_retest"
         spec = self._spec(channel_id, model, protocol, source=source, log_evidence=log_evidence)
+        if display_names is not None:
+            for side, name in display_names.items():
+                spec["display_identity"][side]["name"] = name
         if reference_channel_id is not None and reference_channel_id != spec["reference"]["registry_channel_id"]:
             raise Conflict("trusted_reference_mismatch")
-        return self.store.enqueue(spec, principal=principal, idem=idempotency_key, event_id=event_id, payload_hash=payload_hash)
+        return self.store.enqueue(spec, principal=principal, idem=idempotency_key, event_id=event_id,
+                                  payload_hash=payload_hash, occurrence=occurrence)
 
     def configs(self):
         with self.store.connect() as db:
@@ -172,8 +190,9 @@ class TokenUsageService:
         return ({**candidate.channel, "canonical_model": spec["candidate"]["canonical_model"]},
                 {**reference.channel, "canonical_model": spec["reference"]["canonical_model"]})
 
-    async def execute_one(self, *, active=None, scheduled_only=False, active_only=False):
-        row = self.store.claim(self.owner, active=self.active if active is None else active, scheduled_only=scheduled_only, active_only=active_only)
+    async def execute_one(self, *, active=None, scheduled_only=False, active_only=False, job_id=None, permit_context=None,
+                          comparison_previous=None, previous_occurrence=None):
+        row = self.store.claim(self.owner, active=self.active if active is None else active, scheduled_only=scheduled_only, active_only=active_only, job_id=job_id)
         if row is None:
             return None
         job_id, spec = row["id"], row["spec"]
@@ -187,12 +206,15 @@ class TokenUsageService:
             with self.store.connect() as db:
                 older = db.execute("SELECT result FROM jobs WHERE config_id=? AND occurrence<? AND result IS NOT NULL ORDER BY occurrence DESC LIMIT 1", (row["config_id"], row["occurrence"])).fetchone()
             previous = json.loads(older[0]) if older else None
+        elif spec["source"] == "daily_scheduled":
+            previous = comparison_previous
 
         def contextual(result):
             if result.get("pairs"):
                 first = result["pairs"][0]
                 score = classify_pair(first["candidate"], first["reference"], previous=previous,
-                                      source=spec["source"], frozen_hash=spec["frozen_hash"], occurrence=row["occurrence"], log_evidence=spec["log_evidence"], threshold_config=spec["thresholds"])
+                                      source=spec["source"], frozen_hash=spec["frozen_hash"], occurrence=row["occurrence"], log_evidence=spec["log_evidence"], threshold_config=spec["thresholds"],
+                                      previous_occurrence=previous_occurrence if spec["source"] == "daily_scheduled" else None)
                 result = {**result, **{k: v for k, v in score.items() if k not in {"pairs", "requests_sent"}}}
             return {**result, "source": spec["source"], "target": spec["candidate"], "reference": spec["reference"],
                     "display_identity": spec.get("display_identity"),
@@ -218,7 +240,8 @@ class TokenUsageService:
                 raise RuntimeError("missed_scheduled_window")
             self._resolve_frozen(spec)
             try:
-                self.store.permit(job_id, self.owner, side, index)
+                with permit_context(spec) if permit_context is not None else nullcontext():
+                    self.store.permit(job_id, self.owner, side, index)
             except ScheduleStopped as exc:
                 control_reason = str(exc)
                 raise

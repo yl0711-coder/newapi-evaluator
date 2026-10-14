@@ -10,6 +10,8 @@
 
 ## 验证清单
 
+已上线渠道每日检测 `/daily-checks/` 复用同一公共主题，配置、Webhook密码框、历史报告与两类导出使用独立浏览器回归 `scripts/daily_checks_ui.cjs`。验证390/900/1440布局、键盘暂停、确认门禁、零提前推送及实际回环模型请求；纳入完整性27/28组清单。
+
 继承 `docs/admission-gpt6.md` v2 的全部十组开发检查、十一组独立检查，以及 `docs/image-quality-testing.md` 的发布容器要求。运行 Python 3.13，Node 24，Playwright 和 Edge。数据、临时文件、venv 和报告均置于仓库外，白名单环境隔离业务配置，全部上游使用本地合成 Mock。
 
 | 检查 | 入口 | 时限 |

@@ -1,0 +1,23 @@
+<!doctype html>
+<html lang="zh-CN"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+<title>已上线渠道每日检测</title><link rel="stylesheet" href="/assets/common.css"><link rel="stylesheet" href="styles.css">
+<script src="/assets/common.js" defer></script><script src="app.js" defer></script></head>
+<body><main class="container"><header><h1>已上线渠道每日检测</h1><p>每天四次检查 ModelTrace、输入 Token 用量、请求速度与稳定性，并通过飞书群机器人接收报告。</p></header>
+<section class="card"><h2>报告时刻 · 北京时间</h2><div class="table-scroll"><table><thead><tr><th>测试开始</th><th>报告时间</th></tr></thead><tbody>
+<tr><td>09:30</td><td>10:30</td></tr><tr><td>13:00</td><td>14:00</td></tr><tr><td>14:30</td><td>15:30</td></tr><tr><td>17:00</td><td>18:00</td></tr>
+</tbody></table></div><p>每轮开始时选择公共渠道库中“已上线、启用且有可用 apikey”的渠道。表格更新后，先在<a href="/channels/">公共渠道</a>点击手动同步。模型家族 codex 归入 GPT；未识别家族、缺配置或缺参照会列入报告。</p>
+<p>提前完成会等到报告时刻；到时停止余下请求并发送已有结果。服务中断期间可能延迟送达，未确认请求不会自动重发。</p><p id="plan-status" role="status"></p></section>
+<section class="card"><h2>测试模型与可信参照</h2><form id="plan-form"><div class="families">
+<fieldset><legend>GPT / codex</legend><label>确切模型 ID<select id="gpt-model"><option value="">暂不配置</option></select></label><label>协议<select id="gpt-protocol"><option value="responses">Responses</option><option value="openai">Chat Completions</option></select></label><label>可信参照渠道<select id="gpt-reference"></select></label></fieldset>
+<fieldset><legend>Claude</legend><label>确切模型 ID<select id="claude-model"><option value="">暂不配置</option></select></label><label>协议<select id="claude-protocol"><option value="anthropic">Claude Messages</option><option value="openai">Chat Completions</option></select></label><label>可信参照渠道<select id="claude-reference"></select></label></fieldset></div>
+<p>用量对照复用 <a href="/token-usage/">Token 监控</a>的可信绑定。候选与参照必须使用相同模型及协议；可信参照本身不做自对照。ModelTrace 普通 API 行为比较未校准，不能认证模型身份。少量失败样本或缺 usage 只能“无法判定”。</p>
+<label class="check"><input id="trust-confirm" type="checkbox">我确认所选参照对该模型和协议可信；允许保存或更新可信绑定</label>
+<label class="check"><input id="notify-enabled" type="checkbox" checked>通过飞书发送四份汇总报告</label>
+<label class="check"><input id="live-confirm" type="checkbox">我确认按预览请求量启用每日真实检测</label>
+<label class="check"><input id="notify-confirm" type="checkbox">我确认向已配置飞书群发送报告</label>
+<div class="actions"><button id="preview" type="button">预览渠道与请求量</button><button id="save" type="button">仅保存配置</button><button id="enable" type="submit" disabled>保存并启用</button><button id="pause" type="button">暂停计划</button></div>
+</form><div id="preview-summary" role="status"></div><div class="table-scroll"><table id="preview-table" hidden><thead><tr><th>渠道 / 倍率</th><th>家族 / 模型</th><th>待补信息</th></tr></thead><tbody id="preview-rows"></tbody></table></div></section>
+<section class="card"><h2>飞书群机器人</h2><form id="notification-form"><label>Webhook<input id="webhook" type="password" autocomplete="off" placeholder="粘贴飞书机器人 Webhook，保存后清空"></label><button id="save-webhook" type="submit">保存 Webhook</button><button id="clear-webhook" type="button">清除 Webhook</button></form><p id="notification-status" role="status"></p><p>与原定时稳定性测试共用机器人配置。保存、预览和打开页面均不会发送测试通知。</p></section>
+<section class="card"><h2>本轮与历史报告</h2><button id="refresh" type="button">刷新报告</button><p id="refresh-status" role="status"></p><div id="batches"></div></section>
+<section class="card" id="detail" hidden><h2 id="detail-title">本轮报告</h2><p id="coverage"></p><div class="actions"><button id="cancel-batch" type="button">取消本轮</button><button id="download-json" type="button">下载技术 JSON</button><button id="download-markdown" type="button">下载 Markdown</button><button id="retry-notification" type="button">重发未送达片段</button></div><label class="check"><input id="retry-confirm" type="checkbox">确认重发；未确认片段可能重复送达</label><div id="report-rows"></div><details><summary>技术证据</summary><pre id="technical"></pre></details></section>
+<p id="message" role="status" aria-live="polite"></p></main></body></html>

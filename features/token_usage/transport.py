@@ -9,9 +9,9 @@ import zlib
 import httpx
 
 from features.admission.main import parse_stream_line
-from features.integrity.transport import _nonstream, _tool_call, payload
+from features.integrity.transport import _nonstream, _tool_call, _reasoning_usage, payload
 from features.stability.app.egress import EgressDenied, validate_url
-from features.stability.app.transport import endpoint_url, headers as _protocol_headers
+from features.stability.app.transport import endpoint_url, headers as _protocol_headers, _reported_usage
 from shared.network import SocketEgressDenied, guarded_transport, socket_egress_denied
 from .domain import ASTRA_PARAMETERS, FIXED_INPUT, PARAMETERS, classify_pair, empty_result, normalize_usage, observation, protocol
 
@@ -168,12 +168,24 @@ def capacity():
 
 
 async def _attempt(client, endpoint, before_send):
+    from time import perf_counter
+    started = perf_counter()
+    first_text_at = None
+    throughput_supported = True
+    output_tokens = reasoning_tokens = None
     trace = []
     sent = False
     kind = endpoint["protocol"]
 
     def record(data):
+        nonlocal output_tokens, reasoning_tokens
         data = data.get("response") or data
+        _, output = _reported_usage(data)
+        if output is not None:
+            output_tokens = output
+        reasoning = _reasoning_usage(data)
+        if reasoning is not None:
+            reasoning_tokens = reasoning
         usage = data.get("usage") or (data.get("message") or {}).get("usage")
         row = normalize_usage(usage, kind)
         if row is not None:
@@ -182,7 +194,7 @@ async def _attempt(client, endpoint, before_send):
             trace.append(row)
 
     async def send():
-        nonlocal sent
+        nonlocal sent, first_text_at, throughput_supported
         url = endpoint_url(endpoint["base_url"], kind)
         await validate_url(url)
         selected_parameters = ASTRA_PARAMETERS if endpoint.get("canonical_model", endpoint["model"]) == "gpt-6-astra" else PARAMETERS
@@ -218,6 +230,7 @@ async def _attempt(client, endpoint, before_send):
                 if kind != "responses" and finish in NORMAL_FINISH[kind]:
                     terminal = "completed"
             else:
+                streamed_text = ""
                 async for line in _sse_data(response):
                     line = line.strip()
                     if line == "[DONE]":
@@ -237,7 +250,13 @@ async def _attempt(client, endpoint, before_send):
                     formats = {"openai": {"chat_delta", "usage"}, "responses": {"responses"}, "anthropic": {"anthropic", "usage"}}
                     bad = bad or not event.get("recognized") or event.get("format") not in formats[kind]
                     bad = bad or bool(event.get("protocol_error")) or _invalid_payload(data, kind) or bool(event.get("refused"))
-                    answer = answer or bool(event.get("content", "").strip()) or bool((event.get("final_content") or "").strip())
+                    has_text = bool(event.get("content", "").strip()) or bool((event.get("final_content") or "").strip())
+                    streamed_text += event.get("content") or ""
+                    if event.get("final_content") is not None and event["final_content"] != streamed_text:
+                        throughput_supported = False
+                    if has_text and first_text_at is None and event.get("content"):
+                        first_text_at = perf_counter()
+                    answer = answer or has_text
                     if kind == "responses":
                         event_type = data.get("type")
                         if event_type == "response.created":
@@ -274,17 +293,25 @@ async def _attempt(client, endpoint, before_send):
             complete = complete and (kind != "openai" or done) and (kind == "responses" or finish in NORMAL_FINISH[kind])
             return observation(trace, status="completed" if complete else "invalid_response", terminal=bool(complete))
     try:
-        return await asyncio.wait_for(send(), 60)
+        result = await asyncio.wait_for(send(), 60)
     except (EgressDenied, SocketEgressDenied):
-        return observation(trace, status="not_sent", transport_status="egress_denied")
+        result = observation(trace, status="not_sent", transport_status="egress_denied")
     except (asyncio.TimeoutError, httpx.TimeoutException):
-        return observation(trace, status="unknown" if sent else "not_sent", transport_status="timeout")
+        result = observation(trace, status="unknown" if sent else "not_sent", transport_status="timeout")
     except httpx.HTTPError as exc:
         denied = socket_egress_denied(exc)
-        return observation(trace, status="not_sent" if denied or not sent else "unknown",
+        result = observation(trace, status="not_sent" if denied or not sent else "unknown",
                            transport_status="egress_denied" if denied else "network_error")
     except (ValueError, TypeError, KeyError, AttributeError, IndexError):
-        return observation(trace, status="invalid_response")
+        result = observation(trace, status="invalid_response")
+    finished = perf_counter()
+    duration = finished - first_text_at if first_text_at is not None else 0
+    throughput = (output_tokens / duration if result["status"] == "completed" and output_tokens is not None and throughput_supported
+                  and reasoning_tokens == 0 and duration > 0 else None)
+    return {**result, "latency_ms": round((finished - started) * 1000, 3),
+            "ttft_ms": round((first_text_at - started) * 1000, 3) if first_text_at is not None else None,
+            "tokens_per_second": throughput, "output_tokens_reported": output_tokens,
+            "reasoning_tokens_reported": reasoning_tokens}
 
 
 async def run_paired_check(candidate: dict, reference: dict, *, previous=None, on_result=None,

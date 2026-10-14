@@ -116,6 +116,14 @@ class TestManifestTests(unittest.TestCase):
         collection = collect_unittests()
         self.assertGreater(validated_collection_count(collection, required), 0)
 
+    def test_daily_contract_browser_and_python_are_registered(self):
+        suites = integrity(sys.executable, OUTPUT)
+        by_id = {suite.suite_id: suite for suite in suites}
+        self.assertEqual(by_id["daily-checks-browser"].timeout_seconds, 180)
+        self.assertIn("scripts/daily_checks_ui.cjs", by_id["daily-checks-browser"].command)
+        self.assertIn("scripts/inspect_daily_checks.py", by_id["daily-checks-inspect"].command)
+        self.assertIn("tests.test_daily_checks", by_id["workbench-python"].expected_modules)
+
     def test_integrity_container_and_inspection_results_are_classified(self):
         from scripts.verify_image_quality import classify
         from scripts.verify_diagnosis import classify as domain_classify

@@ -14,7 +14,7 @@ assert.ok(evidenceRoot !== root && !evidenceRoot.startsWith(root + path.sep), 'B
 const data = fs.mkdtempSync(path.join(evidenceRoot, 'admission-queue-ui-'));
 const python = process.env.PYTHON_EXECUTABLE || path.join(root, '.venv', 'bin', 'python');
 const requests = [], active = new Map(), held = new Map(), errors = [];
-const gated = new Set(['fifo-one', 'fifo-two', 'restart-head', 'stop-visible', 'stop-pending']);
+const gated = new Set(['fifo-one', 'fifo-two', 'restart-head', 'stop-visible', 'stop-pending', 'variable-height']);
 const candidateKeys = new Set();
 let app, appExit, appError, browser, base, upstreamUrl, port, maxActiveJobs = 0, fixtureError;
 let stderrBytes = 0, phase = 'startup';
@@ -134,6 +134,9 @@ async function openBrowser() {
   await page.goto(base + '/admission/');
   await page.locator('#preset option').first().waitFor({state:'attached'});
   await page.locator('#reference-id option').nth(1).waitFor({state:'attached'});
+  assert.equal(await page.locator('#admission-queue-panel').evaluate(element => element.open), false, 'Queue starts collapsed');
+  await page.locator('#admission-queue-panel > summary').press('Enter');
+  await page.waitForFunction(() => document.getElementById('admission-queue-panel').open);
   return page;
 }
 
@@ -202,7 +205,7 @@ async function screenshot(page, label) {
     await page.evaluate(() => window.scrollTo({top:0, behavior:'instant'}));
     await page.screenshot({path:path.join(data, `${label}-${width}.png`), fullPage:true, animations:'disabled'});
     await page.evaluate(() => {
-      const section = document.getElementById('queue-title').closest('section');
+      const section = document.getElementById('admission-queue-panel');
       window.scrollTo({top:scrollY + section.getBoundingClientRect().top - 16, behavior:'instant'});
     });
     await page.waitForFunction(() => {
@@ -253,6 +256,16 @@ async function run() {
   }
   assert.equal((await jobs()).filter(item => item.state === 'running').length, 1);
   checks.push('three_submissions_fifo');
+  await page.locator('#admission-queue-panel > summary').press('Enter');
+  await page.waitForFunction(() => !document.getElementById('admission-queue-panel').open);
+  assert.equal(await card(page, first).isVisible(), false, 'Collapsed queue hides task cards');
+  await page.waitForResponse(response => new URL(response.url()).pathname === '/admission/api/jobs' && response.request().method() === 'GET');
+  assert.equal((await job(first)).state, 'running', 'Collapsing never pauses the server task');
+  assert.equal(requests.length, 2, 'Queue folding never resends or cancels the gated pair');
+  assert.ok((await page.locator('#queue-count').textContent()).includes('3 个任务'));
+  await page.locator('#admission-queue-panel > summary').press('Enter');
+  await page.waitForFunction(() => document.getElementById('admission-queue-panel').open);
+  checks.push('queue_keyboard_collapse_preserves_background');
   await screenshot(page, 'queue-running');
   assert.ok(!(await card(page, first).textContent()).includes('排队第 1 位'), 'Running job is never labeled queued first');
   assert.ok((await card(page, first).textContent()).includes('候选 fifo-one <script>/..'));
@@ -337,6 +350,8 @@ async function run() {
   await until(() => !active.size, 'Owned upstream sockets close after the application is killed');
   release('restart-head');
   await startApp(); await page.reload();
+  await page.locator('#admission-queue-panel > summary').press('Enter');
+  await page.waitForFunction(() => document.getElementById('admission-queue-panel').open);
   const waitingHead = await job(head), waitingNext = await job(next);
   assert.equal(waitingHead.state, 'waiting_credentials'); assert.equal(waitingHead.needs_credentials, true);
   assert.equal(waitingHead.progress.unknown, 2); assert.equal(waitingHead.progress.sending, 0);
@@ -401,10 +416,77 @@ async function run() {
   await until(async () => (await job(pending)).state === 'cancelled', 'Remaining stop fixture closes within its bound');
   checks.push('delayed_selection_stop_targets_rendered_task');
   const snapshots = await jobs(); assert.equal(snapshots.length, 7); assertNoCandidateKeys(snapshots);
+  await page.locator('#refresh-queue').click();
+  await page.waitForFunction(() => document.querySelectorAll('#admission-queue article').length === 7);
+  for (const width of [1440, 390]) {
+    await page.setViewportSize({width, height:1000});
+    await page.waitForFunction(() => {
+      const root = document.getElementById('admission-queue');
+      const cards = [...root.querySelectorAll('article')];
+      const expected = cards.slice(0,5).reduce((sum, card) => sum + card.getBoundingClientRect().height, 0) + parseFloat(getComputedStyle(root).rowGap) * 4;
+      return Math.abs(root.clientHeight - expected) <= 2 && root.scrollHeight > root.clientHeight;
+    });
+    const bounds = await page.locator('#admission-queue').evaluate(root => {
+      root.scrollTop = 0;
+      const end = root.getBoundingClientRect().bottom, cards = [...root.querySelectorAll('article')];
+      return {fifth:cards[4].getBoundingClientRect().bottom, sixth:cards[5].getBoundingClientRect().top, end};
+    });
+    assert.ok(bounds.fifth <= bounds.end + 2 && bounds.sixth > bounds.end, 'Only the first five cards fit in the queue');
+    await page.locator('#admission-queue article').last().getByRole('button', {name:'查看进度', exact:true}).click();
+    assert.ok(await page.locator('#admission-queue').evaluate(root => root.scrollTop > 0), 'Later task controls are reachable by scrolling');
+    assert.equal(await page.evaluate(() => document.documentElement.scrollWidth > innerWidth + 2), false);
+    await page.locator('#admission-queue-panel').screenshot({path:path.join(data, `queue-five-scroll-${width}.png`), animations:'disabled'});
+  }
+  checks.push('queue_five_visible_remaining_scroll');
   for (const snapshot of snapshots) {
     const detail = await job(snapshot.id); assertNoCandidateKeys(detail);
     assert.ok(detail.report_id && detail.report, 'Every terminal job retains its report');
   }
+  phase = 'variable_height_queue';
+  const variableKey = 'synthetic-candidate-variable-height'; candidateKeys.add(variableKey);
+  const variableReference = (await request('/api/registry/channels', {body:{name:'Synthetic variable queue',
+    base_url:`${upstreamUrl}/variable-height/reference/v1`, api_key:'synthetic-reference-variable-height', multiplier:1}})).id;
+  const variableIds = [];
+  for (let index = 0; index < 20; index++) {
+    const snapshot = await request('/admission/api/jobs', {expected:202, headers:{'Idempotency-Key':crypto.randomUUID()},
+      body:{candidate:{name:index < 5 ? '合成渠道长名称'.repeat(18) : `合成渠道 ${index + 1}`,
+        base_url:`${upstreamUrl}/variable-height/candidate/v1`, api_key:variableKey, model:'synthetic-queue-model', protocol:'openai'},
+        reference:{channel_id:variableReference, model:'synthetic-queue-model', protocol:'openai'}, rounds:1}});
+    variableIds.push(snapshot.id);
+  }
+  await until(() => held.get('variable-height')?.size === 2, 'Variable height queue keeps its head behind the owned request gate');
+  await page.locator('#refresh-queue').click();
+  await page.waitForFunction(() => document.querySelectorAll('#admission-queue article').length === 27);
+  for (const width of [1440, 390]) {
+    await page.setViewportSize({width, height:1000});
+    await page.waitForFunction(() => {
+      const root = document.getElementById('admission-queue'), cards = [...root.querySelectorAll('article')];
+      const height = cards[0].getBoundingClientRect().height;
+      return cards.every(card => Math.abs(card.getBoundingClientRect().height - height) < 1)
+        && Math.abs(root.clientHeight - height * 5 - parseFloat(getComputedStyle(root).rowGap) * 4) <= 2;
+    });
+    for (const position of ['top', 'middle', 'bottom']) {
+      const visible = await page.locator('#admission-queue').evaluate((root, position) => {
+        root.scrollTop = position === 'top' ? 0 : position === 'middle' ? (root.scrollHeight - root.clientHeight) / 2 : root.scrollHeight;
+        const bounds = root.getBoundingClientRect();
+        return [...root.querySelectorAll('article')].filter(card => {
+          const rect = card.getBoundingClientRect(); return rect.top >= bounds.top - 1 && rect.bottom <= bounds.bottom + 1;
+        }).length;
+      }, position);
+      assert.ok(visible <= 5 && visible > 0, `At most five complete tasks fit at ${position} with mixed name lengths at ${width}px`);
+    }
+    await page.locator('#refresh-queue').click();
+    await page.waitForFunction(() => {
+      const root = document.getElementById('admission-queue'); return root.scrollHeight - root.clientHeight - root.scrollTop <= 2;
+    });
+    assert.equal(await page.evaluate(() => document.documentElement.scrollWidth > innerWidth + 2), false);
+    await page.locator('#admission-queue-panel').screenshot({path:path.join(data, `queue-variable-height-${width}.png`), animations:'disabled'});
+  }
+  for (const id of variableIds.slice(1)) await request(`/admission/api/jobs/${id}/cancel`, {method:'POST'});
+  await request(`/admission/api/jobs/${variableIds[0]}/cancel`, {method:'POST'});
+  await until(async () => (await job(variableIds[0])).state === 'cancelled', 'Variable height fixture head is cancelled');
+  assert.equal(requests.filter(item => item.owner === 'variable-height').length, 2, 'The remaining nineteen tasks never send requests');
+  checks.push('queue_mixed_heights_five_at_every_scroll_position');
   assert.deepEqual(errors, []);
   await browser.close(); browser = null; await stopApp();
   for (const name of fs.readdirSync(data, {recursive:true})) {

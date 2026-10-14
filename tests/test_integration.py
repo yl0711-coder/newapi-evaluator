@@ -628,10 +628,16 @@ class IntegrationTests(unittest.IsolatedAsyncioTestCase):
                     expected = [] if mode == "channels" else ["protocol-admission", "admission"] if mode == "admission" else [mode]
                     if mode == "stability":
                         expected.append("integrity")
+                        expected.append("daily-checks")
                     if mode in {"admission", "stability"}:
                         expected.append("token-usage")
                     self.assertEqual([f["id"] for f in data["features"]], expected)
                     self.assertEqual((await client.get("/integrity/")).status_code, 200 if mode == "stability" else 404)
+                    self.assertEqual((await client.get("/daily-checks/")).status_code, 200 if mode == "stability" else 404)
+                    if mode == "stability":
+                        daily = (await client.get("/api/daily-checks/meta")).json()
+                        self.assertFalse(daily["plan"]["enabled"])
+                        self.assertEqual(daily["report_times"], ["10:30", "14:00", "15:30", "18:00"])
                     protocol = [f for f in data["features"] if f["id"] == "protocol-admission"]
                     if mode == "admission":
                         self.assertEqual(protocol, [{"id": "protocol-admission", "name": "模型与协议检测", "url": "/admission/protocol/"}])
@@ -655,12 +661,13 @@ class IntegrationTests(unittest.IsolatedAsyncioTestCase):
             self.assertEqual(response.json()["features"],
                              ["admission", "stability", "reasoning", "capacity", "diagnosis", "image-quality"])
             platform = (await self.client.get("/api/platform")).json()
-            self.assertEqual([item["id"] for item in platform["features"]], ["protocol-admission", *response.json()["features"], "integrity", "token-usage"])
+            self.assertEqual([item["id"] for item in platform["features"]], ["protocol-admission", *response.json()["features"], "integrity", "daily-checks", "token-usage"])
             for feature in platform["features"]:
                 self.assertEqual((await self.client.get(feature["url"])).status_code, 200)
             self.assertTrue(scheduler.status()["running"])
             self.assertTrue(response.json()["token_usage_executor"]["running"])
             self.assertFalse(response.json()["token_usage_executor"]["active_enabled"])
+            self.assertFalse(response.json()["daily_checks_executor"]["enabled"])
         self.assertFalse(scheduler.status()["running"])
 
 

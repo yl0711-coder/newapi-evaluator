@@ -1,0 +1,15 @@
+.container{max-width:1200px;margin:24px auto;padding:0 18px}
+.card{margin-bottom:20px;padding:22px;border:1px solid var(--border,#d9ddd4);border-radius:12px;background:var(--surface,#fff)}
+.families{display:grid;grid-template-columns:1fr 1fr;gap:20px}
+fieldset{min-width:0;padding:18px;border:1px solid var(--border,#d9ddd4);border-radius:8px}
+label:not(.check){display:grid;gap:6px;margin:12px 0}
+.check{display:flex;gap:10px;align-items:flex-start;margin:12px 0}
+.check input{width:auto;flex:none;margin-top:5px}
+.actions{display:flex;gap:10px;flex-wrap:wrap;margin:16px 0}
+.table-scroll{overflow:auto}table{width:100%}td{white-space:normal}
+pre{max-height:500px;overflow:auto;white-space:pre-wrap;overflow-wrap:anywhere}
+.report-row{padding:16px 0;border-bottom:1px solid var(--border,#d9ddd4);overflow-wrap:anywhere}
+.report-row h3{margin:0 0 10px}
+#batches{display:grid;gap:10px;margin-top:14px}#batches button{text-align:left;white-space:normal}
+#message{overflow-wrap:anywhere}[hidden]{display:none!important}
+@media(max-width:650px){.families{grid-template-columns:1fr}.card{padding:16px}.container{padding:0 12px}}

@@ -31,5 +31,11 @@
 .evidence-block>summary { font-weight:650; }
 .empty-reasoning { color:var(--muted); font-style:italic; }
 .history-facts { white-space:pre-line; }
+.queue-toggle { flex:none; color:var(--accent); font-size:14px; font-weight:650; }
+.queue-toggle::before { content:"展开队列"; }
+.admission-queue-panel[open] .queue-toggle::before { content:"收起队列"; }
+#admission-queue { display:grid; grid-template-columns:minmax(0,1fr); gap:12px; overflow-y:auto; scrollbar-gutter:stable; }
+#admission-queue > .run-card { margin:0; }
+#admission-queue:focus-visible { outline:3px solid #659e92; outline-offset:3px; }
 @media(max-width:900px) { .summary-cards { grid-template-columns:repeat(2,minmax(0,1fr)); } }
-@media(max-width:800px) { .summary-cards,.identity-summary { grid-template-columns:1fr; } .report-overview .dialog-heading { align-items:flex-start; flex-direction:column; } .evidence-card .two { grid-template-columns:1fr; } }
+@media(max-width:800px) { .summary-cards,.identity-summary { grid-template-columns:1fr; } .report-overview .dialog-heading,.admission-queue-panel .report-history-controls { align-items:flex-start; flex-direction:column; } .evidence-card .two { grid-template-columns:1fr; } }

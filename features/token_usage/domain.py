@@ -117,7 +117,7 @@ def empty_result(reason, *, source="fixed_retest", log_evidence=None):
 
 
 def classify_pair(candidate, reference, *, previous=None, source="fixed_retest", frozen_hash=None,
-                  occurrence=None, log_evidence=None, threshold_config=None):
+                  occurrence=None, log_evidence=None, threshold_config=None, previous_occurrence=None):
     configured = thresholds(threshold_config)
     current_hash = condition_hash(configured)
     result = empty_result("invalid_usage_or_terminal", source=source, log_evidence=log_evidence)
@@ -150,11 +150,14 @@ def classify_pair(candidate, reference, *, previous=None, source="fixed_retest",
     if c >= 2 * r and difference >= 1024:
         result.update(status="completed", severity="high_risk", conclusion="high_risk", reason="major_input_token_anomaly")
     elif c * denominator >= r * numerator and difference >= configured["minor_difference"]:
-        successive = (source == "scheduled" and previous and previous.get("source") == "scheduled"
+        adjacent = (occurrence is not None and (
+            source == "scheduled" and previous_occurrence is None and previous and previous.get("occurrence") == occurrence - INTERVAL_SECONDS
+            or source == "daily_scheduled" and previous_occurrence is not None and previous_occurrence < occurrence
+            and previous and previous.get("occurrence") == previous_occurrence))
+        successive = (source in {"scheduled", "daily_scheduled"} and adjacent and previous and previous.get("source") == source
                       and previous.get("conclusion") in {"pending_confirmation", "minor_anomaly"}
                       and frozen_hash is not None and previous.get("frozen_hash") == frozen_hash
-                      and previous.get("condition_hash") == current_hash
-                      and occurrence is not None and previous.get("occurrence") == occurrence - INTERVAL_SECONDS)
+                      and previous.get("condition_hash") == current_hash)
         result.update(status="completed" if successive else "pending", severity="warning" if successive else "pending",
                       conclusion="minor_anomaly" if successive else "pending_confirmation",
                       reason="successive_scheduled_minor" if successive else "minor_requires_successive_scheduled_round",
