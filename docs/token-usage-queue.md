@@ -57,4 +57,4 @@ Token 计划、结果和完整性任务冻结创建时渠道名称；名称是�
 
 只读合同检查：`python -B -m features.token_usage inspect-config`。完整注册清单：`python -B scripts/inspect_test_plan.py integrity`。开发入口：`python -B scripts/verify_integrity.py --output <新的仓外证据目录>`；独立验收在干净 detached 候选追加 `--sha <40位SHA>`。
 
-注册清单共开发 23 组、独立 24 组，含 Token 主动 live/off 两组浏览器检查；off 组验证后台定时与空闲刷新。领域用例经完整 `workbench-python` 发现，并核对必需模块 `test_token_usage_remediation`、原 Token、准入队列/报告与完整性回归均非零收集。覆盖三协议、解压与 SSE 限额、严格终态、缓存和 usage 变化、取消租约、失效连接暂停、重大立即发布、最多四次、连续两轮、HMAC/幂等/游标、FIFO、重启合同漂移、删除副本、订阅缺口、冻结名称、操作对象，以及报告和容器入口。Mock 通过不等于真实 Monitor 联调、真实计费核验或生产部署。
+注册清单共开发 25 组、独立 26 组，含 Token 主动 live/off 两组浏览器检查；off 组验证后台定时与空闲刷新。领域用例经完整 `workbench-python` 发现，并核对必需模块 `test_token_usage_remediation`、原 Token、准入队列/报告与完整性回归均非零收集。覆盖三协议、解压与 SSE 限额、严格终态、缓存和 usage 变化、取消租约、失效连接暂停、重大立即发布、最多四次、连续两轮、HMAC/幂等/游标、FIFO、重启合同漂移、删除副本、订阅缺口、冻结名称、操作对象，以及报告和容器入口。Mock 通过不等于真实 Monitor 联调、真实计费核验或生产部署。

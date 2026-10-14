@@ -48,4 +48,5 @@ $('import').addEventListener('click', async () => {
 });
 ModelCoverage.onChange = render;
 ModelCoverage.onRefresh = refresh;
+window.addEventListener('registry-channels-updated', () => refresh().catch(e => { $('message').textContent = e.message; }));
 refresh().catch(e => { $('message').textContent = e.message; });

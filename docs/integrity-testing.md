@@ -2,10 +2,11 @@
 
 适用规则 `docs/ai-rules` v1.0。本功能属于工作台定时、准入及完整性模块，不改 `relay_lab` 共享引擎；实验室五模式继续纳入既有 E2E 和独立 legacy acceptance。环境、数据、日志、截图和证据使用仓外新目录，不加载业务 `.env`、渠道库、凭据或通知设置。上游源码核对不替代产品测试。
 
-统一入口：`python -B scripts/verify_integrity.py --output <新外置目录>`。独立验收在干净 detached 候选提交增加 `--sha <40位SHA>`，使用独立环境与新数据。`PLAYWRIGHT_MODULE`、`PLAYWRIGHT_BROWSERS_PATH`、`EVAL_TEST_ARTIFACT_ROOT` 和 `TMPDIR` 显式指向仓外；执行器设置 `PYTHON_EXECUTABLE`。执行器保留收集数、退出码、前后源码指纹及首次失败，实施逐组时限和总预算，失败优先汇总。开发23组、3000秒；独立24组、4200秒。输入 Token 与服务器准入队列的合同见 [功能和接口](token-usage-queue.md)。
+统一入口：`python -B scripts/verify_integrity.py --output <新外置目录>`。独立验收在干净 detached 候选提交增加 `--sha <40位SHA>`，使用独立环境与新数据。`PLAYWRIGHT_MODULE`、`PLAYWRIGHT_BROWSERS_PATH`、`EVAL_TEST_ARTIFACT_ROOT` 和 `TMPDIR` 显式指向仓外；执行器设置 `PYTHON_EXECUTABLE`。执行器保留收集数、退出码、前后源码指纹及首次失败，实施逐组时限和总预算，失败优先汇总。开发25组、3000秒；独立26组、4200秒。输入 Token 与服务器准入队列的合同见 [功能和接口](token-usage-queue.md)。
 
 | suite_id | 入口 | 验证与时限 |
 | --- | --- | --- |
+| feishu-channels-inspect / feishu-channels-browser | `scripts/inspect_feishu_channels.py` / `scripts/feishu_channels_ui.cjs` | 只读合同检查及合成飞书的设置、筛选、同步、换 Key、下线与失败保留；60/180 秒 |
 | protocol-inspect / admission-inspect / diagnosis-inspect / image-inspect / model-coverage-inspect | 清单对应 inspect CLI | 零发送、脱敏配置；各60秒 |
 | token-usage-inspect | `python -m features.token_usage inspect-config` | 固定样本、预算、阈值、协议与半小时间隔，零发送；60秒 |
 | token-usage-browser / admission-queue-browser | `scripts/token_usage_ui.cjs` / `scripts/admission_queue_ui.cjs` | 可信绑定、主动结果、切页后台继续、严格FIFO、重启补Key与unknown不重发；各300秒 |

@@ -100,7 +100,7 @@ python -m relay_lab inspect-config --config configs/relay-lab/example.yaml
 
 数据库和主密钥的权限分别为 0600，目录为 0700。SQLite 自身不提供密钥隔离，Fernet 加密和文件权限负责保护；具有服务器文件读取权限的人仍可访问密钥。因此数据目录和备份都不能提交到 Git。工作台没有下载数据库密钥或回显已保存 API Key 的接口。
 
-准入飞书写入通过 `ADMISSION_FEISHU_APP_ID`、`ADMISSION_FEISHU_APP_SECRET`、`ADMISSION_FEISHU_APP_TOKEN` 和 `ADMISSION_FEISHU_TABLE_ID` 配置；四项齐全时启用。默认只写入标题为“渠道”和“测试分组”的两列，标题不同时使用 `ADMISSION_FEISHU_CHANNEL_FIELD`、`ADMISSION_FEISHU_GROUP_FIELD` 调整。外部写入失败不会中断准入测试，记录会留在本地队列并在服务重启后重试。所有飞书凭据只允许写入未纳入 Git 的 `.env` 或部署平台密钥配置。
+准入飞书写入通过 `ADMISSION_FEISHU_APP_ID`、`ADMISSION_FEISHU_APP_SECRET`、`ADMISSION_FEISHU_APP_TOKEN` 和 `ADMISSION_FEISHU_TABLE_ID` 配置；四项齐全时启用。默认只写入标题为“渠道”和“测试分组”的两列，标题不同时使用 `ADMISSION_FEISHU_CHANNEL_FIELD`、`ADMISSION_FEISHU_GROUP_FIELD` 调整。外部写入失败不会中断准入测试，记录会留在本地队列并在服务重启后重试。准入写入使用的飞书凭据只允许写入未纳入 Git 的 `.env` 或部署平台密钥配置；公共渠道读表的应用设置在页面单独配置并加密保存。
 
 同一渠道的 `/chat/completions`、`/responses`、`/messages` 等兼容接口地址在写入前会归一为同一个渠道值。飞书多维表格的既有视图按“渠道”字段分组并保存折叠状态后，后续记录会自动进入对应渠道分组；程序不需要额外权限，也不会覆盖历史记录。
 
@@ -111,6 +111,8 @@ python -m relay_lab inspect-config --config configs/relay-lab/example.yaml
 ```
 
 迁移只处理 `channel_inventory`，旧项目运行历史和计划不迁移。批量导入入口支持原先的混合配置文本，也支持 `base_url/api_key/multiplier` 的 JSON 数组。缺少必需字段的记录需补全；不会把模板模型名当成实际测试模型。
+
+公共渠道页也支持[从飞书手动同步渠道](docs/feishu-channel-sync.md)：配置自建应用及表格链接后，点击“手动同步”，读取“已上线且 apikey 非空”的记录。baseurl 和采购倍率必须有效；重复同步不会重复建渠道，换 Key 更新原渠道，明确下线会停用对应连接并保留历史。同步失败保留上次资料，不自动创建测试目标或计划。
 
 备份：`python scripts/backup.py`。备份包含公共渠道、准入报告、稳定性记录及配套主密钥，保存在忽略 Git 的 `backups/`。恢复时先停止服务，将同一份备份内的数据库和密钥成套放回数据目录。跨库备份不是同一事务，在线备份适用于连接资料和运行记录分别恢复；迁移或整库恢复建议停机操作。
 

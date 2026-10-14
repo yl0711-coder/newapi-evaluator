@@ -47,6 +47,8 @@ def _validate(suites: Sequence[SuiteSpec]) -> list[SuiteSpec]:
 def admission(python: str, output: Path, *, sha: str | None = None) -> list[SuiteSpec]:
     """Return the registered admission/workbench verification suites."""
     suites = [
+        SuiteSpec("feishu-channels-inspect", _python(python, "scripts/inspect_feishu_channels.py"), 60, "inspect"),
+        SuiteSpec("feishu-channels-browser", ("node", "scripts/feishu_channels_ui.cjs"), 180, "browser"),
         SuiteSpec("token-usage-inspect", _python(python, "-m", "features.token_usage", "inspect-config"), 60, "inspect"),
         SuiteSpec("token-usage-browser", ("node", "scripts/token_usage_ui.cjs"), 300, "browser"),
         SuiteSpec("token-usage-browser-off", ("node", "scripts/token_usage_ui.cjs", "--active-off"), 300, "browser"),
@@ -57,6 +59,7 @@ def admission(python: str, output: Path, *, sha: str | None = None) -> list[Suit
         SuiteSpec("workbench-python", _python(python, "scripts/test_all.py", "--output", _output_arg(output, "workbench-python")), 900, "python", (
             "tests.test_token_usage", "tests.test_token_usage_service", "tests.test_token_usage_remediation",
             "tests.test_admission_queue", "tests.test_admission_reporting", "tests.test_unified_integrity",
+            "tests.test_feishu_channels",
         )),
         SuiteSpec("workbench-web", ("node", "scripts/test_web.js"), 120, "web"),
         SuiteSpec("workbench-security", _python(python, "scripts/repo_security_scan.py", "."), 120, "security"),

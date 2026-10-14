@@ -1,6 +1,17 @@
 <!doctype html>
 <html lang="zh-CN"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>公共渠道 | 模型测试工作台</title><link rel="stylesheet" href="/assets/common.css"><script src="/assets/common.js" defer></script><link rel="stylesheet" href="/assets/model-coverage.css"><script src="/assets/model-coverage.js" defer></script><script src="/assets/channels.js" defer></script></head>
-<body><main class="page"><p class="eyebrow">SHARED CHANNELS</p><h1>公共渠道与常用模型。</h1><p class="muted">保存名称、Base URL、密钥和倍率。密钥保存后不再回显，修改时留空即可保留。</p>
+<body><script src="/assets/feishu-channels.js" defer></script><main class="page"><p class="eyebrow">SHARED CHANNELS</p><h1>公共渠道与常用模型。</h1><p class="muted">保存名称、Base URL、密钥和倍率。密钥保存后不再回显，修改时留空即可保留。</p>
+<section class="panel" aria-labelledby="feishu-heading"><h2 id="feishu-heading">从飞书同步渠道</h2>
+<p class="hint">读取“已上线”且 apikey 非空的记录，使用 baseurl、渠道名称、模型家族和采购倍率。同步只更新渠道资料。</p>
+<details id="feishu-config"><summary>飞书连接设置</summary><form id="feishu-form" autocomplete="off">
+<label>多维表格链接<input id="feishu-url" type="url" required maxlength="1000" placeholder="粘贴包含 table 参数的飞书表格链接"></label>
+<div class="two"><label>App ID<input id="feishu-app-id" required maxlength="128" placeholder="cli_…" spellcheck="false"></label>
+<label>App Secret<input id="feishu-secret" type="password" maxlength="4096" autocomplete="new-password" spellcheck="false" placeholder="首次填写，之后留空保留"></label></div>
+<p class="hint">应用需要读取多维表格的权限，并加入这张表的协作者。知识库链接还需读取知识库节点。App Secret 加密保存，保存后不回显。</p>
+<button id="feishu-save" type="submit">保存连接设置</button></form></details>
+<div class="actions"><button id="feishu-sync" type="button" disabled>手动同步</button><button id="feishu-refresh" type="button" class="secondary">刷新同步状态</button><a id="feishu-source" target="_blank" rel="noopener noreferrer" hidden>打开来源表格</a></div>
+<p class="hint">已同步的记录改为下线、待确认或清空 Key 后，下次同步会停用对应渠道并保留历史。未读到的记录保留原状；手动录入的渠道不受影响。</p>
+<p id="feishu-status" class="status" role="status">正在读取连接设置…</p><p id="feishu-last-success" class="hint"></p><div id="feishu-issues" class="hint"></div></section>
 <div class="toolbar"><input id="search" type="search" placeholder="搜索名称、地址或分类" aria-label="搜索渠道"><select id="status-filter" aria-label="状态筛选"><option value="">全部渠道</option><option value="online">已上线</option><option value="recorded">已记录</option></select><button id="refresh" class="secondary">刷新</button><button id="add">新增已上线渠道</button></div>
 <section class="panel coverage-controls" aria-labelledby="coverage-heading"><h2 id="coverage-heading">常用模型覆盖</h2><p><a id="protocol-entry" href="/admission/protocol/" hidden>获取上游模型与检测协议</a></p>
 <p class="hint">厂商发布新模型时，手动获取上游清单。实测状态随测试结果更新，列表刷新不会请求上游。</p>

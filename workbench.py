@@ -11,6 +11,7 @@ from fastapi.staticfiles import StaticFiles
 
 from shared.access import install_access
 from shared.api import router
+from shared.feishu_channels import router as feishu_channels_router
 from shared.config import WEB_DIR
 from shared.registry import get_registry
 from shared.scheduler_lock import scheduler_lock
@@ -68,6 +69,7 @@ def create_app(mode: str | None = None):
     app = FastAPI(title="模型测试工作台", docs_url=None, redoc_url=None, openapi_url=None, lifespan=lifespan)
     install_access(app)
     app.include_router(router)
+    app.include_router(feishu_channels_router)
     app.include_router(model_coverage_router)
     app.include_router(monitor_internal.internal_router)
     app.include_router(token_usage_internal_router)
