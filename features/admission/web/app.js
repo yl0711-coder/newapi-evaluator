@@ -241,8 +241,8 @@ function sizeQueue() {
   const scrollTop = root.scrollTop, atEnd = scrollTop > 0 && root.scrollHeight - root.clientHeight - scrollTop <= 2;
   root.style.gridAutoRows = '';
   if (cards.length > 5) {
-    const height = Math.ceil(Math.max(...cards.map(card => card.getBoundingClientRect().height)));
-    root.style.gridAutoRows = `${height}px`;
+    const height = Math.ceil(Math.min(...cards.map(card => card.getBoundingClientRect().height)));
+    root.style.gridAutoRows = `minmax(${height}px,max-content)`;
     root.style.maxHeight = `${height * 5 + parseFloat(getComputedStyle(root).rowGap) * 4}px`;
   } else root.style.maxHeight = '';
   root.scrollTop = atEnd ? root.scrollHeight : scrollTop;

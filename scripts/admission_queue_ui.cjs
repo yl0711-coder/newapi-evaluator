@@ -422,16 +422,15 @@ async function run() {
     await page.setViewportSize({width, height:1000});
     await page.waitForFunction(() => {
       const root = document.getElementById('admission-queue');
-      const cards = [...root.querySelectorAll('article')];
-      const expected = cards.slice(0,5).reduce((sum, card) => sum + card.getBoundingClientRect().height, 0) + parseFloat(getComputedStyle(root).rowGap) * 4;
-      return Math.abs(root.clientHeight - expected) <= 2 && root.scrollHeight > root.clientHeight;
+      return root.style.maxHeight && root.scrollHeight > root.clientHeight;
     });
     const bounds = await page.locator('#admission-queue').evaluate(root => {
       root.scrollTop = 0;
       const end = root.getBoundingClientRect().bottom, cards = [...root.querySelectorAll('article')];
-      return {fifth:cards[4].getBoundingClientRect().bottom, sixth:cards[5].getBoundingClientRect().top, end};
+      const visible = cards.filter(card => {const bounds = card.getBoundingClientRect(); return bounds.top >= root.getBoundingClientRect().top - 1 && bounds.bottom <= end + 1;}).length;
+      return {visible, sixth:cards[5].getBoundingClientRect().top, end};
     });
-    assert.ok(bounds.fifth <= bounds.end + 2 && bounds.sixth > bounds.end, 'Only the first five cards fit in the queue');
+    assert.ok(bounds.visible > 0 && bounds.visible <= 5 && bounds.sixth > bounds.end, 'At most five complete cards fit in the queue');
     await page.locator('#admission-queue article').last().getByRole('button', {name:'查看进度', exact:true}).click();
     assert.ok(await page.locator('#admission-queue').evaluate(root => root.scrollTop > 0), 'Later task controls are reachable by scrolling');
     assert.equal(await page.evaluate(() => document.documentElement.scrollWidth > innerWidth + 2), false);
@@ -459,12 +458,14 @@ async function run() {
   await page.waitForFunction(() => document.querySelectorAll('#admission-queue article').length === 27);
   for (const width of [1440, 390]) {
     await page.setViewportSize({width, height:1000});
-    await page.waitForFunction(() => {
-      const root = document.getElementById('admission-queue'), cards = [...root.querySelectorAll('article')];
-      const height = cards[0].getBoundingClientRect().height;
-      return cards.every(card => Math.abs(card.getBoundingClientRect().height - height) < 1)
-        && Math.abs(root.clientHeight - height * 5 - parseFloat(getComputedStyle(root).rowGap) * 4) <= 2;
+    await page.evaluate(() => new Promise(resolve => requestAnimationFrame(() => requestAnimationFrame(resolve))));
+    const geometry = await page.locator('#admission-queue').evaluate(root => {
+      const heights = [...root.querySelectorAll('article')].map(card => card.getBoundingClientRect().height);
+      return {queueHeight:root.clientHeight, minimumCardHeight:Math.min(...heights), maximumCardHeight:Math.max(...heights)};
     });
+    assert.ok(geometry.maximumCardHeight - geometry.minimumCardHeight > 24, 'Long names do not inflate the shorter task cards');
+    assert.ok(geometry.queueHeight < geometry.maximumCardHeight * 5, 'A long task does not expand every queue row');
+    screenshotAudits.push({scene:'variable_height_queue', width, ...geometry});
     for (const position of ['top', 'middle', 'bottom']) {
       const visible = await page.locator('#admission-queue').evaluate((root, position) => {
         root.scrollTop = position === 'top' ? 0 : position === 'middle' ? (root.scrollHeight - root.clientHeight) / 2 : root.scrollHeight;
