@@ -1,6 +1,6 @@
 # 模型测试工作台
 
-一份公共渠道库，六个可分别运行的测试工具：准入快测、定时稳定性测试、非流式回答测试、中转站极限测试、请求特征诊断和生图模型质量测试。
+一份公共渠道库，七个可分别运行的测试工具：准入快测、定时稳定性测试、非流式回答测试、中转站极限测试、请求特征诊断、生图模型质量测试和火山新 Key 验收。
 
 ## 启动
 
@@ -18,7 +18,7 @@ python3 -m venv .venv
 
 | 命令 | 地址 | 功能 |
 | --- | --- | --- |
-| `python run.py` | 8090 | 工作台与六个工具 |
+| `python run.py` | 8090 | 工作台与七个工具 |
 | `python run.py --app admission` | 8091 | 公共渠道与准入测试 |
 | `python run.py --app stability` | 8092 | 公共渠道与定时测试 |
 | `python run.py --app reasoning` | 8093 | 公共渠道与非流式测试 |
@@ -26,6 +26,7 @@ python3 -m venv .venv
 | `python run.py --app capacity` | 8095 | 中转站极限测试 |
 | `python run.py --app diagnosis` | 8096 | 请求特征诊断；需设置仓库外 PLATFORM_DATA_DIR |
 | `python run.py --app image-quality` | 8097 | 生图模型质量测试 |
+| `python run.py --app volcengine-admission` | 8099 | 火山新 Key 一次性验收 |
 
 单独启动准入或非流式工具时，不启动定时调度器。相同数据目录只允许一个调度器实例；同时启动工作台和独立定时工具会明确拒绝第二个实例。
 
@@ -77,6 +78,12 @@ python3 -m venv .venv
 
 从工作台导航进入 `/image-quality/`，手动填写 Base URL、临时 Key 和提示词。每次确认后请求 `gpt-image-2`，可并排查看本轮图片、人工评分、下载去元数据 PNG 和脱敏指标。此模块不读取公共渠道凭据、不创建计划，也不保存后端历史；刷新清空本轮样本。返回模型字段只是上游自报，不能据此认证模型身份。详见 [子项目说明](features/image_quality/README.md) 和 [开发验收清单](docs/image-quality-testing.md)。
 
+## 火山新 Key 一次性验收
+
+进入 `/volcengine-admission/`，先做不会创建生成任务的只读鉴权检查，再选择型号和规格、预览费用并确认一次生成。默认选择 6 款，另有 5 款存量兼容型号；按默认最低规格刊例价估算分别为 7.1784 元和全选 8.07112 元，实际账单未核实。每款仅生成一张图片或一条视频，结果含本地样片和可下载报告；单次通过仅证明本次规格可用，不能证明 Key 来源或全部权限。
+
+默认 Mock。真实模式固定方舟北京官方端点，Key 只留进程内存、提交后清空输入框。视频异步任务停止或重启后，补原 Key 只查询已有 task ID；未知提交不重发，未发送项不补发。详见 [功能与接口](features/volcengine_admission/README.md) 和 [测试清单](docs/volcengine-admission-testing.md)。
+
 ## 数据
 
 ```text
@@ -94,6 +101,9 @@ data/
     diagnosis.db          请求特征案例、计划快照和测量指标，不含请求/响应正文
   token-usage/
     token-usage.db        可信参照、半小时配置、双端请求许可及 Monitor 结果事件，不含 API Key 或正文
+  volcengine-admission/
+    admission.db          一次性验收的脱敏任务、视频 task ID 与报告，不含 Key、提示词或签名链接
+    media/                本地样片，通过工作台鉴权后查看和下载
 ```
 
 `PLATFORM_DATA_DIR` 可指定其他数据目录；准入、定时和非流式工具使用相同值即可共享公共渠道。极限测试共用工作台的登录和进程，但不会自动读取公共渠道密钥。定时目标只引用公共渠道 ID，执行时读取最新地址和密钥。停用公共渠道会阻止后续使用；已发出的请求不被强制中断。模型名、协议、频率、轮次归各测试任务配置，导入模板模型名不会写入公共渠道资料。公共渠道页面另维护常用模型目录和精确映射，通过人工获取更新上游清单；实测状态复用定时测试结果。

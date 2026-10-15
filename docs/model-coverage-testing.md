@@ -12,6 +12,6 @@
 | workbench-browser | node scripts/ui_smoke.cjs；既有八页面交互与宽窄屏回归 | 600s |
 | 其余继承组 | admission-inspect、workbench-web、workbench-security、syntax、workbench-e2e、diagnosis-browser、diagnosis-inspect、image-inspect，及独立 legacy-acceptance | 见原清单 |
 
-共用模型更新采用[完整性测试清单](integrity-testing.md)的开发27组及独立28组，包含daily-checks-browser与两项容器验证。新增回归接入已有test_model_coverage.py、test_daily_checks.py及daily_checks_ui.cjs：单来源确认读取、自动鉴权回退、公共目录读取与添加、重复不覆盖、跨家族来源及减少/空列表/失败均只增不删、跨渠道凭据拒绝、失败保留、连接变化失效；已打开的每日页面刷新后保留当前选择，九类测试入口共用选项，并使用新ID实际发送每日Mock请求。protocol-browser验证目录与渠道声明合并后刷新仍保留，且请求量不增加。无依赖或启动配置变更，不发布镜像。极限测试仅由工作台common.js提供模型建议，不修改relay_lab引擎；工作台Python与E2E保留该子集回归。
+共用模型更新采用[完整性测试清单](integrity-testing.md)的开发29组及独立30组，包含daily-checks-browser、火山单次验收回归与容器验证。新增回归接入已有test_model_coverage.py、test_daily_checks.py及daily_checks_ui.cjs：单来源确认读取、自动鉴权回退、公共目录读取与添加、重复不覆盖、跨家族来源及减少/空列表/失败均只增不删、跨渠道凭据拒绝、失败保留、连接变化失效；已打开的每日页面刷新后保留当前选择，九类测试入口共用选项，并使用新ID实际发送每日Mock请求。protocol-browser验证目录与渠道声明合并后刷新仍保留，且请求量不增加。火山单次验收使用固定目录，不受共用模型新增影响。无依赖或启动配置变更，不发布镜像。极限测试仅由工作台common.js提供模型建议，不修改relay_lab引擎；工作台Python与E2E保留该子集回归。
 
 检查报告必须关联最终源码快照/提交，独立审查覆盖生产代码、测试、执行器新增注册与源文件扫描入口。测试通过不授权合并、push 或发布。

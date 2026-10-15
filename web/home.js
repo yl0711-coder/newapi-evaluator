@@ -7,6 +7,7 @@
     'integrity':'手动 HLwY / KBF 异步复核、官方账号白名单证据分析；结果仅作行为线索。',
     'protocol-admission':'获取上游模型列表，选择模型检测 Chat Completions、Responses 和 Claude Messages，查看各协议的支持情况。',
     'image-quality':'手动填写连接与提示词，固定请求 gpt-image-2，并排查看画面、人工评分和脱敏响应证据。',
+    'volcengine-admission':'一次性检查火山方舟新 Key，按所选图片和视频模型生成样片；先预览费用，查看权限、耗时与脱敏报告。',
     diagnosis:'根据 Token、耗时、HTTP 状态与流式标记生成合成请求，做小样本单因素对照并导出排查报告。',
     admission:'临时填写候选端，选择库中的参照端。首轮预热、同题成对评测，查看能力证据、相对速度与异常归因。',
     stability:'按指定时刻检查选中的模型端点，保存每轮结果，按需发送飞书通知。',

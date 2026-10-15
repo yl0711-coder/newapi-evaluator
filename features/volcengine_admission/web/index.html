@@ -1,0 +1,91 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width,initial-scale=1">
+  <title>火山新 Key 验收 · 模型测试工作台</title>
+  <link rel="stylesheet" href="/assets/common.css">
+  <link rel="stylesheet" href="assets/styles.css">
+  <script src="/assets/common.js" defer></script>
+  <script src="assets/app.js" defer></script>
+</head>
+<body>
+<main class="page">
+  <header>
+    <p class="eyebrow">VOLCENGINE ARK · 一次性验收</p>
+    <h1>火山新 Key 验收</h1>
+    <p>为新 Key 检查官方端点鉴权，选择图片与视频模型各生成一次样片，确认本次实际可用的型号。</p>
+    <p class="hint">默认使用 Mock 演示。真实验收会产生费用；鉴权成功和返回任务 ID 均不代表生成验收通过。</p>
+    <p id="capacity-status" class="hint" role="status">正在读取本地样片容量</p>
+  </header>
+
+  <section class="panel" aria-labelledby="connection-title">
+    <h2 id="connection-title">1. 连接与鉴权</h2>
+    <fieldset class="environment">
+      <legend>本次环境</legend>
+      <label class="check"><input type="radio" name="mode" value="mock" checked>Mock 演示 · 不调用火山</label>
+      <label class="check"><input type="radio" name="mode" value="live">真实火山 Key</label>
+    </fieldset>
+    <p class="hint">官方地址：<code id="official-host">加载中</code></p>
+    <label for="api-key">临时 API Key<input id="api-key" type="password" autocomplete="new-password" spellcheck="false" placeholder="真实验收时填写；提交后清空"></label>
+    <p class="hint">仅用于本次验收，不加入公共渠道、不保存到报告。服务重启后，继续查询已提交视频需重新填写原 Key。</p>
+    <label class="check"><input id="confirm-read" type="checkbox">确认向官方端点发送一次只读鉴权请求，不创建生成任务</label>
+    <div class="actions"><button id="check-auth" type="button">仅检查鉴权</button><span id="auth-status" role="status" aria-live="polite"></span></div>
+    <p class="hint">只读检查只验证任务列表端点的访问权限，不验证图片或视频模型生成权限。403、网络失败等结果不能单独判定 Key 为假。</p>
+    <details><summary>开通条件与验证范围</summary><div id="catalog-notes" class="hint"></div></details>
+  </section>
+
+  <form id="admission-form" autocomplete="off">
+    <section class="panel" aria-labelledby="models-title">
+      <div class="section-heading"><h2 id="models-title">2. 选择模型与规格</h2><button id="reset-models" type="button" class="secondary" disabled>恢复默认 6 款</button></div>
+      <p class="hint">每个型号本轮最多生成一次。默认使用最低价规格，可按需要调整清晰度、时长或图片尺寸；改变规格后须重新预览费用。</p>
+      <p id="catalog-status" role="status">正在加载模型</p>
+      <div id="current-models" class="model-grid"></div>
+      <details id="legacy-models" class="legacy-models">
+        <summary>补充 5 款存量兼容型号 <span id="legacy-count" class="badge">未选择</span></summary>
+        <p id="legacy-note" class="hint">已停止新购，需账号先前已开通；不会自动切换至新型号。</p>
+        <div id="legacy-model-list" class="model-grid"></div>
+      </details>
+      <label for="prompt" class="prompt-label">本轮提示词（可选）<textarea id="prompt" rows="3" maxlength="2000" placeholder="留空使用内置合成场景；仅用于本轮生成，不保存到报告"></textarea></label>
+      <div class="actions"><button id="preview" type="button" disabled>预览本次测试</button><span id="selection-summary" class="hint"></span></div>
+    </section>
+
+    <section id="preview-panel" class="panel" aria-labelledby="preview-title" hidden>
+      <h2 id="preview-title">3. 确认本次测试</h2>
+      <p id="preview-summary" class="budget" role="status"></p>
+      <div class="table-wrap" tabindex="0" role="region" aria-label="本次测试型号与估价">
+        <table><thead><tr><th>型号</th><th>本次规格</th><th>生成次数</th><th>估算费用</th></tr></thead><tbody id="preview-rows"></tbody></table>
+      </div>
+      <p class="hint">估价采用官方刊例价，未计免费额度、折扣或资源包，不是扣费上限；实际费用以火山账单为准。视频任务可能在本地停止后继续执行并计费。</p>
+      <div id="preview-notes" class="hint"></div>
+      <label class="check"><input id="confirm-live" type="checkbox">我已核对型号、规格和估价，确认发起本轮真实生成并承担实际费用</label>
+      <div class="actions"><button id="execute" type="submit" disabled>执行一次验收</button><span id="execute-status" role="status" aria-live="polite"></span></div>
+    </section>
+  </form>
+
+  <section class="panel" aria-labelledby="history-title">
+    <div class="section-heading"><h2 id="history-title">本轮与历史验收</h2><button id="refresh-runs" type="button" class="secondary">刷新记录</button></div>
+    <p class="hint">关闭页面后后台继续。历史只保存脱敏状态、技术指标及样片；未知提交结果不会自动重发。</p>
+    <p id="history-status" role="status"></p><div id="runs" class="run-list"></div>
+  </section>
+
+  <section id="run-detail" class="panel" aria-labelledby="run-title" hidden>
+    <div class="section-heading"><h2 id="run-title">验收结果</h2><span id="run-status" class="badge"></span></div>
+    <p id="run-summary"></p><p id="run-settling" class="hint" role="status" hidden>当前请求收尾中，完成后会自动更新结果；暂时不能继续查询。</p><p id="run-id" class="hint"></p>
+    <div class="actions"><button id="stop-run" type="button" class="secondary">停止本地发送与等待</button><a id="download-report" class="button secondary" download>下载脱敏 JSON 报告</a></div>
+    <p class="hint">本地停止不会取消上游任务。视频须完成生成并保存样片才会通过；仅获得 task ID 表示已提交。</p>
+    <div id="cleanup-controls" hidden>
+      <label class="check"><input id="confirm-cleanup" type="checkbox">仅清理本记录的本地样片，保留报告、检测指标及上游任务</label>
+      <button id="cleanup-media" type="button" class="secondary" disabled>清理本记录样片</button>
+    </div>
+    <div id="resume-controls" hidden>
+      <label class="check"><input id="confirm-resume" type="checkbox">确认使用上方填写的原 Key，只查询已提交的视频任务，不重新生成</label>
+      <button id="resume-run" type="button" class="secondary" disabled>继续查询已提交视频</button>
+    </div>
+    <div id="run-notes" class="hint"></div><div id="run-items" class="result-grid"></div>
+    <details class="technical"><summary>技术证据</summary><pre id="run-technical"></pre></details>
+  </section>
+  <p id="message" role="status" aria-live="polite"></p>
+</main>
+</body>
+</html>

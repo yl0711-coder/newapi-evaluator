@@ -124,6 +124,15 @@ class TestManifestTests(unittest.TestCase):
         self.assertIn("scripts/inspect_daily_checks.py", by_id["daily-checks-inspect"].command)
         self.assertIn("tests.test_daily_checks", by_id["workbench-python"].expected_modules)
 
+    def test_volcengine_contract_and_browser_are_required(self):
+        for plan in (admission, integrity):
+            by_id = {suite.suite_id: suite for suite in plan(sys.executable, OUTPUT)}
+            self.assertIn("scripts/inspect_volcengine_admission.py", by_id["volcengine-admission-inspect"].command)
+            self.assertEqual(by_id["volcengine-admission-inspect"].timeout_seconds, 60)
+            self.assertIn("scripts/volcengine_admission_ui.cjs", by_id["volcengine-admission-browser"].command)
+            self.assertEqual(by_id["volcengine-admission-browser"].timeout_seconds, 300)
+            self.assertIn("tests.test_volcengine_admission", by_id["workbench-python"].expected_modules)
+
     def test_integrity_container_and_inspection_results_are_classified(self):
         from scripts.verify_image_quality import classify
         from scripts.verify_diagnosis import classify as domain_classify

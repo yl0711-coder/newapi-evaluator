@@ -10,7 +10,9 @@
 
 清单只描述测试，不读取业务数据库、不加载凭据、不发真实请求。以下 `python` 指仓库支持的 Python 3.10+ 解释器；实际测试环境按候选版本安装 `requirements.txt`。查看清单使用：
 
-`integrity` 登记每日报告的 `daily-checks-inspect`（60秒）与 `daily-checks-browser`（180秒），`tests.test_daily_checks` 进入 Python 必需模块门禁。开发27组、独立28组；原报告和消费者回归仍全部执行。每日浏览器使用自有回环模型服务与合成飞书传输，不读真实渠道或发送外部通知。
+`integrity` 登记每日报告的 `daily-checks-inspect`（60秒）与 `daily-checks-browser`（180秒），`tests.test_daily_checks` 进入 Python 必需模块门禁。开发29组、独立30组；原报告和消费者回归仍全部执行。每日浏览器使用自有回环模型服务与合成飞书传输，不读真实渠道或发送外部通知。
+
+`admission` 及 `integrity` 登记火山单次验收的 `volcengine-admission-inspect`（60秒）与 `volcengine-admission-browser`（300秒），并要求非零收集 `tests.test_volcengine_admission`。只读检查输出固定11型号、规格和价格合同，零凭据/数据库/网络；浏览器使用隔离服务与合成传输，验证单次生成、媒体/报告、停止和只读恢复，不调用真实方舟接口。
 
 `admission` 及继承它的 `integrity` 还登记飞书渠道组：`feishu-channels-inspect` 执行 `scripts/inspect_feishu_channels.py`（60 秒、零请求）；`feishu-channels-browser` 执行 `scripts/feishu_channels_ui.cjs`（180 秒）。`tests.test_feishu_channels` 纳入 Python 收集门禁，覆盖筛选、加密、幂等、换 Key、下线、分页失败、配置变更和并发取消。浏览器使用独立本地服务，仅将飞书 HTTP 传输替换为合成响应，实际经过设置、读取、持久化和渠道展示。
 

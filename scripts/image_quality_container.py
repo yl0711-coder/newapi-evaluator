@@ -99,6 +99,14 @@ def main():
             assert any(item["id"] == "image-quality" for item in features)
             assert b"image-form" in get("/image-quality/")
             if mode == "all":
+                assert any(item["id"] == "volcengine-admission" for item in features)
+                assert b"preview-panel" in get("/volcengine-admission/")
+                assert len(get("/volcengine-admission/assets/app.js")) > 100
+                ark = json.loads(get("/volcengine-admission/api/meta"))
+                assert ark["default_mode"] == "mock"
+                assert len(ark["catalog"]) == 11
+                assert sum(item["default_selected"] for item in ark["catalog"]) == 6
+                assert json.loads(get("/volcengine-admission/api/runs"))["runs"] == []
                 assert any(item["id"] == "token-usage" for item in features)
                 assert len(get("/token-usage/")) > 100
                 assert len(get("/token-usage/app.js")) > 100

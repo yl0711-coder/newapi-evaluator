@@ -31,6 +31,7 @@ FEATURES = {
     "capacity": ("中转站极限测试", "features.capacity.api"),
     "diagnosis": ("请求特征诊断", "features.diagnosis.api"),
     "image-quality": ("生图模型质量测试", "features.image_quality.api"),
+    "volcengine-admission": ("火山新 Key 验收", "features.volcengine_admission.api"),
 }
 
 

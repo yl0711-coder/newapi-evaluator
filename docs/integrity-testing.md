@@ -2,10 +2,11 @@
 
 适用规则 `docs/ai-rules` v1.0。本功能属于工作台定时、准入及完整性模块，不改 `relay_lab` 共享引擎；实验室五模式继续纳入既有 E2E 和独立 legacy acceptance。环境、数据、日志、截图和证据使用仓外新目录，不加载业务 `.env`、渠道库、凭据或通知设置。上游源码核对不替代产品测试。
 
-统一入口：`python -B scripts/verify_integrity.py --output <新外置目录>`。独立验收在干净 detached 候选提交增加 `--sha <40位SHA>`，使用独立环境与新数据。`PLAYWRIGHT_MODULE`、`PLAYWRIGHT_BROWSERS_PATH`、`EVAL_TEST_ARTIFACT_ROOT` 和 `TMPDIR` 显式指向仓外；执行器设置 `PYTHON_EXECUTABLE`。执行器保留收集数、退出码、前后源码指纹及首次失败，实施逐组时限和总预算，失败优先汇总。开发27组、3000秒；独立28组、4200秒。输入 Token 与服务器准入队列的合同见 [功能和接口](token-usage-queue.md)，四批报告见 [每日检测合同](../features/daily_checks/README.md)。
+统一入口：`python -B scripts/verify_integrity.py --output <新外置目录>`。独立验收在干净 detached 候选提交增加 `--sha <40位SHA>`，使用独立环境与新数据。`PLAYWRIGHT_MODULE`、`PLAYWRIGHT_BROWSERS_PATH`、`EVAL_TEST_ARTIFACT_ROOT` 和 `TMPDIR` 显式指向仓外；执行器设置 `PYTHON_EXECUTABLE`。执行器保留收集数、退出码、前后源码指纹及首次失败，实施逐组时限和总预算，失败优先汇总。开发29组、3000秒；独立30组、4200秒。输入 Token 与服务器准入队列的合同见 [功能和接口](token-usage-queue.md)，四批报告见 [每日检测合同](../features/daily_checks/README.md)，火山单次验收见 [专项清单](volcengine-admission-testing.md)。
 
 | suite_id | 入口 | 验证与时限 |
 | --- | --- | --- |
+| volcengine-admission-inspect / volcengine-admission-browser | `scripts/inspect_volcengine_admission.py` / `scripts/volcengine_admission_ui.cjs` | 11 型号及默认6款、价格与规格、一次提交、样片/报告、确认及只读恢复、390/900/1440布局；60/300秒 |
 | daily-checks-inspect / daily-checks-browser | `scripts/inspect_daily_checks.py` / `scripts/daily_checks_ui.cjs` | 四时段零发送检查，单来源模型获取、公共登记/手填/重复/失败保留、九类入口复用、新ID实际每日请求、配置确认、报告、飞书分片、导出及窄屏；60/180秒 |
 | feishu-channels-inspect / feishu-channels-browser | `scripts/inspect_feishu_channels.py` / `scripts/feishu_channels_ui.cjs` | 只读合同检查及合成飞书的设置、筛选、同步、换 Key、下线与失败保留；60/180 秒 |
 | protocol-inspect / admission-inspect / diagnosis-inspect / image-inspect / model-coverage-inspect | 清单对应 inspect CLI | 零发送、脱敏配置；各60秒 |
@@ -22,7 +23,7 @@
 | protocol-browser / diagnosis-browser / model-coverage-browser / monitor-control-browser | 清单对应 `.cjs` | 实际HTTP、旧HMAC、控制面与覆盖兼容；各300秒 |
 | integrity-browser | `scripts/integrity_ui.cjs` | 三项首测、主动Canary完整193请求、显式参照、取消恢复、导出、重载、HLwY/KBF及账号离线；600秒 |
 | integrity-timetable-browser | `scripts/integrity_timetable_ui.cjs` | v3同步网格、双空、默认整点/半点48轮及288首次请求、恢复默认、六轮36独立请求、零Canary、历史名称倍率、结论及筛选导出、合成演示与窄屏；600秒 |
-| build-container | `scripts/image_quality_container.py --output` | 当前镜像all/image-quality健康、完整性页面/API、主动默认off、定时状态、离线零出站，自有容器精确清理；900秒 |
+| build-container | `scripts/image_quality_container.py --output` | 当前镜像all/image-quality健康、火山11型号及空历史、完整性页面/API、主动默认off、定时状态、离线零出站，自有容器精确清理；900秒 |
 | legacy-acceptance | `scripts/acceptance.py --sha --output` | 仅独立干净SHA，既有实验室全量、持续与混合负载；1200秒 |
 
 ## 定时采样与结论

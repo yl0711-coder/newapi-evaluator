@@ -620,7 +620,7 @@ class IntegrationTests(unittest.IsolatedAsyncioTestCase):
             self.assertEqual(response.status_code,403)
 
     async def test_each_mode_has_only_its_feature_and_same_registry(self):
-        for mode in ("channels","admission","reasoning","stability","capacity","diagnosis","image-quality"):
+        for mode in ("channels","admission","reasoning","stability","capacity","diagnosis","image-quality","volcengine-admission"):
             app = create_app(mode)
             async with app.router.lifespan_context(app):
                 async with httpx.AsyncClient(transport=httpx.ASGITransport(app=app),base_url="http://testserver") as client:
@@ -634,6 +634,14 @@ class IntegrationTests(unittest.IsolatedAsyncioTestCase):
                     self.assertEqual([f["id"] for f in data["features"]], expected)
                     self.assertEqual((await client.get("/integrity/")).status_code, 200 if mode == "stability" else 404)
                     self.assertEqual((await client.get("/daily-checks/")).status_code, 200 if mode == "stability" else 404)
+                    self.assertEqual((await client.get("/volcengine-admission/")).status_code, 200 if mode == "volcengine-admission" else 404)
+                    if mode == "volcengine-admission":
+                        metadata = (await client.get("/volcengine-admission/api/meta")).json()
+                        self.assertEqual(len(metadata["catalog"]), 11)
+                        self.assertEqual(sum(model["default_selected"] for model in metadata["catalog"]), 6)
+                        self.assertEqual(metadata["official_base_url"], "https://ark.cn-beijing.volces.com/api/v3")
+                        self.assertEqual((await client.get("/volcengine-admission/assets/app.js")).status_code, 200)
+                        self.assertEqual((await client.get("/volcengine-admission/assets/styles.css")).status_code, 200)
                     if mode == "stability":
                         daily = (await client.get("/api/daily-checks/meta")).json()
                         self.assertFalse(daily["plan"]["enabled"])
@@ -659,7 +667,7 @@ class IntegrationTests(unittest.IsolatedAsyncioTestCase):
             response = await self.client.get("/api/health")
             self.assertEqual(response.json()["status"],"ok")
             self.assertEqual(response.json()["features"],
-                             ["admission", "stability", "reasoning", "capacity", "diagnosis", "image-quality"])
+                             ["admission", "stability", "reasoning", "capacity", "diagnosis", "image-quality", "volcengine-admission"])
             platform = (await self.client.get("/api/platform")).json()
             self.assertEqual([item["id"] for item in platform["features"]], ["protocol-admission", *response.json()["features"], "integrity", "daily-checks", "token-usage"])
             for feature in platform["features"]:

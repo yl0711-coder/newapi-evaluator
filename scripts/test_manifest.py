@@ -47,6 +47,8 @@ def _validate(suites: Sequence[SuiteSpec]) -> list[SuiteSpec]:
 def admission(python: str, output: Path, *, sha: str | None = None) -> list[SuiteSpec]:
     """Return the registered admission/workbench verification suites."""
     suites = [
+        SuiteSpec("volcengine-admission-inspect", _python(python, "scripts/inspect_volcengine_admission.py"), 60, "inspect"),
+        SuiteSpec("volcengine-admission-browser", ("node", "scripts/volcengine_admission_ui.cjs"), 300, "browser"),
         SuiteSpec("feishu-channels-inspect", _python(python, "scripts/inspect_feishu_channels.py"), 60, "inspect"),
         SuiteSpec("feishu-channels-browser", ("node", "scripts/feishu_channels_ui.cjs"), 180, "browser"),
         SuiteSpec("token-usage-inspect", _python(python, "-m", "features.token_usage", "inspect-config"), 60, "inspect"),
@@ -61,6 +63,7 @@ def admission(python: str, output: Path, *, sha: str | None = None) -> list[Suit
             "tests.test_admission_queue", "tests.test_admission_reporting", "tests.test_unified_integrity",
             "tests.test_feishu_channels",
             "tests.test_daily_checks",
+            "tests.test_volcengine_admission",
         )),
         SuiteSpec("workbench-web", ("node", "scripts/test_web.js"), 120, "web"),
         SuiteSpec("workbench-security", _python(python, "scripts/repo_security_scan.py", "."), 120, "security"),
