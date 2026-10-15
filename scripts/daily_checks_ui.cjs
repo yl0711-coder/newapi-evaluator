@@ -33,10 +33,72 @@ const watchdog=setTimeout(()=>{failure=failure || new Error('Daily browser budge
   assert.equal((await state()).mockRequests,0);assert.equal((await state()).notifications,0);
   await page.locator('#gpt-model').selectOption('gpt-6-astra');await page.locator('#claude-model').selectOption('claude-opus-4.7');
   await page.locator('#gpt-reference').selectOption({label:'Synthetic reference · #3'});await page.locator('#claude-reference').selectOption({label:'Synthetic reference · #3'});
+  const manager=await browser.newPage({viewport:{width:1440,height:1000}});manager.on('pageerror',e=>errors.push(e.name));
+  await manager.goto(base+'/channels/#shared-models');
+  await manager.locator('#model-source').selectOption('3');await manager.locator('#source-fetch').click();
+  await manager.locator('#fetch-submit').click();assert.deepEqual((await state()).modelReads,[],'Unconfirmed fetch sends nothing');
+  await manager.locator('#fetch-confirm').check();await manager.locator('#fetch-submit').click();
+  await manager.locator('#fetch-dialog').waitFor({state:'hidden'});
+  await manager.getByRole('button',{name:'加入 gpt-synthetic-next',exact:true}).waitFor();
+  assert.deepEqual((await state()).modelReads,[3],'Only the chosen source is read');
+  for(const [model,protocol] of [['gpt-synthetic-next','responses'],['claude-synthetic-next','anthropic']]){
+    await manager.getByRole('button',{name:'加入 '+model,exact:true}).click();
+    await manager.locator('#catalog-protocol').selectOption(protocol);await manager.locator('#catalog-submit').click();
+    await manager.locator('#catalog-dialog').waitFor({state:'hidden'});
+    await manager.locator(`[data-shared-model="${model}"]`).waitFor();
+  }
+  await manager.locator('#catalog-add').click();await manager.locator('#catalog-model').fill('custom-synthetic');
+  await manager.locator('#catalog-label').fill('Synthetic custom');await manager.locator('#catalog-submit').click();
+  await manager.locator('#catalog-dialog').waitFor({state:'hidden'});
+  await manager.locator('[data-shared-model="custom-synthetic"]').waitFor();
+  await manager.locator('#catalog-add').click();await manager.locator('#catalog-model').fill('gpt-synthetic-next');
+  await manager.locator('#catalog-label').fill('Synthetic duplicate');await manager.locator('#catalog-submit').click();
+  await manager.waitForFunction(()=>document.querySelector('#catalog-error').textContent.includes('已存在'));
+  await manager.locator('[data-coverage-close="catalog-dialog"]').click();
+  await fetch(base+'/fixture/fail-models',{method:'POST'});
+  await manager.locator('#source-fetch').click();await manager.locator('#fetch-confirm').check();await manager.locator('#fetch-submit').click();
+  await manager.locator('#fetch-dialog').waitFor({state:'hidden'});
+  await manager.getByRole('button',{name:'加入 provider/custom-synthetic',exact:true}).waitFor();
+  assert.deepEqual((await state()).modelReads,[3,3]);assert.equal((await state()).mockRequests,0);assert.equal((await state()).notifications,0);
+  for(const width of [390,900,1440]){
+    await manager.setViewportSize({width,height:1000});assert.equal(await manager.evaluate(()=>document.documentElement.scrollWidth>innerWidth+2),false);
+    await manager.screenshot({path:path.join(data,`shared-models-${width}.png`),fullPage:true});
+    await manager.locator('#shared-models').screenshot({path:path.join(data,`shared-models-section-${width}.png`)});
+  }
+  await page.locator('#refresh-models').click();await page.getByText('共用模型选项已更新，当前配置已保留。',{exact:true}).waitFor();
+  assert.equal(await page.locator('#gpt-model').inputValue(),'gpt-6-astra');assert.equal(await page.locator('#gpt-reference').inputValue(),'3');
+  assert.equal(await page.locator('#claude-model').inputValue(),'claude-opus-4.7');assert.equal(await page.locator('#claude-reference').inputValue(),'3');
+  await page.locator('#gpt-model').selectOption('gpt-synthetic-next');await page.locator('#claude-model').selectOption('claude-synthetic-next');
+  const consumer=await browser.newPage();consumer.on('pageerror',e=>errors.push(e.name));
+  for(const [url,input,list,model,protocol] of [
+    ['/admission/','candidate-model','candidate-model-models','gpt-synthetic-next','candidate-protocol'],
+    ['/reasoning/','model','model-models','claude-synthetic-next','protocol'],
+    ['/stability/','channel-model','channel-model-models','custom-synthetic','channel-protocol']]){
+    await consumer.goto(base+url);await consumer.locator(`#${list} option[value="${model}"]`).waitFor({state:'attached'});
+    if(url!=='/stability/'){
+      await consumer.locator('#'+input).fill(model);await consumer.locator('#'+input).dispatchEvent('change');
+      assert.equal(await consumer.locator('#'+protocol).inputValue(),url==='/admission/'?'responses':'anthropic');
+    }
+  }
+  for(const url of ['/diagnosis/','/capacity/']){
+    await consumer.goto(base+url);await consumer.locator('#model-models option[value="custom-synthetic"]').waitFor({state:'attached'});
+  }
+  await consumer.goto(base+'/token-usage/');await consumer.locator('#model option[value="gpt-synthetic-next"]').waitFor({state:'attached'});
+  await consumer.locator('#model').selectOption('gpt-synthetic-next');assert.equal(await consumer.locator('#protocol').inputValue(),'responses');
+  await consumer.locator('#refresh-models').click();assert.equal(await consumer.locator('#model').inputValue(),'gpt-synthetic-next');
+  await consumer.goto(base+'/integrity/');await consumer.locator('#review-channel').selectOption('1');
+  await consumer.locator('#review-model').selectOption('gpt-synthetic-next');await consumer.locator('#refresh-models').click();
+  await consumer.waitForFunction(()=>!document.querySelector('#refresh-models').disabled);
+  assert.equal(await consumer.locator('#review-model').inputValue(),'gpt-synthetic-next');
+  await consumer.goto(base+'/admission/protocol/');await consumer.getByRole('checkbox',{name:'选择模型 gpt-synthetic-next',exact:true}).check();
+  await consumer.locator('#channel').selectOption('__all__');
+  await consumer.getByRole('checkbox',{name:'选择模型 gpt-synthetic-next',exact:true}).check();
+  assert.deepEqual((await state()).modelReads,[3,3]);assert.equal((await state()).mockRequests,0);
+  await consumer.close();await manager.close();
   await page.locator('#webhook').fill('https://open.feishu.cn/open-apis/bot/v2/hook/synthetic');await page.locator('#save-webhook').click();
   await page.getByText('Webhook 已保存，未发送通知。',{exact:true}).waitFor();assert.equal(await page.locator('#webhook').inputValue(),'');
-  assert.equal(await page.locator('#gpt-model').inputValue(),'gpt-6-astra');
-  assert.equal(await page.locator('#claude-model').inputValue(),'claude-opus-4.7');
+  assert.equal(await page.locator('#gpt-model').inputValue(),'gpt-synthetic-next');
+  assert.equal(await page.locator('#claude-model').inputValue(),'claude-synthetic-next');
   await page.locator('#trust-confirm').check();await page.locator('#save').click();
   await page.getByText('配置已保存，计划保持暂停。',{exact:true}).waitFor();
   assert.equal((await state()).mockRequests,0);assert.equal((await state()).notifications,0);
@@ -48,6 +110,7 @@ const watchdog=setTimeout(()=>{failure=failure || new Error('Daily browser budge
   await page.getByText('计划已启用，从下一轮开始检测。',{exact:true}).waitFor();
   assert.equal(await page.locator('#live-confirm').isChecked(),false);
   let result=await(await fetch(base+'/fixture/start',{method:'POST'})).json();assert.equal(result.mockRequests,10);assert.equal(result.notifications,0);
+  assert.deepEqual(result.requestedModels,['claude-synthetic-next','gpt-synthetic-next']);
   await page.locator('#refresh').click();await page.locator('#batches button').first().click();
   await page.waitForFunction(()=>document.querySelector('#report-rows').textContent.includes('固定输入双端用量未发现异常'));
   assert.equal(await page.locator('#report-rows article').count(),2);

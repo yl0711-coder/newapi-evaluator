@@ -6,7 +6,7 @@
 
 | suite_id | 入口 | 验证与时限 |
 | --- | --- | --- |
-| daily-checks-inspect / daily-checks-browser | `scripts/inspect_daily_checks.py` / `scripts/daily_checks_ui.cjs` | 四时段零发送检查，实际回环 HTTP 的配置确认、报告、飞书分片、导出及窄屏；60/180秒 |
+| daily-checks-inspect / daily-checks-browser | `scripts/inspect_daily_checks.py` / `scripts/daily_checks_ui.cjs` | 四时段零发送检查，单来源模型获取、公共登记/手填/重复/失败保留、九类入口复用、新ID实际每日请求、配置确认、报告、飞书分片、导出及窄屏；60/180秒 |
 | feishu-channels-inspect / feishu-channels-browser | `scripts/inspect_feishu_channels.py` / `scripts/feishu_channels_ui.cjs` | 只读合同检查及合成飞书的设置、筛选、同步、换 Key、下线与失败保留；60/180 秒 |
 | protocol-inspect / admission-inspect / diagnosis-inspect / image-inspect / model-coverage-inspect | 清单对应 inspect CLI | 零发送、脱敏配置；各60秒 |
 | token-usage-inspect | `python -m features.token_usage inspect-config` | 固定样本、预算、阈值、协议与半小时间隔，零发送；60秒 |

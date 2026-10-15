@@ -17,10 +17,16 @@
 .coverage-preview { max-height: 42vh; overflow: auto; overflow-wrap: anywhere; }
 .coverage-discovered { margin-top: 12px; }
 .coverage-discovered button { margin: 4px; max-width: 100%; overflow-wrap: anywhere; }
+.shared-model-scroll { max-height: 360px; overflow: auto; max-width: 100%; margin: 12px 0; }
+#shared-models { min-width: 0; scroll-margin-top: 20px; }
+#shared-models .toolbar { flex-wrap: wrap; }
+#shared-models select { max-width: 100%; min-width: 0; }
+#source-model-list button { white-space: normal; text-align: left; }
 .cards > .record { min-width: 0; }
 .cards > .record:has(.model-coverage[open]) { grid-column: 1 / -1; }
 @media (max-width: 620px) {
   .coverage-controls .toolbar { display: grid; grid-template-columns: minmax(0,1fr); }
   .coverage-controls .actions > button { flex: 1 1 42%; }
   .coverage-controls input, .coverage-controls select { min-width: 0; max-width: 100%; }
+  #shared-models .toolbar { display: grid; grid-template-columns: minmax(0,1fr); }
 }

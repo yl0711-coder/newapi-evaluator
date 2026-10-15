@@ -21,6 +21,8 @@ from workbench import create_app
 port = int(sys.argv[1])
 upstream = Upstream()
 notifications = []
+model_reads = []
+fail_models = False
 today = datetime.now(ZoneInfo("Asia/Shanghai")) + timedelta(days=1)
 now = today.replace(hour=9, minute=29, second=0, microsecond=0).timestamp()
 time.time = lambda: now
@@ -45,6 +47,16 @@ async def notify(request):
 daily.notification_transport = httpx.MockTransport(notify)
 
 
+@app.get("/mock/v1/models")
+async def models(request: Request):
+    credential=request.headers.get("x-api-key") or request.headers.get("authorization", "").removeprefix("Bearer ")
+    source=next((c["id"] for c in registry.list() if registry.get(c["id"],secret=True)["api_key"]==credential),None)
+    model_reads.append(source)
+    if fail_models:
+        return Response(status_code=503)
+    return {"data":[{"id":m} for m in ("gpt-synthetic-next", "claude-synthetic-next", "provider/custom-synthetic")]}
+
+
 @app.post("/mock/v1/{endpoint:path}")
 async def model(endpoint: str, request: Request):
     body = await request.json()
@@ -56,12 +68,16 @@ async def model(endpoint: str, request: Request):
 @app.get("/fixture/state")
 async def state():
     return {"mockRequests": len(upstream.calls), "notifications": len(notifications),
+            "modelReads": model_reads, "requestedModels": sorted({c["model"] for c in upstream.calls}),
             "batches": [{"id": b["id"], "status": b["status"], "rows": daily.report(b["id"])["coverage"]} for b in daily.store.batches()]}
 
 
 @app.post("/fixture/{phase}")
 async def advance(phase: str):
-    global now
+    global now, fail_models
+    if phase == "fail-models":
+        fail_models = True
+        return await state()
     if phase not in {"start", "report", "second-start", "second-report"}:
         raise HTTPException(400, "Unknown synthetic phase")
     hour, minute = {"start": (9, 30), "report": (10, 30), "second-start": (13, 0), "second-report": (14, 0)}[phase]

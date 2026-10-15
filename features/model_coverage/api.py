@@ -33,7 +33,7 @@ class MappingInput(Input):
 
 
 class FetchInput(Input):
-    auth_kind: Literal["openai", "anthropic"] = "openai"
+    auth_kind: Literal["auto", "openai", "anthropic"] = "openai"
     confirm_live: Literal[True]
 
 
@@ -149,6 +149,11 @@ async def workflow_event(body: WorkflowEventInput):
         raise HTTPException(409, str(exc)) from exc
     except RegistryError as exc:
         raise HTTPException(400, str(exc)) from exc
+
+
+@router.get("/models")
+async def models():
+    return {"models": Catalog(get_registry()).models()}
 
 
 @router.post("/models")

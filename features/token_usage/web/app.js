@@ -59,6 +59,19 @@
     } finally { refreshing = false; }
   }
   async function action(fn) { try { await fn(); } catch(error) { message(error.message); } }
+  async function loadModels(preserve=false) {
+    const meta=await api('/meta');models=meta.models;channels=meta.channels;
+    const current=$('model').value;
+    $('model').replaceChildren(...models.map(m=>new Option(m.model,m.model)));
+    if(preserve) $('model').value=current;
+    else $('protocol').value=models[0]?.protocol || 'openai';
+    for(const id of ['reference','candidate']) {
+      const chosen=$(id).value;
+      $(id).replaceChildren(new Option('请选择渠道',''),...channels.filter(c=>c.enabled && c.credential_status==='available').map(c=>new Option(c.name+' · #'+c.id,c.id)));
+      if(preserve) $(id).value=chosen;
+    }
+  }
+  $('refresh-models').addEventListener('click',()=>action(async()=>{await loadModels(true);message('共用模型选项已更新，当前选择已保留。');}));
   $('model').addEventListener('change', () => { $('protocol').value = models.find(m => m.model === $('model').value)?.protocol || 'openai'; $('trusted').checked = false; });
   $('save-binding').addEventListener('click', () => action(async () => {
     await api('/bindings',{model:$('model').value,protocol:$('protocol').value,reference_channel_id:Number($('reference').value),confirm_trusted:$('trusted').checked,threshold_config:{minor_ratio:Number($('minor-ratio').value),minor_difference:Number($('minor-difference').value)}});
@@ -69,10 +82,7 @@
   $('manualcheck').addEventListener('click', () => action(async () => { if(!activeEnabled) throw new Error('主动执行未启用，请先启用后再发起测试');await api('/manualcheck',{...selected(),confirm_live:$('confirm').checked,idempotency_key:Workbench.requestId()});$('confirm').checked=false;message('测试已入队，等待实际执行');await refresh(); }));
   $('refresh').addEventListener('click', () => action(refresh));
   action(async () => {
-    const meta=await api('/meta');models=meta.models;channels=meta.channels;
-    $('model').replaceChildren(...models.map(m=>new Option(m.model,m.model)));
-    $('protocol').value=models[0]?.protocol || 'openai';
-    for(const id of ['reference','candidate']) $(id).replaceChildren(new Option('请选择渠道',''),...channels.filter(c=>c.enabled && c.credential_status==='available').map(c=>new Option(c.name+' · #'+c.id,c.id)));
+    await loadModels();
     await refresh();
   });
   const timer=setInterval(() => { if(document.visibilityState === 'visible' && Date.now()-lastAttempt >= (polling ? 1000 : 15000)) action(refresh); },1000);

@@ -7,7 +7,7 @@
 <tr><td>09:30</td><td>10:30</td></tr><tr><td>13:00</td><td>14:00</td></tr><tr><td>14:30</td><td>15:30</td></tr><tr><td>17:00</td><td>18:00</td></tr>
 </tbody></table></div><p>每轮开始时选择公共渠道库中“已上线、启用且有可用 apikey”的渠道。表格更新后，先在<a href="/channels/">公共渠道</a>点击手动同步。模型家族 codex 归入 GPT；未识别家族、缺配置或缺参照会列入报告。</p>
 <p>提前完成会等到报告时刻；到时停止余下请求并发送已有结果。服务中断期间可能延迟送达，未确认请求不会自动重发。</p><p id="plan-status" role="status"></p></section>
-<section class="card"><h2>测试模型与可信参照</h2><form id="plan-form"><div class="families">
+<section class="card"><h2>测试模型与可信参照</h2><p>型号来自 Eval 共用列表。在<a href="/channels/#shared-models" target="_blank" rel="noopener noreferrer">管理共用模型</a>中选一个渠道获取新型号，或手动添加，再返回此处刷新选项。</p><button id="refresh-models" type="button" class="secondary">刷新模型选项</button><form id="plan-form"><div class="families">
 <fieldset><legend>GPT / codex</legend><label>确切模型 ID<select id="gpt-model"><option value="">暂不配置</option></select></label><label>协议<select id="gpt-protocol"><option value="responses">Responses</option><option value="openai">Chat Completions</option></select></label><label>可信参照渠道<select id="gpt-reference"></select></label></fieldset>
 <fieldset><legend>Claude</legend><label>确切模型 ID<select id="claude-model"><option value="">暂不配置</option></select></label><label>协议<select id="claude-protocol"><option value="anthropic">Claude Messages</option><option value="openai">Chat Completions</option></select></label><label>可信参照渠道<select id="claude-reference"></select></label></fieldset></div>
 <p>用量对照复用 <a href="/token-usage/">Token 监控</a>的可信绑定。候选与参照必须使用相同模型及协议；可信参照本身不做自对照。ModelTrace 普通 API 行为比较未校准，不能认证模型身份。少量失败样本或缺 usage 只能“无法判定”。</p>

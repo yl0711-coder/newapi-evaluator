@@ -14,13 +14,17 @@
   async function loadMeta(preserveForm=false) {
     meta = await api('/meta');
     reasons = meta.reasons;
-    if (!preserveForm) for (const [id,family] of [['gpt','GPT'],['claude','Claude']]) {
+    for (const [id,family] of [['gpt','GPT'],['claude','Claude']]) {
+      const current = $(id+'-model').value, reference = $(id+'-reference').value;
       $(id+'-model').replaceChildren(new Option('暂不配置',''));
       for (const model of meta.models.filter(m => m.test_families.includes(family))) $(id+'-model').append(new Option(model.model,model.model));
       $(id+'-reference').replaceChildren(new Option('请选择可信参照',''));
       for (const channel of meta.channels.filter(c => c.enabled && c.credential_status==='available')) $(id+'-reference').append(new Option(`${channel.name} · #${channel.id}`,channel.id));
-      const profile = meta.plan.profiles.find(p => p.family===family);
-      if (profile) { $(id+'-model').value=profile.model; $(id+'-protocol').value=profile.protocol; $(id+'-reference').value=profile.reference_channel_id; }
+      if (preserveForm) { $(id+'-model').value=current; $(id+'-reference').value=reference; }
+      else {
+        const profile = meta.plan.profiles.find(p => p.family===family);
+        if (profile) { $(id+'-model').value=profile.model; $(id+'-protocol').value=profile.protocol; $(id+'-reference').value=profile.reference_channel_id; }
+      }
     }
     if (!preserveForm) $('notify-enabled').checked = meta.plan.notify;
     $('plan-status').textContent = meta.plan.enabled ? '计划已启用；保存之后的下一轮开始执行。' : '计划已暂停，尚未启用每日检测。';
@@ -78,6 +82,7 @@
   async function webhook(value){$('webhook').value='';try{await api('/notification',{method:'PUT',body:JSON.stringify({webhook:value})});await loadMeta(true);message(value?'Webhook 已保存，未发送通知。':'Webhook 已清除。');}catch(e){message(e.message);}}
   $('notification-form').addEventListener('submit',e=>{e.preventDefault();webhook($('webhook').value.trim());});$('clear-webhook').addEventListener('click',()=>webhook(''));
   $('refresh').addEventListener('click',refresh);
+  $('refresh-models').addEventListener('click',async()=>{try{await loadMeta(true);message('共用模型选项已更新，当前配置已保留。');}catch(e){message(e.message);}});
   $('cancel-batch').addEventListener('click',async()=>{const id=$('cancel-batch').dataset.batchId;try{await api('/batches/'+encodeURIComponent(id)+'/cancel',{method:'POST'});await refresh();}catch(e){message(e.message);}});
   for(const [id,format,ext] of [['download-json','json','json'],['download-markdown','markdown','md']]) $(id).addEventListener('click',async()=>{const batch=selected;if(!batch)return;try{const response=await fetch('/api/daily-checks/batches/'+encodeURIComponent(batch)+'/export?format='+format);if(!response.ok)throw new Error('报告下载失败');Workbench.download(await response.text(),batch+'.'+ext,format==='json'?'application/json':'text/markdown');}catch(e){message(e.message);}});
   $('retry-notification').addEventListener('click',async()=>{const id=$('retry-notification').dataset.batchId;try{await api('/batches/'+encodeURIComponent(id)+'/retry-notification',{method:'POST',body:JSON.stringify({confirm_notify:$('retry-confirm').checked})});$('retry-confirm').checked=false;await refresh();}catch(e){message(e.message);}});

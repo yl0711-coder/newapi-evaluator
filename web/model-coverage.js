@@ -2,13 +2,32 @@ window.ModelCoverage = (() => {
   const $ = id => document.getElementById(id), node = (...args) => Workbench.node(...args);
   const api = (path = '', body, method = 'POST') => Workbench.api('/api/model-coverage' + path, body ? {method, body:JSON.stringify(body)} : {});
   const selected = new Map(), expanded = new Set();
-  let data = {channels:[], models:[], schedules:[], rules:{}, production_coverage:{sources:[]}}, channels = [], fetchIds = [], mapping, enrollmentItems = [], verificationItems = [], preview;
+  let data = {channels:[], models:[], schedules:[], rules:{}, production_coverage:{sources:[]}}, channels = [], fetchId, mapping, enrollmentItems = [], verificationItems = [], preview;
   let previewGeneration = 0, refreshing = false, protocolAvailable = false;
   const availability = {listed:'已列出', not_listed:'未列出', unknown:'尚未获取', fetch_failed:'获取失败', connection_changed:'连接已变更'};
   const enrollment = {scheduled:'已加入计划', missing:'未接入', unscheduled:'待排期', paused:'已暂停'};
   const health = {stable:'稳定', observing:'可用，待观察', unstable:'不稳定', untested:'未测试', stale:'结果已过期', connection_changed:'连接变更，待重测'};
   const speed = {normal:'速度正常', slow:'速度缓慢', collecting:'速度基线采样中', disabled:'未评估速度', unknown:'速度数据不足', unavailable:'速度数据不足'};
   const time = value => value ? new Date(value * 1000).toLocaleString() : '尚无记录';
+  function renderSharedModels() {
+    const query = $('shared-model-search').value.trim().toLowerCase();
+    const models = data.models.filter(m => `${m.model} ${m.label} ${m.family}`.toLowerCase().includes(query));
+    $('shared-model-count').textContent = `共用模型 ${data.models.length} 个${query ? `，匹配 ${models.length} 个` : ''}`;
+    $('shared-model-list').replaceChildren(...models.map(model => {
+      const row = node('tr'); row.dataset.sharedModel = model.model;
+      for (const value of [model.model, model.label, model.family, model.protocol]) row.append(node('td', value));
+      return row;
+    }));
+    const source = channelData(Number($('model-source').value));
+    const known = new Set(data.models.map(m => m.model));
+    const candidates = (source?.discovered_models || []).filter(model => !known.has(model));
+    const matches = candidates.filter(model => model.toLowerCase().includes(query));
+    const discovery = source?.discovery;
+    $('source-model-status').textContent = !source ? '选择一个来源渠道，获取新增型号。' :
+      `上次成功：${time(discovery?.succeeded_at)}；可加入 ${candidates.length} 个新型号。${discovery?.error ? '最近获取未成功，保留连接匹配的上次清单。' : ''}${matches.length > 200 ? '当前显示前 200 个，请搜索缩小范围。' : ''}`;
+    $('source-model-list').replaceChildren(...matches.slice(0, 200).map(model => action('加入 ' + model, () => openCatalog(model))));
+    $('source-fetch').disabled = !source;
+  }
   function renderProduction() {
     const root = $('production-list'); root.replaceChildren();
     const sources = data.production_coverage?.sources || [];
@@ -67,15 +86,16 @@ window.ModelCoverage = (() => {
   function badge(value, style = '') { return node('span', value, 'coverage-state ' + style); }
   function openCatalog(model = '') {
     $('catalog-form').reset(); $('catalog-error').textContent = '';
-    $('catalog-model').value = $('catalog-label').value = model;
+    $('catalog-model').value = model; $('catalog-label').value = model.slice(0, 80);
     $('catalog-family').value = model.startsWith('claude-') ? 'Claude' : 'GPT';
     $('catalog-protocol').value = model === 'gpt-6-astra' ? 'responses' : model.startsWith('claude-') ? 'anthropic' : 'openai';
     $('catalog-dialog').showModal();
   }
-  function openFetch(ids) {
-    fetchIds = ids; $('fetch-form').reset(); $('fetch-error').textContent = '';
-    if (ids.length === 1) $('fetch-auth').value = channelData(ids[0])?.discovery?.auth_kind || 'openai';
-    $('fetch-description').textContent = `手动获取 ${ids.length} 个渠道的模型列表，使用各自已保存的凭据。`;
+  function openFetch(id) {
+    fetchId = id; $('model-source').value = String(id); renderSharedModels();
+    $('fetch-form').reset(); $('fetch-error').textContent = '';
+    $('fetch-auth').value = channelData(id)?.discovery?.auth_kind || 'auto';
+    $('fetch-description').textContent = `只获取 ${channels.find(c => c.id === id)?.name || '渠道'} · #${id} 的模型列表，使用已保存凭据。`;
     $('fetch-dialog').showModal();
   }
   function openMapping(item) {
@@ -110,6 +130,7 @@ window.ModelCoverage = (() => {
     onChange() {}, onRefresh:async () => {},
     async load() {
       data = await api();
+      renderSharedModels();
       renderProduction();
       await renderWorkflow();
       await renderMonitor();
@@ -118,7 +139,12 @@ window.ModelCoverage = (() => {
       counts();
     },
     setProtocolAvailable(value) { protocolAvailable = value; },
-    setChannels(value) { channels = value; $('fetch-all').disabled = !channels.some(c => c.enabled); },
+    setChannels(value) {
+      channels = value;
+      const current = $('model-source').value;
+      $('model-source').replaceChildren(new Option('请选择来源渠道', ''), ...channels.filter(c => c.enabled && c.credential_status === 'available').map(c => new Option(Workbench.label(c), c.id)));
+      $('model-source').value = current; renderSharedModels();
+    },
     matchesChannel(id) { return (channelData(id)?.models || []).some(matches) || (!data.models.length); },
     render(channel) {
       const info = channelData(channel.id), details = node('details', '', 'model-coverage');
@@ -130,7 +156,7 @@ window.ModelCoverage = (() => {
       details.open = expanded.has(channel.id) || Boolean($('coverage-filter').value || $('model-search').value.trim());
       details.addEventListener('toggle', () => details.open ? expanded.add(channel.id) : expanded.delete(channel.id));
       details.append(node('p', `凭据 ${channel.credential_status || 'unknown'} · 已上线状态由使用者定义；保存渠道不会自动测试`, 'hint'));
-      const fetch = action('获取模型', () => openFetch([channel.id])); fetch.disabled = !channel.enabled;
+      const fetch = action('获取模型', () => openFetch(channel.id)); fetch.disabled = !channel.enabled || channel.credential_status !== 'available';
       details.append(fetch, node('p', `上次成功获取：${time(info.discovery?.succeeded_at)}${info.discovery?.error ? ' · 最近获取失败或未完成，保留上次清单' : ''}`, 'hint'));
       const scroll = node('div', '', 'coverage-scroll'), table = node('table', '', 'coverage-table');
       const head = node('thead'), header = node('tr');
@@ -166,17 +192,14 @@ window.ModelCoverage = (() => {
         row.append(selectCell, label, upstream, plan, measurement, actions); body.append(row);
       }
       table.append(body); scroll.append(table); details.append(scroll);
-      if (info.new_models.length) {
-        const discovered = node('details', '', 'coverage-discovered'); discovered.append(node('summary', `其他已发现模型 ${info.new_models.length} 个`));
-        for (const model of info.new_models) discovered.append(action(model, () => openCatalog(model)));
-        details.append(discovered);
-      }
       return details;
     },
   };
   for (const id of ['model-search','coverage-filter']) $(id).addEventListener(id === 'model-search' ? 'input' : 'change', () => view.onChange());
   document.querySelectorAll('[data-coverage-close]').forEach(button => button.addEventListener('click', () => $(button.dataset.coverageClose).close()));
-  $('fetch-all').addEventListener('click', () => openFetch(channels.filter(c => c.enabled).map(c => c.id)));
+  $('model-source').addEventListener('change', renderSharedModels);
+  $('shared-model-search').addEventListener('input', renderSharedModels);
+  $('source-fetch').addEventListener('click', () => openFetch(Number($('model-source').value)));
   $('catalog-add').addEventListener('click', () => openCatalog());
   $('select-models').addEventListener('click', () => {
     const shown = new Set([...document.querySelectorAll('.model-coverage')].map(element => Number(element.dataset.channel)));
@@ -202,22 +225,20 @@ window.ModelCoverage = (() => {
     finally { $(id + '-submit').disabled = false; }
   }
   $('catalog-form').addEventListener('submit', event => {
-    event.preventDefault(); submit('catalog', () => api('/models', {model:$('catalog-model').value, label:$('catalog-label').value, family:$('catalog-family').value, protocol:$('catalog-protocol').value}));
+    event.preventDefault(); submit('catalog', async () => {
+      await api('/models', {model:$('catalog-model').value, label:$('catalog-label').value, family:$('catalog-family').value, protocol:$('catalog-protocol').value});
+      $('coverage-message').textContent = '已加入共用测试模型。各测试页面刷新模型选项后可选择，原计划未改变。';
+    });
   });
   $('mapping-form').addEventListener('submit', event => {
     event.preventDefault(); submit('mapping', () => api(`/channels/${mapping.channel_id}/models/${mapping.id}`, {upstream_model:$('mapping-model').value, protocol:$('mapping-protocol').value}, 'PUT'));
   });
   $('fetch-form').addEventListener('submit', event => {
     event.preventDefault(); if (!$('fetch-confirm').checked) return;
-    const ids = [...fetchIds], auth_kind = $('fetch-auth').value;
+    const id = fetchId, auth_kind = $('fetch-auth').value;
     submit('fetch', async () => {
-      let failed = 0;
-      for (let offset = 0; offset < ids.length; offset += 3) {
-        const batch = await Promise.allSettled(ids.slice(offset,offset+3).map(id => api(`/channels/${id}/fetch`, {auth_kind, confirm_live:true})));
-        failed += batch.filter(result => result.status === 'rejected' || !result.value.ok).length;
-        $('fetch-description').textContent = `已完成 ${Math.min(offset+3,ids.length)}/${ids.length}，失败 ${failed}。`;
-      }
-      $('coverage-message').textContent = `模型清单获取完成：成功 ${ids.length-failed}，失败 ${failed}。`;
+      const result = await api(`/channels/${id}/fetch`, {auth_kind, confirm_live:true});
+      $('coverage-message').textContent = result.ok ? `获取 ${result.models.length} 个型号，请在共用列表中选择新增型号加入。` : `获取失败（${result.error}），保留上次成功清单。`;
     });
   });
   $('enroll-form').addEventListener('submit', event => {

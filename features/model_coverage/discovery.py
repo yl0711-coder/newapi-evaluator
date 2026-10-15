@@ -84,6 +84,11 @@ async def fetch_models(registry, channel_id, auth_kind, transport=None):
     request_id = catalog.begin_fetch(channel_id, auth_kind)
     try:
         models, error = await request_models(channel["base_url"], channel["api_key"], auth_kind, transport)
+        if models is not None:
+            try:
+                catalog.reject_credentials(*models)
+            except RegistryError:
+                models, error = None, "invalid_list"
         if registry.connection_fingerprint(registry.get(channel_id, secret=True)) != fingerprint:
             models, error = None, "connection_changed"
         catalog.finish_fetch(channel_id, request_id, fingerprint, models, error)

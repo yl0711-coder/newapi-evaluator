@@ -4,6 +4,12 @@ const node = (...args) => Workbench.node(...args);
 const states = {passed:'通过', failed:'未通过', unconfirmed:'待确认', not_run:'未检测', running:'检测中', completed:'已完成', cancelled:'已停止', interrupted:'已中断'};
 let metadata, channels = [], preview = null, active = null, poll = null, generation = 0;
 const available = new Set(), selected = new Set();
+let sharedModels = [];
+async function loadSharedModels() {
+  const result = await Workbench.api('/api/model-coverage/models');
+  sharedModels = result.models.map(model => model.model);
+  sharedModels.forEach(model => available.add(model)); renderModels();
+}
 
 function connection() {
   return {channel_id:Number($('channel').value) || null, base_url:$('base-url').value.trim()};
@@ -36,16 +42,16 @@ function renderModels() {
     });
     label.prepend(checkbox); return label;
   }));
-  $('model-count').textContent = `列表共 ${available.size} 个模型，匹配 ${matches.length} 个${matches.length > 200 ? '，当前显示前 200 个，请搜索缩小范围' : ''}。列表名称仅为上游声明，尚未检测。`;
+  $('model-count').textContent = `列表共 ${available.size} 个模型，匹配 ${matches.length} 个${matches.length > 200 ? '，当前显示前 200 个，请搜索缩小范围' : ''}。含共用目录、当前渠道声明及手动添加的型号；不代表此渠道已实测支持。`;
   $('selection-count').textContent = `已选择 ${selected.size} 个${selected.size ? '：' + [...selected].join('、') : ''}`;
 }
 async function resetConnection() {
   const ticket = ++generation;
-  invalidate(); available.clear(); selected.clear(); renderModels();
+  invalidate(); available.clear(); sharedModels.forEach(model => available.add(model)); selected.clear(); renderModels();
   $('report').hidden = true; $('fetch-status').textContent = ''; $('confirm-live').checked = false;
   if (!$('channel').value) return;
   try {
-    if ($('channel').value === '__all__') { $('fetch-status').textContent = '将使用所有启用渠道；请手动填写本次新模型。'; return; }
+    if ($('channel').value === '__all__') { $('fetch-status').textContent = '将使用所有启用渠道；可选择共用模型或手动填写型号。'; return; }
     const value = await api('models?channel_id=' + $('channel').value);
     if (ticket !== generation) return;
     value.models.forEach(model => available.add(model)); renderModels();
@@ -119,7 +125,7 @@ $('fetch-models').addEventListener('click', async () => {
     const data = await api('models', {method:'POST', body:JSON.stringify(body)});
     if (ticket !== generation) return;
     if (!data.ok) throw new Error('模型列表获取失败（' + data.error + '），可手动输入模型继续检测。');
-    available.clear(); data.models.forEach(model => available.add(model));
+    available.clear(); sharedModels.forEach(model => available.add(model)); data.models.forEach(model => available.add(model));
     for (const model of selected) available.add(model);
     renderModels(); $('fetch-status').textContent = `${data.source === 'mock' ? 'Mock 演示列表' : '上游模型列表'}：${data.models.length} 个，尚未检测。`;
   } catch (e) { error(e); $('fetch-status').textContent = '本次获取失败，保留页面中原有模型。'; }
@@ -154,6 +160,7 @@ $('stop').addEventListener('click', async () => {
 });
 (async () => {
   metadata = await api('meta'); channels = (await Workbench.api('/api/registry/channels')).channels.filter(channel => channel.enabled);
+  await loadSharedModels().catch(error);
   for (const channel of channels) $('channel').append(new Option(Workbench.label(channel), channel.id));
   const query = new URLSearchParams(location.search);
   if (channels.some(channel => String(channel.id) === query.get('channel'))) {
@@ -162,3 +169,4 @@ $('stop').addEventListener('click', async () => {
   if (query.get('model')) { available.add(query.get('model')); selected.add(query.get('model')); }
   renderModels(); await history(); $('message').textContent = '先获取或输入模型，再预览并开始检测。';
 })().catch(error);
+$('refresh-models').addEventListener('click', () => loadSharedModels().catch(error));

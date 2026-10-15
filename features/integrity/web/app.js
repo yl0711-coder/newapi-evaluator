@@ -245,6 +245,13 @@
     const task=await post('/evidence',{evidence:await fileJson('evidence-file'),idempotency_key:'evidence:'+Workbench.requestId(),confirm_authorized:$('evidence-authorized').checked});
     $('evidence-status').textContent='已受理 '+(task.task_id || task.job_id);await refreshEvidence();
   }catch(e){error(e);}};
+  $('refresh-models').onclick=async()=>{
+    const button=$('refresh-models');button.disabled=true;clearError();
+    const ids=['review-channel','review-model','review-protocol','review-reference','unified-channel','unified-model','canary-channel','canary-baseline'];
+    const chosen=ids.map(id=>[id,$(id).value]);
+    try {await loadMeta();for(const [id,value] of chosen) $(id).value=value;unifiedConditions();}
+    catch(e){error(e);}finally{button.disabled=false;}
+  };
   $('refresh').onclick=()=>{clearError();refresh().catch(error);};
   $('unified-channel').onchange=$('unified-model').onchange=()=>{unifiedKey=Workbench.requestId();unifiedConditions();};
   $('unified-new').onclick=()=>{unifiedKey=Workbench.requestId();$('unified-status').textContent='已准备新一轮；点击开始执行。';$('unified-confirm').checked=false;};

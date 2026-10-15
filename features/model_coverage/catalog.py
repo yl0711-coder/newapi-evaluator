@@ -83,6 +83,7 @@ class Catalog:
         validate_protocol(protocol, model)
         if not label.strip() or not family.strip():
             raise RegistryError("请填写名称、分组和有效协议")
+        self.reject_credentials(model, label, family)
         with self.registry.connect() as conn:
             conn.execute("BEGIN IMMEDIATE")
             if conn.execute("SELECT 1 FROM model_catalog WHERE model=?", (model,)).fetchone():
@@ -92,6 +93,15 @@ class Catalog:
             row = conn.execute("INSERT INTO model_catalog(model,label,family,protocol) VALUES(?,?,?,?)",
                                (model, label.strip(), family.strip(), protocol))
             return row.lastrowid
+
+    def reject_credentials(self, *values: str):
+        for channel in self.registry.list():
+            try:
+                key = self.registry.get(channel["id"], secret=True)["api_key"]
+            except RegistryError:
+                continue
+            if key and any(key in value for value in values):
+                raise RegistryError("模型资料不能包含凭据")
 
     def binding(self, channel_id: int, model_id: int):
         with self.registry.connect() as conn:

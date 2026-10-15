@@ -33,6 +33,34 @@ window.Workbench = {
     if (selected) select.value = String(selected);
     return available;
   },
+  async modelInput(input) {
+    const protocol = document.getElementById(input.dataset.modelProtocol);
+    const list = document.createElement('datalist'); list.id = input.id + '-models';
+    input.setAttribute('list', list.id);
+    const controls = this.node('div', '', 'actions model-options');
+    const manage = this.node('a', '管理共用模型'); manage.href = '/channels/#shared-models'; manage.target = '_blank'; manage.rel = 'noopener noreferrer';
+    const refresh = this.node('button', '刷新模型选项', 'secondary'); refresh.type = 'button';
+    const status = this.node('span', '', 'hint'); status.setAttribute('role', 'status');
+    controls.append(manage, refresh, status); (input.closest('label') || input).after(list, controls);
+    let models = [];
+    async function load() {
+      refresh.disabled = true;
+      try {
+        const data = await Workbench.api('/api/model-coverage/models');
+        const supported = new Set(protocol ? [...protocol.options].map(option => option.value) : ['openai']);
+        models = data.models.filter(model => supported.has(model.protocol));
+        list.replaceChildren(...models.map(model => new Option(`${model.family} · ${model.label}`, model.model)));
+        status.textContent = `共用模型 ${models.length} 个，也可手动填写。`;
+      } catch (error) { status.textContent = '模型选项刷新失败：' + error.message; }
+      finally { refresh.disabled = false; }
+    }
+    refresh.addEventListener('click', load);
+    input.addEventListener('change', () => {
+      const model = models.find(model => model.model === input.value.trim());
+      if (model && protocol) { protocol.value = model.protocol; protocol.dispatchEvent(new Event('change', {bubbles:true})); }
+    });
+    await load();
+  },
   download(value, name, type = 'application/json') {
     const data = typeof value === 'string' ? value : JSON.stringify(value, null, 2);
     const url = URL.createObjectURL(new Blob([data], {type}));
@@ -52,3 +80,8 @@ Workbench.ready = (async () => {
   return data;
 })();
 Workbench.ready.catch(() => {});
+for (const input of document.querySelectorAll('[data-model-catalog]')) Workbench.modelInput(input);
+if (location.pathname.startsWith('/capacity/')) {
+  const model = document.getElementById('model');
+  if (model) Workbench.modelInput(model);
+}

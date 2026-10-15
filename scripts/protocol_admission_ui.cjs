@@ -88,7 +88,10 @@ async function freePort(){const server=net.createServer();await new Promise(r=>s
   await page.screenshot({path:path.join(data,'protocol-desktop.png'),fullPage:true});await page.setViewportSize({width:390,height:844});
   assert.equal(await page.evaluate(()=>document.documentElement.scrollWidth>innerWidth+2),false);await page.screenshot({path:path.join(data,'protocol-mobile.png'),fullPage:true});
   await page.reload();await page.getByText('先获取或输入模型，再预览并开始检测。',{exact:true}).waitFor();
-  assert.equal(await page.locator('#model-list input').count(),3);assert.equal(requests.length,19);assert.equal(await page.locator('#history button').count(),1);
+  const shared=(await(await fetch(base+'/api/model-coverage/models')).json()).models.map(model=>model.model);
+  const expected=[...new Set([...shared,'synthetic-upstream','synthetic-mixed','listed-only'])].sort();
+  assert.deepEqual((await page.locator('#model-list input').evaluateAll(inputs=>inputs.map(input=>input.getAttribute('aria-label').replace('选择模型 ','')))).sort(),expected);
+  assert.equal(requests.length,19);assert.equal(await page.locator('#history button').count(),1);
   await page.getByText('最近 30 次检测',{exact:true}).click();await page.locator('#history button').first().click();await page.locator('#capabilities tr').first().waitFor();assert.equal(await page.locator('#capabilities tr').count(),2);
   await page.locator('#channel').selectOption('');await page.locator('#base-url').fill(upstreamUrl);await page.locator('#api-key').fill('synthetic-held-key');
   await page.locator('#mode').selectOption('live');await page.locator('#manual-model').fill('synthetic-upstream');await page.locator('#add-model').click();
@@ -98,7 +101,12 @@ async function freePort(){const server=net.createServer();await new Promise(r=>s
   assert.ok(!(await page.locator('#results').textContent()).includes('本项通过'));
   await page.locator('#stop').click();await page.getByText('本轮模型与协议检测已结束。',{exact:true}).waitFor();assert.equal(requests.length,20);assert.equal(await page.locator('#api-key').inputValue(),'');
   await page.reload();await page.getByText('先获取或输入模型，再预览并开始检测。',{exact:true}).waitFor();assert.equal(await page.locator('#history button').count(),2);assert.deepEqual(errors,[]);
+  await page.route('**/api/model-coverage/models',route=>route.fulfill({status:503,contentType:'application/json',body:'{"detail":"Synthetic catalog unavailable"}'}));
+  await page.goto(base+'/admission/protocol/');await page.getByText('先获取或输入模型，再预览并开始检测。',{exact:true}).waitFor();
+  await page.locator('#manual-model').fill('synthetic-upstream');await page.locator('#add-model').click();
+  assert.equal(await page.getByRole('checkbox',{name:'选择模型 synthetic-upstream',exact:true}).isChecked(),true);
+  assert.equal(requests.length,20);await page.unroute('**/api/model-coverage/models');
   app.kill('SIGTERM');await appExit;await startApp('channels');await page.goto(base+'/channels/');await page.locator('#list article.record').waitFor();assert.equal(await page.getByRole('link',{name:'模型与协议检测',exact:true}).count(),0);assert.equal((await fetch(base+'/admission/protocol/')).status,404);assert.deepEqual(errors,[]);
   await page.goto(base+'/');await page.getByText('当前仅启动公共渠道管理。',{exact:true}).waitFor();assert.equal(await page.locator('#features a').count(),0);assert.equal(await page.getByRole('link',{name:'模型与协议检测',exact:true}).count(),0);
-  console.log(JSON.stringify({status:'passed',checks:27,mockRequests:requests.length,real_upstream_tested:false,evidence:data}));
+  console.log(JSON.stringify({status:'passed',checks:28,mockRequests:requests.length,real_upstream_tested:false,evidence:data}));
 })().catch(error=>{console.error(error.stack);process.exitCode=1;}).finally(async()=>{if(browser)await browser.close();for(const res of held)res.destroy();if(app&&app.exitCode===null){app.kill('SIGTERM');await appExit;}upstream.closeAllConnections();await new Promise(r=>upstream.close(r));});

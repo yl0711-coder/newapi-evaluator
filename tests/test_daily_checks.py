@@ -17,6 +17,7 @@ from features.daily_checks import api, domain, reporting
 from features.daily_checks.service import DailyChecks
 from features.integrity.transport import run_probe, send_capacity
 from features.model_coverage.catalog import Catalog
+from features.model_coverage import api as model_api
 from features.stability.app.scheduler import probe_semaphore
 from features.token_usage.domain import classify_pair
 from features.token_usage.service import TokenUsageService
@@ -62,6 +63,30 @@ class DomainTests(unittest.TestCase):
 
 
 class ServiceTests(unittest.IsolatedAsyncioTestCase):
+    async def test_shared_custom_models_are_used_in_actual_daily_requests(self):
+        plan, models, mappings = self.svc.store.plan(), self.svc.catalog.models(), self.svc.catalog.mappings()
+        app=FastAPI();app.include_router(model_api.router);app.include_router(api.router)
+        with patch.object(model_api,'get_registry',return_value=self.registry), patch.object(api,'get_service',return_value=self.svc):
+            async with httpx.AsyncClient(transport=httpx.ASGITransport(app=app),base_url='http://loopback') as client:
+                for family,model,protocol in [('GPT','gpt-synthetic-next','responses'),('Claude','claude-synthetic-next','anthropic')]:
+                    result=await client.post('/api/model-coverage/models',json={'family':family,'model':model,'label':model,'protocol':protocol})
+                    self.assertEqual(result.status_code,200)
+                shared=(await client.get('/api/model-coverage/models')).json()['models']
+                daily=(await client.get('/api/daily-checks/meta')).json()['models']
+                self.assertEqual([m['model'] for m in shared],[m['model'] for m in daily])
+        self.assertEqual(self.svc.store.plan(),plan)
+        self.assertEqual(self.svc.catalog.models()[:len(models)],models)
+        self.assertEqual(self.svc.catalog.mappings(),mappings)
+        self.assertEqual(self.upstream.calls,[])
+        self.assertEqual(self.notifications,[])
+        for profile in self.profiles:
+            profile['model']='gpt-synthetic-next' if profile['family']=='GPT' else 'claude-synthetic-next'
+        self.enable(notify=False)
+        batch=await self.batch()
+        self.assertEqual(len(self.upstream.calls),10)
+        self.assertEqual({r['model'] for r in self.upstream.calls},{'gpt-synthetic-next','claude-synthetic-next'})
+        self.assertTrue(all(r['modeltrace']['label']=='无法判定' for r in self.svc.report(batch['id'])['channels']))
+
     async def asyncSetUp(self):
         root = os.environ.get("EVAL_TEST_ARTIFACT_ROOT") or os.environ.get("TMPDIR")
         if not root:

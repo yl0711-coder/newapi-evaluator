@@ -23,6 +23,108 @@ from workbench import create_app
 
 
 class CoverageTests(unittest.IsolatedAsyncioTestCase):
+    async def test_shared_catalog_only_adds_across_family_sources_and_empty_refreshes(self):
+        claude = self.registry.save({'name':'Synthetic Claude source','base_url':'https://claude.example/v1',
+                                    'api_key':'synthetic-claude-source-credential','multiplier':1})
+        self.catalog.bind(self.channel['id'], self.model['id'], 'synthetic-existing-alias', 'openai')
+        self.schedule([self.target()], enabled=False)
+        original, mappings, plans = self.catalog.models(), self.catalog.mappings(), storage.list_schedules()
+        offered = {'synthetic.example':['gpt-synthetic-one','gpt-synthetic-two'],
+                   'claude.example':['claude-synthetic-one']}
+        calls = []
+
+        def upstream(request):
+            calls.append((request.method, request.url.host))
+            models = offered[request.url.host]
+            return httpx.Response(503) if models is None else httpx.Response(200, json={
+                'data':[{'id':model} for model in models]})
+
+        async def fetch(channel):
+            return (await self.client.post(f"/api/model-coverage/channels/{channel['id']}/fetch",
+                                          json={'confirm_live':True,'auth_kind':'openai'})).json()
+
+        with patch.object(discovery, 'guarded_transport', return_value=httpx.MockTransport(upstream)):
+            for channel, family, protocol in [(self.channel,'GPT','responses'),(claude,'Claude','anthropic')]:
+                result = await fetch(channel)
+                self.assertTrue(result['ok'])
+                for model in result['models']:
+                    added = await self.client.post('/api/model-coverage/models', json={
+                        'model':model,'label':model,'family':family,'protocol':protocol})
+                    self.assertEqual(added.status_code, 200)
+            registered = self.catalog.models()
+            self.assertEqual(registered[:len(original)], original)
+            self.assertEqual({row['model'] for row in registered[len(original):]},
+                             {'gpt-synthetic-one','gpt-synthetic-two','claude-synthetic-one'})
+            for models in [['gpt-synthetic-one'], [], None]:
+                offered['synthetic.example'] = models
+                self.assertEqual((await fetch(self.channel))['ok'], models is not None)
+                self.assertEqual((await self.client.get('/api/model-coverage/models')).json()['models'], registered)
+            self.assertEqual(self.catalog.discoveries()[claude['id']]['models'], ['claude-synthetic-one'])
+        self.assertEqual(calls, [('GET','synthetic.example'),('GET','claude.example'),
+                                 ('GET','synthetic.example'),('GET','synthetic.example'),('GET','synthetic.example')])
+        self.assertEqual(self.catalog.mappings(), mappings)
+        self.assertEqual(storage.list_schedules(), plans)
+
+    async def test_single_source_refresh_and_shared_models_do_not_change_plans(self):
+        second = self.registry.save({'name':'Synthetic second','base_url':'https://second.example/v1',
+                                     'api_key':'synthetic-other-credential','multiplier':1})
+        models, mappings = self.catalog.models(), self.catalog.mappings()
+        target = self.target()
+        self.schedule([target], enabled=False)
+        plans = storage.list_schedules()
+        calls, fail = [], False
+        def upstream(request):
+            calls.append((request.method, request.url.host, 'x-api-key' in request.headers))
+            if fail:
+                return httpx.Response(503)
+            if 'x-api-key' not in request.headers:
+                return httpx.Response(401)
+            return httpx.Response(200, json={'data':[{'id':'gpt-synthetic-next'}, {'id':'claude-synthetic-next'}]})
+        path = f"/api/model-coverage/channels/{second['id']}/fetch"
+        with patch.object(discovery, 'guarded_transport', return_value=httpx.MockTransport(upstream)):
+            for body in ({}, {'confirm_live':False}, {'confirm_live':True,'api_key':'synthetic'}):
+                self.assertEqual((await self.client.post(path,json=body)).status_code,422)
+            self.assertEqual((await self.client.get('/api/model-coverage/models')).json()['models'],models)
+            self.assertEqual(calls,[])
+            response=await self.client.post(path,json={'confirm_live':True,'auth_kind':'auto'})
+            self.assertTrue(response.json()['ok'])
+            self.assertEqual(calls,[('GET','second.example',False),('GET','second.example',True)])
+            self.assertEqual(self.catalog.models(),models)
+            for model,family,protocol in [('gpt-synthetic-next','GPT','responses'),('claude-synthetic-next','Claude','anthropic')]:
+                payload={'model':model,'label':model,'family':family,'protocol':protocol}
+                self.assertEqual((await self.client.post('/api/model-coverage/models',json=payload)).status_code,200)
+                self.assertEqual((await self.client.post('/api/model-coverage/models',json=payload)).status_code,409)
+            shared=(await self.client.get('/api/model-coverage/models')).json()['models']
+            self.assertEqual(shared[:len(models)],models)
+            self.assertEqual({m['model'] for m in shared[len(models):]},{'gpt-synthetic-next','claude-synthetic-next'})
+            for row in service.coverage()['channels']:
+                self.assertTrue({'gpt-synthetic-next','claude-synthetic-next'} <= {m['model'] for m in row['models']})
+            fail=True
+            self.assertFalse((await self.client.post(path,json={'confirm_live':True,'auth_kind':'auto'})).json()['ok'])
+            row=next(c for c in service.coverage()['channels'] if c['channel_id']==second['id'])
+            self.assertEqual(row['discovered_models'],['claude-synthetic-next','gpt-synthetic-next'])
+            self.registry.save({**second,'api_key':'synthetic-replacement'},second['id'],second['version'])
+            self.assertEqual(next(c for c in service.coverage()['channels'] if c['channel_id']==second['id'])['discovered_models'],[])
+        self.assertEqual(self.catalog.mappings(),mappings)
+        self.assertEqual(storage.list_schedules(),plans)
+
+    async def test_shared_registration_and_discovery_reject_other_channel_credentials(self):
+        other=self.registry.save({'name':'Synthetic other','base_url':'https://other.example/v1',
+                                  'api_key':'synthetic-other-key','multiplier':1})
+        before=self.catalog.models()
+        for field in ['model','label','family']:
+            body={'model':'synthetic-model','label':'Synthetic','family':'GPT','protocol':'openai'}
+            body[field]='model-synthetic-other-key'
+            rejected=await self.client.post('/api/model-coverage/models',json=body)
+            self.assertEqual(rejected.status_code,400)
+            self.assertNotIn('synthetic-other-key',rejected.text)
+        with patch.object(discovery,'guarded_transport',return_value=httpx.MockTransport(
+                lambda _:httpx.Response(200,json={'data':[{'id':'model-synthetic-other-key'}]}))):
+            result=await discovery.fetch_models(self.registry,self.channel['id'],'openai')
+        self.assertEqual(result['error'],'invalid_list')
+        self.assertEqual(self.catalog.discoveries()[self.channel['id']]['models'],[])
+        self.assertEqual(self.catalog.models(),before)
+
     async def test_sol_catalog_upgrade_preserves_existing_ids_and_edits(self):
         original = self.catalog.models()[0]
         with self.registry.connect() as conn:

@@ -8,7 +8,7 @@
 <label id="live-confirm-label" class="check" hidden><input id="confirm-live" type="checkbox">确认使用此渠道凭据获取模型列表，并执行本次预览中的检测请求</label>
 <div class="actions"><button id="fetch-models" type="button">获取上游模型</button><span id="fetch-status" role="status"></span></div>
 <p class="hint">获取列表不会自动检测模型。真实获取通常请求 1 次；鉴权切换和分页最多 40 次，最长 60 秒。</p>
-<fieldset><legend>选择要检测的模型（每批最多 5 个）</legend><label>搜索模型<input id="model-filter" type="search" placeholder="筛选已获取或手动添加的模型"></label><div id="model-list" class="model-list"></div><p id="model-count" class="hint"></p>
+<fieldset><legend>选择要检测的模型（每批最多 5 个）</legend><div class="actions"><a href="/channels/#shared-models" target="_blank" rel="noopener noreferrer">管理共用模型</a><button id="refresh-models" type="button" class="secondary">刷新共用模型</button></div><label>搜索模型<input id="model-filter" type="search" placeholder="筛选已获取或手动添加的模型"></label><div id="model-list" class="model-list"></div><p id="model-count" class="hint"></p>
 <div class="actions"><input id="manual-model" maxlength="160" placeholder="也可手动输入模型 ID" aria-label="手动模型 ID"><button id="add-model" type="button" class="secondary">添加并选择</button></div><p id="selection-count" class="hint"></p></fieldset>
 </fieldset><div class="actions"><button id="preview" type="button" class="secondary">预览检测请求</button><button id="start" type="submit" disabled>开始检测</button><button id="stop" type="button" class="secondary" hidden>停止检测</button></div><p id="message" role="status">正在加载。</p><p id="error" class="error" role="alert"></p><div id="preview-list"></div></form>
 <section id="report" hidden><div class="actions"><h2>模型与协议结果</h2><a id="export-json">下载 JSON</a><a id="export-html">下载 HTML</a></div><div id="conclusion" class="panel"></div>
