@@ -23,6 +23,7 @@ from features.token_usage.api import router as token_usage_router
 from features.token_usage.internal_api import internal_router as token_usage_internal_router
 from features.token_usage import service as token_usage_service
 from features.daily_checks.api import router as daily_checks_router, STATIC_DIR as DAILY_STATIC
+from features.channel_monitor.api import router as channel_monitor_router
 
 FEATURES = {
     "admission": ("准入测试", "features.admission.api"),
@@ -83,6 +84,8 @@ def create_app(mode: str | None = None):
         app.mount("/integrity", StaticFiles(directory=INTEGRITY_STATIC, html=True))
         app.include_router(daily_checks_router)
         app.mount("/daily-checks", StaticFiles(directory=DAILY_STATIC, html=True))
+        app.include_router(channel_monitor_router)
+        app.mount("/channel-monitor", StaticFiles(directory=WEB_DIR.parent / "features/channel_monitor/web", html=True))
     app.state.stability_available = "stability" in children
 
     @app.get("/api/platform")
@@ -93,6 +96,7 @@ def create_app(mode: str | None = None):
         if include_integrity:
             features.append({"id": "integrity", "name": "模型完整性复核", "url": "/integrity/"})
             features.append({"id": "daily-checks", "name": "已上线渠道每日检测", "url": "/daily-checks/"})
+            features.append({"id": "channel-monitor", "name": "渠道自动启停", "url": "/channel-monitor/"})
         if include_token_usage:
             features.append({"id": "token-usage", "name": "Token 用量监控", "url": "/token-usage/"})
         return {"mode": mode, "features": features}
@@ -111,6 +115,8 @@ def create_app(mode: str | None = None):
             state["monitor_executor"] = monitor_internal.executor_status()
             from features.daily_checks.service import get_service as daily_service
             state["daily_checks_executor"] = daily_service().status()
+            from features.channel_monitor.service import get_service as channel_monitor_service
+            state["channel_monitor_executor"] = channel_monitor_service().status()
             if not storage.health() or not state["scheduler"]["running"]:
                 state["status"] = "degraded"
         return state

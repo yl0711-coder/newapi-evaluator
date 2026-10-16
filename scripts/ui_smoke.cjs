@@ -94,9 +94,9 @@ Promise.race([fixtureFailure,(async () => {
   const page = await browser.newPage({viewport:{width:1440,height:1000}});
   const errors = []; page.on('pageerror',e=>errors.push(e.message));
   await page.goto(base+'/');
-  await page.locator('#features a').nth(10).waitFor();
+  await page.locator('#features a').nth(11).waitFor();
   assert.deepEqual(await page.locator('#features a').evaluateAll(cards=>cards.map(card=>card.getAttribute('href'))),
-    ['/admission/protocol/','/admission/','/stability/','/reasoning/','/capacity/','/diagnosis/','/image-quality/','/volcengine-admission/','/integrity/','/daily-checks/','/token-usage/']);
+    ['/admission/protocol/','/admission/','/stability/','/reasoning/','/capacity/','/diagnosis/','/image-quality/','/volcengine-admission/','/integrity/','/daily-checks/','/channel-monitor/','/token-usage/']);
   await page.locator('#features a[href="/admission/protocol/"]').click();
   await page.getByText('先获取或输入模型，再预览并开始检测。',{exact:true}).waitFor();
   assert.equal(await page.locator('.platform-nav a[aria-current="page"]').textContent(),'模型与协议检测');
@@ -111,7 +111,13 @@ Promise.race([fixtureFailure,(async () => {
   await page.waitForFunction(()=>document.querySelectorAll('.model-card').length===11);
   assert.equal(await page.locator('.platform-nav a[aria-current="page"]').textContent(),'火山新 Key 验收');
   await page.goto(base+'/');
-  await page.locator('#features a').nth(10).waitFor();
+  await page.locator('#features a[href="/channel-monitor/"]').click();
+  await page.locator('#instance-form').waitFor();
+  assert.equal(await page.locator('.platform-nav a[aria-current="page"]').textContent(),'渠道自动启停');
+  assert.equal((await (await fetch(base+'/api/channel-monitor/meta')).json()).executor.plan.enabled,false);
+  assert.equal(requests.length,0,'Opening channel monitoring never sends model requests');
+  await page.goto(base+'/');
+  await page.locator('#features a').nth(11).waitFor();
   await page.screenshot({path:path.join(data,'workbench-home-desktop.png'),fullPage:true});
   await page.setViewportSize({width:390,height:844});
   assert.equal(await page.evaluate(()=>document.documentElement.scrollWidth>innerWidth+2),false);
@@ -295,7 +301,7 @@ Promise.race([fixtureFailure,(async () => {
   phase = 'shared_theme_responsive';
   for (const width of [390,900,1440,1920]) {
     let theme;
-    for (const url of ['/','/channels/','/admission/protocol/','/admission/','/reasoning/','/stability/','/capacity/','/diagnosis/','/image-quality/','/volcengine-admission/','/daily-checks/','/token-usage/']) {
+    for (const url of ['/','/channels/','/admission/protocol/','/admission/','/reasoning/','/stability/','/capacity/','/diagnosis/','/image-quality/','/volcengine-admission/','/daily-checks/','/channel-monitor/','/token-usage/']) {
       phase = `shared_theme_responsive:${url}:${width}`;
       await page.setViewportSize({width,height:1000}); await page.goto(base+url); await page.locator('.platform-nav').waitFor();
       const appearance = await page.evaluate(() => {

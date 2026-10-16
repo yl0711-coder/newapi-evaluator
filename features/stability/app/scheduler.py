@@ -468,6 +468,8 @@ async def tick(now_epoch: float | None = None) -> None:
     await integrity.tick(now_epoch)
     from features.daily_checks.service import get_service as daily_service
     await daily_service().tick(now_epoch)
+    from features.channel_monitor.service import get_service as channel_monitor_service
+    await channel_monitor_service().tick(now_epoch)
     if _last_retention_at is None or now_epoch - _last_retention_at >= 3600:
         storage.prune_run_history(now_epoch, RETENTION_DAYS)
         _last_retention_at = now_epoch
@@ -522,6 +524,8 @@ async def stop() -> None:
     await integrity.stop()
     from features.daily_checks.service import get_service as daily_service
     await daily_service().stop()
+    from features.channel_monitor.service import get_service as channel_monitor_service
+    await channel_monitor_service().stop()
     for task in list(_active.values()):
         task.cancel()
     await asyncio.gather(*_active.values(), return_exceptions=True)

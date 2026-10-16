@@ -74,6 +74,12 @@ python3 -m venv .venv
 
 普通 API 指纹未校准，不能认证实际模型权重。TraceOne/ModelTrace/HLwY不算独立多票。fpverify reference齐备后才是后续审计；Modivue旁路不安装/改客户端，不引入Meow。详见 [功能与边界](features/integrity/README.md)、[测试清单](docs/integrity-testing.md) 与 [来源许可](features/integrity/NOTICE.md)。
 
+## New API 渠道自动启停
+
+`/channel-monitor/` 提供 New API `v1.0.0-rc.26` 的半小时监控。配置管理令牌与精确渠道映射后，可确认启用：每题最多五次机会；五次请求故障直接停用，下一次请求正常恢复。质量路径须连续两轮糖果答错且 ModelTrace 明确不匹配；停用后每个受影响分组及模型至少保留四条启用渠道，不足则保留并在页面告警，下一轮答对且匹配即恢复。只恢复本系统自行停用且未人工锁定的渠道。
+
+默认暂停，保存连接不发送请求；管理令牌与模型 Key 分开加密。监控复用现有调度器及共享发送容量，New API 停用不影响 Eval 原上游直测。支持单密钥、无额外转换的 type=1 OpenAI 兼容渠道；指纹仅为未校准的行为线索。操作记录保留冻结目标，人工接管、未知写入与恢复边界见 [配置与运行说明](docs/newapi-channel-monitor.md)。只读检查：`python -B -m features.channel_monitor inspect-config`。
+
 ## 生图模型质量测试
 
 从工作台导航进入 `/image-quality/`，手动填写 Base URL、临时 Key 和提示词。每次确认后请求 `gpt-image-2`，可并排查看本轮图片、人工评分、下载去元数据 PNG 和脱敏指标。此模块不读取公共渠道凭据、不创建计划，也不保存后端历史；刷新清空本轮样本。返回模型字段只是上游自报，不能据此认证模型身份。详见 [子项目说明](features/image_quality/README.md) 和 [开发验收清单](docs/image-quality-testing.md)。
@@ -88,7 +94,7 @@ python3 -m venv .venv
 
 ```text
 data/
-  channels.db             公共连接资料、常用模型清单与人工获取快照；无定时计划
+  channels.db             公共连接资料、常用模型清单、人工获取快照及渠道自动启停配置与账本
   channels.key            渠道密钥的加密主密钥
   admission/
     reports.db            准入任务 FIFO、请求检查点、最近 30 条报告及飞书待写队列，不含 API Key

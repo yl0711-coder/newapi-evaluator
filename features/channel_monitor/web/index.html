@@ -1,0 +1,38 @@
+<!doctype html>
+<html lang="zh-CN">
+<head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>渠道自动启停</title>
+<link rel="stylesheet" href="/assets/common.css"><link rel="stylesheet" href="/channel-monitor/style.css"></head>
+<body><main>
+<header><h1>渠道自动启停</h1><p>每 30 分钟直测原上游，在 New API 中停用异常渠道并持续检测恢复。</p></header>
+<p id="message" role="status" aria-live="polite"></p>
+<section class="panel"><h2>监控规则</h2>
+<p>每题最多 5 次机会。请求故障连续耗尽 5 次即停用，不受四条保底限制；下一次请求正常即启用。</p>
+<p>糖果答错且 ModelTrace 明确不匹配，连续两轮才停用。每个受影响分组及模型至少保留 4 条启用渠道；不足时保留并告警。质量停用后，一轮答对且匹配即恢复。</p>
+<p>只恢复本系统自行停用且没有人工锁定的渠道。无法判定不会记作模型不匹配。指纹是未校准的行为信号，不能认证模型身份。</p>
+<div class="actions"><strong id="plan-status">加载中</strong><button id="refresh" class="secondary">刷新</button><button id="pause" class="secondary">暂停监控</button><button id="run">立即测试</button></div>
+<p id="schedule" class="hint"></p>
+<label><input id="confirm-live" type="checkbox">允许每半小时发送模型测试请求，可能产生上游费用</label>
+<label><input id="confirm-manage" type="checkbox">允许按上述规则自动禁用及启用所绑定的 New API 渠道</label>
+<button id="enable">启用半小时监控</button></section>
+<div class="configuration">
+<section class="panel"><h2>New API 管理连接</h2><p>支持 v1.0.0-rc.26。管理令牌需要渠道读取及操作权限。</p>
+<form id="instance-form"><label>管理地址<input id="base-url" type="url" required autocomplete="off" placeholder="https://your-new-api.example"></label>
+<label>管理员访问令牌<input id="token" type="password" autocomplete="new-password" placeholder="已配置时留空保留"></label>
+<label>New API 用户 ID（如实例要求）<input id="user-id" type="number" min="1" step="1"></label>
+<button type="submit">保存管理连接</button></form><p id="instance-status" class="hint"></p></section>
+<section class="panel"><h2>绑定直测渠道</h2>
+<p>目前支持单密钥、无额外转换的 OpenAI 兼容渠道。先在公共渠道中保存原上游连接。</p>
+<form id="binding-form"><label>New API 渠道 ID<input id="remote-id" type="number" min="1" step="1" required></label>
+<label>Eval 公共渠道<select id="registry-id" required></select></label>
+<label>测试模型<select id="model" required></select></label>
+<label>协议<select id="protocol"><option value="responses">Responses</option><option value="openai">Chat Completions</option></select></label>
+<label>指定的参考模型<select id="expected" required></select></label>
+<label><input id="confirm-read" type="checkbox">允许读取管理后台的版本与该渠道资料</label>
+<label><input id="confirm-key" type="checkbox">已核对两边使用同一把上游 Key；后台换 Key 后会暂停并重新绑定</label>
+<button type="submit">核对并添加映射</button></form></section></div>
+<section class="panel"><h2>渠道状态</h2><div id="bindings" class="bindings"></div>
+<p class="hint">人工维护前先锁定或暂停。人工接管仅解除自动恢复所有权，保留 New API 当前状态；移除映射不会改变后台状态。</p></section>
+<section class="panel"><h2>告警与动作</h2><div id="events"></div>
+<details><summary>管理动作账本</summary><div id="actions"></div></details>
+<details><summary>轮次与请求账本</summary><div id="rounds"></div><pre id="attempts"></pre></details></section>
+</main><script src="/assets/common.js"></script><script src="/channel-monitor/app.js"></script></body></html>

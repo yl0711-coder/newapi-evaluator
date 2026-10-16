@@ -10,7 +10,9 @@
 
 清单只描述测试，不读取业务数据库、不加载凭据、不发真实请求。以下 `python` 指仓库支持的 Python 3.10+ 解释器；实际测试环境按候选版本安装 `requirements.txt`。查看清单使用：
 
-`integrity` 登记每日报告的 `daily-checks-inspect`（60秒）与 `daily-checks-browser`（180秒），`tests.test_daily_checks` 进入 Python 必需模块门禁。开发29组、独立30组；原报告和消费者回归仍全部执行。每日浏览器使用自有回环模型服务与合成飞书传输，不读真实渠道或发送外部通知。
+`integrity` 登记 `channel-monitor-inspect`（60秒）与 `channel-monitor-browser`（180秒），`tests.test_channel_monitor` 进入 Python 非零收集门禁。检查半小时、五次故障与质量两轮的独立规则，以及管理回读、人工状态、未知请求和精确目标审计；管理及模型端均使用合成回环服务。功能与接口见 [渠道自动启停](newapi-channel-monitor.md)。
+
+`integrity` 登记每日报告的 `daily-checks-inspect`（60秒）与 `daily-checks-browser`（180秒），`tests.test_daily_checks` 进入 Python 必需模块门禁。开发31组、独立32组；原报告和消费者回归仍全部执行。每日浏览器使用自有回环模型服务与合成飞书传输，不读真实渠道或发送外部通知。
 
 `admission` 及 `integrity` 登记火山单次验收的 `volcengine-admission-inspect`（60秒）与 `volcengine-admission-browser`（300秒），并要求非零收集 `tests.test_volcengine_admission`。只读检查输出固定11型号、规格和价格合同，零凭据/数据库/网络；浏览器使用隔离服务与合成传输，验证单次生成、媒体/报告、停止和只读恢复，不调用真实方舟接口。
 
@@ -21,6 +23,7 @@ python -B scripts/inspect_test_plan.py admission
 python -B scripts/inspect_test_plan.py diagnosis
 python -B scripts/inspect_test_plan.py image-quality
 python -B scripts/inspect_test_plan.py workflow-control-plane
+python -B scripts/inspect_test_plan.py integrity
 ```
 
 `admission` 或 `diagnosis` 计划追加候选完整 SHA，会显示额外的 `legacy-acceptance` 组；`image-quality` 与 `workflow-control-plane` 不追加该组：

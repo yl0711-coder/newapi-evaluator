@@ -128,6 +128,17 @@ def main():
                 assert health["evidence_executor"]["outbound_requests"] == 0
                 assert health["scheduled_integrity_executor"]["enabled"] is True
                 assert health["scheduled_integrity_executor"]["running"] is True
+                assert any(item["id"] == "channel-monitor" for item in features)
+                assert b"binding-form" in get("/channel-monitor/")
+                assert len(get("/channel-monitor/app.js")) > 100
+                monitor = json.loads(get("/api/channel-monitor/meta"))
+                assert monitor["interval_seconds"] == 1800
+                assert monitor["max_attempts_per_question"] == 5
+                assert monitor["bindings"] == []
+                assert monitor["instance"] is None
+                assert monitor["executor"]["plan"]["enabled"] is False
+                assert health["channel_monitor_executor"]["running"] is False
+                assert json.loads(get("/api/channel-monitor/history"))["actions"] == []
                 stability_health = json.loads(get("/stability/api/health"))
                 assert stability_health["scheduled_integrity_executor"] == health["scheduled_integrity_executor"]
             assert len(get("/image-quality/assets/app.js")) > 100

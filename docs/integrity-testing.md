@@ -2,10 +2,11 @@
 
 适用规则 `docs/ai-rules` v1.0。本功能属于工作台定时、准入及完整性模块，不改 `relay_lab` 共享引擎；实验室五模式继续纳入既有 E2E 和独立 legacy acceptance。环境、数据、日志、截图和证据使用仓外新目录，不加载业务 `.env`、渠道库、凭据或通知设置。上游源码核对不替代产品测试。
 
-统一入口：`python -B scripts/verify_integrity.py --output <新外置目录>`。独立验收在干净 detached 候选提交增加 `--sha <40位SHA>`，使用独立环境与新数据。`PLAYWRIGHT_MODULE`、`PLAYWRIGHT_BROWSERS_PATH`、`EVAL_TEST_ARTIFACT_ROOT` 和 `TMPDIR` 显式指向仓外；执行器设置 `PYTHON_EXECUTABLE`。执行器保留收集数、退出码、前后源码指纹及首次失败，实施逐组时限和总预算，失败优先汇总。开发29组、3000秒；独立30组、4200秒。输入 Token 与服务器准入队列的合同见 [功能和接口](token-usage-queue.md)，四批报告见 [每日检测合同](../features/daily_checks/README.md)，火山单次验收见 [专项清单](volcengine-admission-testing.md)。
+统一入口：`python -B scripts/verify_integrity.py --output <新外置目录>`。独立验收在干净 detached 候选提交增加 `--sha <40位SHA>`，使用独立环境与新数据。`PLAYWRIGHT_MODULE`、`PLAYWRIGHT_BROWSERS_PATH`、`EVAL_TEST_ARTIFACT_ROOT` 和 `TMPDIR` 显式指向仓外；执行器设置 `PYTHON_EXECUTABLE`。执行器保留收集数、退出码、前后源码指纹及首次失败，实施逐组时限和总预算，失败优先汇总。开发31组、3000秒；独立32组、4200秒。输入 Token 与服务器准入队列的合同见 [功能和接口](token-usage-queue.md)，四批报告见 [每日检测合同](../features/daily_checks/README.md)，火山单次验收见 [专项清单](volcengine-admission-testing.md)。
 
 | suite_id | 入口 | 验证与时限 |
 | --- | --- | --- |
+| channel-monitor-inspect / channel-monitor-browser | `python -m features.channel_monitor inspect-config` / `scripts/channel_monitor_ui.cjs` | 半小时与五次机会规则零发送检查；精确映射、确认、两轮质量停用、一次恢复、四条保护、故障绕过、人工锁定、动作账本及390/900/1440布局；60/180秒 |
 | volcengine-admission-inspect / volcengine-admission-browser | `scripts/inspect_volcengine_admission.py` / `scripts/volcengine_admission_ui.cjs` | 11 型号及默认6款、价格与规格、一次提交、样片/报告、确认及只读恢复、390/900/1440布局；60/300秒 |
 | daily-checks-inspect / daily-checks-browser | `scripts/inspect_daily_checks.py` / `scripts/daily_checks_ui.cjs` | 四时段零发送检查，单来源模型获取、公共登记/手填/重复/失败保留、九类入口复用、新ID实际每日请求、配置确认、报告、飞书分片、导出及窄屏；60/180秒 |
 | feishu-channels-inspect / feishu-channels-browser | `scripts/inspect_feishu_channels.py` / `scripts/feishu_channels_ui.cjs` | 只读合同检查及合成飞书的设置、筛选、同步、换 Key、下线与失败保留；60/180 秒 |
@@ -27,6 +28,8 @@
 | legacy-acceptance | `scripts/acceptance.py --sha --output` | 仅独立干净SHA，既有实验室全量、持续与混合负载；1200秒 |
 
 ## 定时采样与结论
+
+`test_channel_monitor` 覆盖 rc.26 真实字段、默认设置、启停元数据、分页和明确确认，五次故障及第五次成功、相邻两轮质量与一次恢复、全分组模型四条保护及并发重读、配置/版本漂移、人工锁定/接管、取消与重启 unknown、管理假成功/回读不符/未知写入，以及删除映射后动作目标可追溯。此模块单独采用首次加四次重试，不改变既有 MT/Nerfed 定时合同。完整性容器组验证新入口、静态资源、默认暂停及空账本。
 
 `test_integrity_timetable` 验证 `layered-integrity-v3` 每个选定时刻各执行MT三题和Nerfed三题，互不复用答案，无health或Canary。默认全天48轮（整点/半点），单渠道首次288请求；已确认连接故障、超时或断流每题再重试三次，最多1152物理请求。十分钟刻度仍可显式自定义，已有配置与双空保留。成功立即停止重试；HTTP错误、格式无效及unknown不重发。固定逻辑分母与物理尝试、最终错误分别计数；早期断联后成功只用最终结果评分。
 

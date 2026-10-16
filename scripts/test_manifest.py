@@ -63,6 +63,7 @@ def admission(python: str, output: Path, *, sha: str | None = None) -> list[Suit
             "tests.test_admission_queue", "tests.test_admission_reporting", "tests.test_unified_integrity",
             "tests.test_feishu_channels",
             "tests.test_daily_checks",
+            "tests.test_channel_monitor",
             "tests.test_volcengine_admission",
         )),
         SuiteSpec("workbench-web", ("node", "scripts/test_web.js"), 120, "web"),
@@ -146,6 +147,8 @@ def integrity(python: str, output: Path, *, sha: str | None = None) -> list[Suit
     """Layered integrity changes exercise the whole workbench and new consumers."""
     suites = admission(python, output, sha=sha)
     suites.extend([
+        SuiteSpec("channel-monitor-inspect", _python(python, "-m", "features.channel_monitor", "inspect-config"), 60, "inspect"),
+        SuiteSpec("channel-monitor-browser", ("node", "scripts/channel_monitor_ui.cjs"), 180, "browser"),
         SuiteSpec("daily-checks-inspect", _python(python, "scripts/inspect_daily_checks.py"), 60, "inspect"),
         SuiteSpec("daily-checks-browser", ("node", "scripts/daily_checks_ui.cjs"), 180, "browser"),
         SuiteSpec("integrity-inspect", _python(python, "scripts/inspect_integrity.py"), 60, "inspect"),

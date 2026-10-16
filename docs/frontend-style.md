@@ -10,16 +10,18 @@
 
 ## 验证清单
 
-已上线渠道每日检测 `/daily-checks/` 复用同一公共主题，配置、Webhook密码框、历史报告与两类导出使用独立浏览器回归 `scripts/daily_checks_ui.cjs`。验证390/900/1440布局、键盘暂停、确认门禁、零提前推送及实际回环模型请求；纳入完整性29/30组清单。
+渠道自动启停 `/channel-monitor/` 复用公共主题，`scripts/channel_monitor_ui.cjs` 实际点击首页入口，核对管理令牌清空、映射/启用确认、停用恢复、四条告警、人工锁定、管理动作账本及390/900/1440布局。管理与模型调用均经过受保护回环 HTTP；历史活动执行器不参与测试。
+
+已上线渠道每日检测 `/daily-checks/` 复用同一公共主题，配置、Webhook密码框、历史报告与两类导出使用独立浏览器回归 `scripts/daily_checks_ui.cjs`。验证390/900/1440布局、键盘暂停、确认门禁、零提前推送及实际回环模型请求；纳入完整性31/32组清单。
 
 火山新 Key 验收 `/volcengine-admission/` 使用同一主题，默认6款和折叠5款补充、规格与费用预览、单次运行、历史、样片和报告由 `scripts/volcengine_admission_ui.cjs` 验证。覆盖390/900/1440布局、键盘操作、配置变更使预览失效、Key提交清空、未确认零生成、只查询恢复及下载脱敏。型号、规格和价格从后端唯一目录读取，不在前端复制费率。
 
-测试组以 `scripts/test_manifest.py` 为唯一注册源。准入计划包含22组开发检查、23组独立检查；本次跨模块交付使用完整性计划的29组开发检查、30组独立检查，含容器检查。运行 Python 3.13、Node、Playwright 和 Edge。数据、临时文件、venv 和报告均置于仓库外，白名单环境隔离业务配置，全部上游使用本地合成 Mock。
+测试组以 `scripts/test_manifest.py` 为唯一注册源。准入计划包含22组开发检查、23组独立检查；本次跨模块交付使用完整性计划的31组开发检查、32组独立检查，含容器检查。运行 Python 3.13、Node、Playwright 和 Edge。数据、临时文件、venv 和报告均置于仓库外，白名单环境隔离业务配置，全部上游使用本地合成 Mock。
 
 | 检查 | 入口 | 时限 |
 | --- | --- | --- |
-| 完整性开发29组 | `python -B scripts/verify_integrity.py --output <新外置目录>` | 总计 3000 秒，逐组按注册清单 |
-| 独立30组 | 在干净 detached 提交运行上一入口并追加 `--sha <完整 SHA>` | 总计 4200 秒，含 legacy acceptance |
+| 完整性开发31组 | `python -B scripts/verify_integrity.py --output <新外置目录>` | 总计 3000 秒，逐组按注册清单 |
+| 独立32组 | 在干净 detached 提交运行上一入口并追加 `--sha <完整 SHA>` | 总计 4200 秒，含 legacy acceptance |
 | 公共交互与主题 | 上述执行器注册的 `node scripts/ui_smoke.cjs` | 600 秒 |
 | 诊断容器 | `python -B scripts/diagnosis_container.py --output <新外置目录>` | 外层总计 900 秒 |
 | 生图容器 | `python -B scripts/image_quality_container.py --output <新外置目录>` | 外层总计 900 秒 |

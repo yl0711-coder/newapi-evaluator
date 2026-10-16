@@ -629,11 +629,13 @@ class IntegrationTests(unittest.IsolatedAsyncioTestCase):
                     if mode == "stability":
                         expected.append("integrity")
                         expected.append("daily-checks")
+                        expected.append("channel-monitor")
                     if mode in {"admission", "stability"}:
                         expected.append("token-usage")
                     self.assertEqual([f["id"] for f in data["features"]], expected)
                     self.assertEqual((await client.get("/integrity/")).status_code, 200 if mode == "stability" else 404)
                     self.assertEqual((await client.get("/daily-checks/")).status_code, 200 if mode == "stability" else 404)
+                    self.assertEqual((await client.get("/channel-monitor/")).status_code, 200 if mode == "stability" else 404)
                     self.assertEqual((await client.get("/volcengine-admission/")).status_code, 200 if mode == "volcengine-admission" else 404)
                     if mode == "volcengine-admission":
                         metadata = (await client.get("/volcengine-admission/api/meta")).json()
@@ -646,6 +648,9 @@ class IntegrationTests(unittest.IsolatedAsyncioTestCase):
                         daily = (await client.get("/api/daily-checks/meta")).json()
                         self.assertFalse(daily["plan"]["enabled"])
                         self.assertEqual(daily["report_times"], ["10:30", "14:00", "15:30", "18:00"])
+                        monitor = (await client.get("/api/channel-monitor/meta")).json()
+                        self.assertFalse(monitor["executor"]["plan"]["enabled"])
+                        self.assertEqual(monitor["interval_seconds"], 1800)
                     protocol = [f for f in data["features"] if f["id"] == "protocol-admission"]
                     if mode == "admission":
                         self.assertEqual(protocol, [{"id": "protocol-admission", "name": "模型与协议检测", "url": "/admission/protocol/"}])
@@ -669,7 +674,7 @@ class IntegrationTests(unittest.IsolatedAsyncioTestCase):
             self.assertEqual(response.json()["features"],
                              ["admission", "stability", "reasoning", "capacity", "diagnosis", "image-quality", "volcengine-admission"])
             platform = (await self.client.get("/api/platform")).json()
-            self.assertEqual([item["id"] for item in platform["features"]], ["protocol-admission", *response.json()["features"], "integrity", "daily-checks", "token-usage"])
+            self.assertEqual([item["id"] for item in platform["features"]], ["protocol-admission", *response.json()["features"], "integrity", "daily-checks", "channel-monitor", "token-usage"])
             for feature in platform["features"]:
                 self.assertEqual((await self.client.get(feature["url"])).status_code, 200)
             self.assertTrue(scheduler.status()["running"])

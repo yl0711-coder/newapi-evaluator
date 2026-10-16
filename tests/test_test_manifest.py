@@ -124,6 +124,13 @@ class TestManifestTests(unittest.TestCase):
         self.assertIn("scripts/inspect_daily_checks.py", by_id["daily-checks-inspect"].command)
         self.assertIn("tests.test_daily_checks", by_id["workbench-python"].expected_modules)
 
+    def test_channel_monitor_contract_browser_and_state_machine_are_registered(self):
+        by_id = {suite.suite_id: suite for suite in integrity(sys.executable, OUTPUT)}
+        self.assertEqual(by_id["channel-monitor-browser"].timeout_seconds, 180)
+        self.assertIn("scripts/channel_monitor_ui.cjs", by_id["channel-monitor-browser"].command)
+        self.assertIn("features.channel_monitor", by_id["channel-monitor-inspect"].command)
+        self.assertIn("tests.test_channel_monitor", by_id["workbench-python"].expected_modules)
+
     def test_volcengine_contract_and_browser_are_required(self):
         for plan in (admission, integrity):
             by_id = {suite.suite_id: suite for suite in plan(sys.executable, OUTPUT)}
