@@ -7,7 +7,8 @@
 <p id="message" role="status" aria-live="polite"></p>
 <section class="panel"><h2>监控规则</h2>
 <p>每题最多 5 次机会。请求故障连续耗尽 5 次即停用，不受四条保底限制；下一次请求正常即启用。</p>
-<p>糖果答错且 ModelTrace 明确不匹配，连续两轮才停用。每个受影响分组及模型至少保留 4 条启用渠道；不足时保留并告警。质量停用后，一轮答对且匹配即恢复。</p>
+<p id="quality-rules">正在加载质量监控规则…</p>
+<p>两条质量路径均要求停用后每个受影响分组及模型至少保留 4 条启用渠道；不足时保留并告警。质量停用后，一轮答对且 MT 匹配即恢复。</p>
 <p>只恢复本系统自行停用且没有人工锁定的渠道。无法判定不会记作模型不匹配。指纹是未校准的行为信号，不能认证模型身份。</p>
 <div class="actions"><strong id="plan-status">加载中</strong><button id="refresh" class="secondary">刷新</button><button id="pause" class="secondary">暂停监控</button><button id="run">立即测试</button></div>
 <p id="schedule" class="hint"></p>

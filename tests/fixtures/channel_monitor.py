@@ -85,7 +85,7 @@ class Models:
             return self.queue.pop(0)
         if candy:
             return "答案：20" if self.phase == "mismatch" else "答案：21"
-        if self.phase == "mismatch":
+        if self.phase in {"mismatch", "candy-pass-mismatch"}:
             return "1 " * 331
         manifest = get_strategy("modeltrace")
         return next(self.matched[i] for i, p in enumerate(manifest.probes) if p.prompt == body["input"])

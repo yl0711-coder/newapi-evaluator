@@ -8,10 +8,10 @@ from urllib.parse import urlsplit
 from features.daily_checks.domain import MT_ALIASES, identity_verdict
 from features.integrity.strategies import canonical_hash, get_strategy, load_bank
 
-VERSION = "newapi-channel-monitor-v1"
+VERSION = "newapi-channel-monitor-v2"
 INTERVAL = 1800
 MAX_ATTEMPTS = 5
-QUALITY_FAILURES = 2
+QUALITY_ROUNDS = {"quality_failure": 2, "mt_mismatch": 3}
 MIN_CHANNELS = 4
 ROUND_WINDOW = 1100
 RETRYABLE = frozenset({"network_error", "timeout", "empty_response", "stream_break",
@@ -24,7 +24,8 @@ def retryable(status):
 
 def contract():
     return {"version": VERSION, "interval_seconds": INTERVAL, "max_attempts_per_question": MAX_ATTEMPTS,
-            "quality_failure_rounds": QUALITY_FAILURES, "minimum_channels": MIN_CHANNELS,
+            "quality_rounds": dict(QUALITY_ROUNDS), "minimum_channels": MIN_CHANNELS,
+            "modeltrace_after_completed_candy": True, "modeltrace_probes_per_round": 3,
             "transport_failure_bypasses_minimum": True, "recovery_success_rounds": 1,
             "identity_authenticated": False, "calibration_status": "unvalidated",
             "candy_expected_answer": 21, "candy_scorer": "candy-final-integer-v1",

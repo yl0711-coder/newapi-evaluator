@@ -4,7 +4,7 @@ import json
 
 from features.integrity.execution import resolve_registry_target
 from features.integrity.strategies import canonical_hash
-from .domain import INTERVAL, ROUND_WINDOW, next_due
+from .domain import INTERVAL, QUALITY_ROUNDS, ROUND_WINDOW, next_due
 
 
 def encode(value):
@@ -173,6 +173,8 @@ class Store:
                 return None
             cur = db.execute("""INSERT INTO channel_monitor_rounds(due,source,revision,started,deadline,status)
                 VALUES(?,?,?,?,?,'running')""", (due, "manual" if manual else "scheduled", plan["revision"], now, deadline))
+            if manual:
+                db.execute("UPDATE channel_monitor_bindings SET quality_streak=0,last_slot=NULL")
             return dict(db.execute("SELECT * FROM channel_monitor_rounds WHERE id=?", (cur.lastrowid,)).fetchone())
 
     def guard(self, run, binding, now, *, conn=None):
@@ -209,10 +211,12 @@ class Store:
         with self.registry.connect() as db:
             db.execute("BEGIN IMMEDIATE")
             self.guard(run, binding, now, conn=db)
-            current = db.execute("SELECT quality_streak,last_slot FROM channel_monitor_bindings WHERE id=?", (binding["id"],)).fetchone()
-            prior = current["quality_streak"] if current["last_slot"] == run["due"] - INTERVAL else 0
-            streak = prior + 1 if result["outcome"] == "quality_failure" else 0
-            # A manual diagnostic can recover a channel, but cannot accelerate two scheduled rounds.
+            current = db.execute("SELECT quality_streak,last_slot,last_result FROM channel_monitor_bindings WHERE id=?", (binding["id"],)).fetchone()
+            previous = json.loads(current["last_result"]) if current["last_result"] else {}
+            prior = current["quality_streak"] if (current["last_slot"] == run["due"] - INTERVAL
+                                                  and previous.get("outcome") == result["outcome"]) else 0
+            streak = prior + 1 if result["outcome"] in QUALITY_ROUNDS else 0
+            # Manual diagnostics may recover a channel, but cannot advance scheduled streaks.
             if run["source"] != "scheduled":
                 streak = 0
             db.execute("UPDATE channel_monitor_bindings SET last_result=?,quality_streak=?,last_slot=? WHERE id=?",
@@ -231,6 +235,10 @@ class Store:
             config = self.instance(secret=True)
             target = {key: binding[key] for key in ("remote_id", "registry_id", "model", "protocol", "expected", "condition_hash")}
             target["instance_fingerprint"] = canonical_hash({"base_url": config["base_url"], "user_id": config.get("user_id")})
+            current = db.execute("SELECT last_result,quality_streak FROM channel_monitor_bindings WHERE id=?", (binding["id"],)).fetchone()
+            result = json.loads(current["last_result"]) if current["last_result"] else {}
+            target.update(trigger_outcome=result.get("outcome"), streak=current["quality_streak"],
+                          threshold=QUALITY_ROUNDS.get(result.get("outcome")))
             cur = db.execute("""INSERT INTO channel_monitor_actions
                 (round_id,binding_id,binding_revision,desired,reason,target,started,status) VALUES(?,?,?,?,?,?,?,'sending')""",
                              (run["id"], binding["id"], binding["revision"], desired, reason, encode(target), now))

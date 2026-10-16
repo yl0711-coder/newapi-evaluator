@@ -53,7 +53,7 @@ async def state():
 
 @app.post("/fixture/phase/{phase}")
 async def phase(phase: str):
-    if phase not in {"healthy", "mismatch", "fault", "three-backups"}:
+    if phase not in {"healthy", "mismatch", "candy-pass-mismatch", "fault", "three-backups"}:
         raise HTTPException(400, "Unknown synthetic phase")
     if phase == "three-backups":
         management.rows.pop(5, None)

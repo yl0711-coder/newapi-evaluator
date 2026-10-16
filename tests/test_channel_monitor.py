@@ -15,6 +15,7 @@ from features.channel_monitor.newapi import NewAPI, NewAPIError, channel_project
 from features.channel_monitor.service import Service
 from features.integrity.transport import run_probe
 from shared.access import install_access
+from shared.network import SocketEgressDenied
 from shared.registry import Registry
 from tests.fixtures.channel_monitor import Management, Models
 
@@ -82,6 +83,8 @@ class DomainTests(unittest.TestCase):
                                 capture_output=True, text=True, check=True)
         value = json.loads(result.stdout)
         self.assertEqual((value["interval_seconds"], value["max_attempts_per_question"]), (1800, 5))
+        self.assertEqual(value["quality_rounds"], {"quality_failure": 2, "mt_mismatch": 3})
+        self.assertTrue(value["modeltrace_after_completed_candy"])
         self.assertEqual(value["requests_sent"], 0)
         self.assertFalse(value["credentials_read"] or value["database_opened"])
 
@@ -187,15 +190,17 @@ class ServiceTests(unittest.IsolatedAsyncioTestCase):
         self.models.queue = ["答案：20"]
         state = await self.round()
         self.assertEqual((state["owned_reason"], self.management.writes), ("", [(1, 2), (1, 1)]))
-        self.assertEqual(len(self.models.calls), 6)
+        self.assertEqual(len(self.models.calls), 9)
+        self.assertIsNotNone(state["last_result"]["modeltrace"])
 
     async def test_four_failures_then_success_uses_fifth_chance_without_disable(self):
         self.models.queue = ["network", "timeout", "", 503, "答案：21"]
         await self.round()
-        self.assertEqual(len(self.models.calls), 5)
+        self.assertEqual(len(self.models.calls), 8)
         self.assertEqual(self.management.writes, [])
         attempts = self.svc.store.attempts(1)
-        self.assertEqual([r["result"]["status"] for r in attempts], ["network_error", "timeout", "empty_response", "upstream_5xx", "completed"])
+        self.assertEqual([r["result"]["status"] for r in attempts if r["probe"] == "candy"],
+                         ["network_error", "timeout", "empty_response", "upstream_5xx", "completed"])
         self.assertTrue(all(a["status"] == "confirmed" for a in attempts))
 
     async def test_http_auth_and_empty_failure_paths_have_five_distinct_attempts(self):
@@ -215,6 +220,9 @@ class ServiceTests(unittest.IsolatedAsyncioTestCase):
         state = await self.round()
         self.assertEqual((state["owned_reason"], self.management.writes), ("quality", [(1, 2)]))
         self.assertEqual(len(self.models.calls), 8)
+        trigger = self.svc.store.history()["actions"][0]["target"]
+        self.assertEqual((trigger["trigger_outcome"], trigger["streak"], trigger["threshold"]),
+                         ("quality_failure", 2, 2))
         self.models.phase = "healthy"
         state = await self.round()
         self.assertEqual(state["owned_reason"], "")
@@ -224,6 +232,33 @@ class ServiceTests(unittest.IsolatedAsyncioTestCase):
         self.assertNotIn("synthetic-model-key", saved)
         self.assertNotIn(domain.candy_probe()["prompt"], saved)
         self.assertNotIn('"text"', saved)
+
+    async def test_correct_candy_still_runs_three_mt_probes(self):
+        state = await self.round()
+        self.assertEqual(state["last_result"]["outcome"], "healthy")
+        self.assertEqual(state["last_result"].get("mt_verdict"), "match")
+        self.assertEqual([c["candy"] for c in self.models.calls], [True, False, False, False])
+
+    async def test_three_correct_candy_mismatch_rounds_disable_and_matching_round_restores(self):
+        self.models.phase = "candy-pass-mismatch"
+        for streak in (1, 2):
+            state = await self.round()
+            self.assertIs(state["last_result"]["candy_correct"], True)
+            self.assertEqual(state["last_result"]["outcome"], "mt_mismatch")
+            self.assertEqual(state["quality_streak"], streak)
+            self.assertEqual(self.management.writes, [])
+        state = await self.round()
+        self.assertEqual((state["owned_reason"], self.management.writes), ("quality", [(1, 2)]))
+        self.assertEqual(len(self.models.calls), 12)
+        trigger = self.svc.store.history()["actions"][0]["target"]
+        self.assertEqual({k: trigger[k] for k in ("trigger_outcome", "streak", "threshold")},
+                         {"trigger_outcome": "mt_mismatch", "streak": 3, "threshold": 3})
+        await self.round()
+        self.assertEqual(self.management.writes, [(1, 2)])
+        self.models.phase = "healthy"
+        state = await self.round()
+        self.assertEqual((state["owned_reason"], self.management.writes), ("", [(1, 2), (1, 1)]))
+        self.assertEqual(self.svc.store.history()["actions"][-1]["target"], trigger)
 
     async def test_quality_protection_alert_and_transport_bypass_are_separate(self):
         self.management.rows.pop(5)
@@ -235,6 +270,249 @@ class ServiceTests(unittest.IsolatedAsyncioTestCase):
         self.models.queue = ["timeout"]*5
         await self.round()
         self.assertEqual(self.management.writes, [(1, 2)])
+
+    async def test_correct_candy_mt_mismatch_respects_four_channel_protection(self):
+        self.management.rows.pop(5)
+        self.models.phase = "candy-pass-mismatch"
+        await self.round(); await self.round()
+        self.assertEqual(self.svc.store.history()["events"], [])
+        state = await self.round()
+        self.assertEqual(state["quality_streak"], 3)
+        self.assertEqual(self.management.writes, [])
+        alarm = self.svc.store.history()["events"][0]
+        self.assertEqual((alarm["kind"], alarm["detail"]["deficient"][0]["remaining"]), ("minimum_channels", 3))
+
+    async def test_match_unknown_manual_and_missed_slot_break_three_round_streak(self):
+        for interrupt in ("match", "mt_unknown", "candy_unknown", "manual", "missed"):
+            with self.subTest(interrupt=interrupt):
+                self.svc.enable(False)
+                self.svc.enable(True, confirm_live=True, confirm_manage=True)
+                self.models.phase = "candy-pass-mismatch"
+                await self.round()
+                self.assertEqual((await self.round())["quality_streak"], 2)
+                if interrupt == "missed":
+                    state = await self.round(slots=2)
+                else:
+                    if interrupt == "match":
+                        self.models.phase = "healthy"
+                    elif interrupt == "mt_unknown":
+                        self.models.queue = ["答案：21", "无法确定", "无法确定", "无法确定"]
+                    elif interrupt == "candy_unknown":
+                        self.models.queue = ["无法确定"]
+                    if interrupt == "manual":
+                        await self.svc.run_now()
+                        await self.svc.worker
+                        state = self.svc.store.binding(self.binding["id"])
+                    else:
+                        state = await self.round()
+                    self.assertEqual(state["quality_streak"], 0)
+                    if interrupt in {"mt_unknown", "candy_unknown"}:
+                        self.assertEqual(state["last_result"]["outcome"], "inconclusive")
+                    self.models.phase = "candy-pass-mismatch"
+                    state = await self.round()
+                self.assertEqual(state["quality_streak"], 1)
+                self.assertEqual((await self.round())["quality_streak"], 2)
+                self.assertEqual(self.management.writes, [])
+
+    async def test_candy_correct_and_wrong_mismatch_paths_do_not_combine(self):
+        self.models.phase = "mismatch"
+        self.assertEqual((await self.round())["quality_streak"], 1)
+        self.models.phase = "candy-pass-mismatch"
+        self.assertEqual((await self.round())["quality_streak"], 1)
+        self.assertEqual((await self.round())["quality_streak"], 2)
+        self.models.phase = "mismatch"
+        self.assertEqual((await self.round())["quality_streak"], 1)
+        self.assertEqual(self.management.writes, [])
+        state = await self.round()
+        self.assertEqual((state["owned_reason"], self.management.writes), ("quality", [(1, 2)]))
+
+    async def test_started_manual_breaks_streak_before_interruption_or_rejection(self):
+        for interruption in ("stop", "restart", "version_rejected"):
+            with self.subTest(interruption=interruption):
+                self.svc.enable(False)
+                self.svc.enable(True, confirm_live=True, confirm_manage=True)
+                self.models.phase = "candy-pass-mismatch"
+                await self.round()
+                self.assertEqual((await self.round())["quality_streak"], 2)
+                next_due = self.svc.store.plan()["next_due"]
+                self.now += 1
+                try:
+                    if interruption == "restart":
+                        self.svc.store.begin(self.now, manual=True)
+                    else:
+                        if interruption == "stop":
+                            self.models.entered.clear()
+                            self.models.gate.clear()
+                            self.models.queue = ["block"]
+                        else:
+                            self.management.version = "v1.0.0-rc.27"
+                        await self.svc.run_now()
+                    state = self.svc.store.binding(self.binding["id"])
+                    due_after_begin = self.svc.store.plan()["next_due"]
+                    if interruption == "stop":
+                        await asyncio.wait_for(self.models.entered.wait(), 2)
+                    elif interruption == "version_rejected":
+                        await self.svc.worker
+                finally:
+                    await self.svc.stop()
+                    self.svc.store.recover(self.now)
+                    self.models.gate.set()
+                    self.management.version = "v1.0.0-rc.26"
+                self.assertEqual((state["quality_streak"], state["last_slot"]), (0, None))
+                self.assertEqual(due_after_begin, next_due)
+                self.assertEqual(self.svc.store.history()["rounds"][0]["status"],
+                                 "partial" if interruption == "version_rejected" else "interrupted")
+                self.assertEqual((await self.round())["quality_streak"], 1)
+                self.assertEqual(self.management.writes, [])
+
+    async def test_rejected_manual_during_scheduled_round_preserves_streak(self):
+        self.models.phase = "candy-pass-mismatch"
+        await self.round(); await self.round()
+        self.models.queue = ["block"]
+        self.now += 1800
+        await self.svc.tick()
+        await asyncio.wait_for(self.models.entered.wait(), 2)
+        try:
+            next_due = self.svc.store.plan()["next_due"]
+            with self.assertRaisesRegex(ValueError, "已有轮次运行"):
+                await self.svc.run_now()
+            self.assertEqual(self.svc.store.binding(self.binding["id"])["quality_streak"], 2)
+            self.assertEqual(self.svc.store.plan()["next_due"], next_due)
+        finally:
+            await self.svc.stop()
+            self.models.gate.set()
+        self.assertEqual(self.management.writes, [])
+
+    async def test_correct_candy_then_five_mt_failures_disable_without_protection(self):
+        self.management.rows = {1: self.management.rows[1]}
+        self.models.queue = ["答案：21"] + ["timeout"]*5
+        state = await self.round()
+        self.assertEqual((state["owned_reason"], self.management.writes), ("transport", [(1, 2)]))
+        self.assertIs(state["last_result"]["candy_correct"], True)
+        mt = state["last_result"]["modeltrace"]
+        self.assertEqual((mt["requested_answers"], mt["missing_answers"], len(mt["not_run"])), (1, 2, 2))
+        self.assertEqual(state["last_result"]["mt_verdict"], "unknown")
+        self.assertNotIn("minimum_channels", [e["kind"] for e in self.svc.store.history()["events"]])
+
+    async def test_transport_recovery_keeps_valid_candy_priority_over_mt_evidence(self):
+        for condition in ("mismatch", "unknown", "fault"):
+            with self.subTest(condition=condition):
+                self.models.queue = ["timeout"]*5
+                await self.round()
+                self.models.phase = "candy-pass-mismatch"
+                if condition == "unknown":
+                    self.models.queue = ["无法确定"]
+                elif condition == "fault":
+                    self.models.queue = ["答案：21"] + ["timeout"]*5
+                state = await self.round()
+                self.assertEqual((state["owned_reason"], self.management.rows[1]["status"]), ("", 1))
+                self.assertEqual(state["last_result"]["outcome"], "transport_recovered")
+                self.assertIsNotNone(state["last_result"]["modeltrace"])
+        self.assertEqual(self.management.writes, [(1, 2), (1, 1)]*3)
+
+    async def test_quality_owner_is_not_downgraded_by_mt_transport_failure(self):
+        self.models.phase = "candy-pass-mismatch"
+        await self.round(); await self.round(); await self.round()
+        self.models.queue = ["答案：21"] + ["timeout"]*5
+        state = await self.round()
+        self.assertEqual(state["owned_reason"], "quality")
+        self.assertEqual(state["last_result"]["outcome"], "transport_failure")
+        self.assertEqual(self.management.writes, [(1, 2)])
+        self.models.phase = "healthy"
+        self.models.queue = ["答案：20"]
+        state = await self.round()
+        self.assertEqual(state["owned_reason"], "quality")
+        self.assertEqual(self.management.writes, [(1, 2)])
+        self.assertEqual((await self.round())["owned_reason"], "")
+
+    async def test_mt_egress_policy_rejection_blocks_transport_recovery(self):
+        from features.stability.app.egress import EgressDenied
+        original = self.models.handler
+        for stage in ("preflight", "socket", "wrapped_socket"):
+            with self.subTest(stage=stage):
+                self.models.handler = original
+                self.models.queue = ["timeout"] * 5
+                if not self.svc.store.binding(self.binding["id"])["owned_reason"]:
+                    await self.round()
+                rejected = 0
+                checked = 0
+
+                async def preflight(*args, **kwargs):
+                    nonlocal checked
+                    checked += 1
+                    if checked > 1:
+                        raise EgressDenied("synthetic policy refusal")
+
+                async def handler(request):
+                    nonlocal rejected
+                    if json.loads(request.content)["input"] != domain.candy_probe()["prompt"]:
+                        rejected += 1
+                        if stage == "wrapped_socket":
+                            try:
+                                raise SocketEgressDenied("synthetic policy refusal")
+                            except SocketEgressDenied as exc:
+                                raise httpx.ConnectError("synthetic wrapped refusal", request=request) from exc
+                        raise SocketEgressDenied("synthetic policy refusal")
+                    return await original(request)
+
+                self.models.queue = []
+                self.models.handler = handler
+                if stage == "preflight":
+                    with patch("features.integrity.transport.validate_url", new=AsyncMock(side_effect=preflight)):
+                        state = await self.round()
+                else:
+                    state = await self.round()
+                history = self.svc.store.history()
+                self.assertEqual((state["owned_reason"], self.management.rows[1]["status"]), ("transport", 2))
+                self.assertEqual(self.management.writes, [(1, 2)])
+                self.assertEqual(history["rounds"][0]["status"], "partial")
+                attempts = self.svc.store.attempts(history["rounds"][0]["id"])
+                self.assertEqual(len(attempts), 1 if stage == "preflight" else 2)
+                if stage != "preflight":
+                    self.assertEqual(attempts[-1]["result"]["status"], "egress_denied")
+                    self.assertEqual(attempts[-1]["status"], "confirmed")
+                self.assertEqual(rejected, 0 if stage == "preflight" else 1)
+
+    async def test_cancel_during_mt_does_not_restore_after_valid_candy(self):
+        self.models.queue = ["timeout"]*5
+        await self.round()
+        self.models.queue = ["答案：21", "block"]
+        self.now += 1800
+        await self.svc.tick()
+        await asyncio.wait_for(self.models.entered.wait(), 2)
+        await self.svc.stop()
+        self.assertEqual(self.management.writes, [(1, 2)])
+        self.assertEqual(self.svc.store.binding(self.binding["id"])["owned_reason"], "transport")
+        self.assertEqual(self.svc.store.history()["rounds"][0]["status"], "interrupted")
+
+    async def interrupt_transport_recovery_during_mt(self, change):
+        self.models.queue = ["timeout"]*5
+        await self.round()
+        self.models.queue = ["答案：21", "block"]
+        task = asyncio.create_task(self.round())
+        try:
+            await asyncio.wait_for(self.models.entered.wait(), 2)
+            change()
+            self.models.gate.set()
+            await asyncio.wait_for(task, 2)
+        finally:
+            self.models.gate.set()
+            await self.svc.stop()
+            await asyncio.gather(task, return_exceptions=True)
+        self.assertEqual(self.management.writes, [(1, 2)])
+        self.assertEqual(self.svc.store.binding(self.binding["id"])["owned_reason"], "transport")
+        self.assertEqual(self.svc.store.history()["rounds"][0]["status"], "partial")
+
+    async def test_registry_drift_during_mt_blocks_transport_recovery(self):
+        def disable():
+            row = self.registry.get(self.channel["id"])
+            self.registry.save({**row, "enabled": False}, row["id"], row["version"])
+        await self.interrupt_transport_recovery_during_mt(disable)
+
+    async def test_expiry_during_mt_blocks_transport_recovery(self):
+        def expire():
+            self.now += 1100
+        await self.interrupt_transport_recovery_during_mt(expire)
 
     async def test_concurrent_quality_candidates_recalculate_remaining_channels(self):
         self.svc.enable(False)
@@ -458,9 +736,9 @@ class ServiceTests(unittest.IsolatedAsyncioTestCase):
         self.now = 1_800_003_600
         await self.svc.tick()
         await self.svc.worker
-        self.assertEqual(len(self.models.calls), 1)
+        self.assertEqual(len(self.models.calls), 4)
         await self.svc.tick()
-        self.assertEqual(len(self.models.calls), 1)
+        self.assertEqual(len(self.models.calls), 4)
 
     async def test_restart_marks_unfinished_permits_unknown_and_locks_actions(self):
         self.svc.recover()

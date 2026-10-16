@@ -145,9 +145,11 @@ class Service:
                 metrics[field] = value if type(value) in {int, float} and math.isfinite(value) and 0 <= value <= 2**63-1 else None
             self.store.complete_attempt(run["id"], binding["id"], probe["id"], attempt, metrics, self.clock())
             raw.pop("text", None)
+            if status == "egress_denied":
+                raise ValueError("出站策略拒绝")
             if valid or not domain.retryable(status):
                 return {"completed": valid, "answer": answer, "observation": observation, "exhausted": False}
-        return {"completed": False, "answer": None, "observation": None, "exhausted": True}
+        return {"completed": False, "answer": None, "observation": observation, "exhausted": True}
 
     async def evaluate(self, run, binding, client):
         candy = await self.question(run, binding, client, domain.candy_probe())
@@ -155,26 +157,36 @@ class Service:
                   "outcome": "inconclusive", "condition_hash": binding["condition_hash"]}
         if candy["exhausted"]:
             return {**result, "outcome": "transport_failure"}
-        if candy["completed"] and binding["owned_reason"] == "transport":
-            return {**result, "outcome": "transport_recovered"}
-        if candy["answer"] is True and binding["owned_reason"] != "quality":
-            return {**result, "outcome": "healthy"}
-        if candy["answer"] is None or not candy["completed"]:
+        if not candy["completed"]:
             return result
         manifest = get_strategy("modeltrace")
-        observations = []
-        for request in build_requests(manifest, {"reasoning_effort": "low"}):
+        observations, not_run = [], []
+        requests = build_requests(manifest, {"reasoning_effort": "low"})
+        exhausted = False
+        for index, request in enumerate(requests):
             item = await self.question(run, binding, client, request.probe, manifest=manifest)
-            if item["exhausted"]:
-                return {**result, "outcome": "transport_failure"}
             observations.append(item["observation"])
+            if item["exhausted"]:
+                exhausted = True
+                not_run = [r.probe["id"] for r in requests[index+1:]]
+                break
         score = score_strategy(manifest, observations, expected_model=binding["expected"])
         result["modeltrace"] = {k: score[k] for k in ("status", "source_verdict", "prediction", "probability",
-                                                       "p_expected", "valid_answers", "invalid_answers", "results") if k in score}
+                                                       "p_expected", "valid_answers", "invalid_answers", "results",
+                                                       "requested_answers", "missing_answers") if k in score}
+        result["modeltrace"]["not_run"] = not_run
         verdict = domain.mt_verdict(score)
         result["mt_verdict"] = verdict
-        if candy["answer"] is True and verdict == "match":
+        # A valid candy response still satisfies the original transport recovery
+        # rule; MT evidence cannot turn it into a stricter quality recovery rule.
+        if binding["owned_reason"] == "transport":
+            result["outcome"] = "transport_recovered"
+        elif exhausted:
+            result["outcome"] = "transport_failure"
+        elif candy["answer"] is True and verdict == "match":
             result["outcome"] = "healthy"
+        elif candy["answer"] is True and verdict == "mismatch":
+            result["outcome"] = "mt_mismatch"
         elif candy["answer"] is False and verdict == "mismatch":
             result["outcome"] = "quality_failure"
         return result
@@ -231,7 +243,7 @@ class Service:
                     await self.act(run, binding, client, 1, binding["owned_reason"])
             elif result["outcome"] == "transport_failure":
                 await self.act(run, binding, client, 2, "transport")
-            elif result["outcome"] == "quality_failure" and streak >= domain.QUALITY_FAILURES:
+            elif result["outcome"] in domain.QUALITY_ROUNDS and streak >= domain.QUALITY_ROUNDS[result["outcome"]]:
                 await self.act(run, binding, client, 2, "quality")
             return "tested"
         except (ValueError, KeyError):

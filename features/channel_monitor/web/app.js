@@ -1,7 +1,7 @@
 const $ = id => document.getElementById(id);
 const api = (path, options) => Workbench.api('/api/channel-monitor' + path, options);
 let state, timer, busy = false, generation = 0;
-const names = {healthy:'本轮正常',transport_recovered:'请求已恢复',transport_failure:'五次请求均失败',quality_failure:'糖果答错且指纹不匹配',inconclusive:'无法判定'};
+const names = {healthy:'本轮正常',transport_recovered:'请求已恢复',transport_failure:'五次请求均失败',quality_failure:'糖果答错且 MT 明确偏离',mt_mismatch:'糖果答对但 MT 明确偏离',inconclusive:'无法判定'};
 const events = {minimum_channels:'保底保护：保留渠道并告警',channel_disabled:'已停用渠道',channel_enabled:'已恢复渠道',management_action_unconfirmed:'管理动作未确认，渠道已锁定，请人工核对',binding_unavailable:'目标不可用、配置变化或测试窗口已结束',externally_enabled:'渠道已被外部启用，解除自动恢复所有权',external_status:'外部停用，保持现状',round_interrupted:'本轮未完成，未确认的请求不会计为五次失败'};
 const time = value => value == null ? '—' : new Date(value * 1000).toLocaleString();
 function message(text){$('message').textContent = text;}
@@ -12,6 +12,8 @@ async function refresh(initial=false){
   const [meta,history]=await Promise.all([api('/meta'),api('/history')]);
   if(ticket!==generation)return;
   state=meta;
+  const thresholds=meta.quality_rounds;
+  $('quality-rules').textContent=`糖果每次完成后均检测 3 个 MT 探针。糖果答错且 MT 明确偏离，连续 ${thresholds.quality_failure} 个半小时轮次停用；糖果答对但 MT 明确偏离，连续 ${thresholds.mt_mismatch} 个半小时轮次停用。两条路径分别计数，无法判定、匹配、漏轮及手动测试会中断连续计数。`;
   $('plan-status').textContent=meta.executor.plan.enabled ? (meta.executor.running?'监控中 · 本轮运行中':'监控已启用') : '监控已暂停';
   $('schedule').textContent=`下次计划开始：${time(meta.executor.plan.next_due)}；按开始到开始计时，错过不补测。`;
   $('instance-status').textContent=meta.instance?'管理令牌已加密保存，页面不回显。':'尚未配置管理连接。';
@@ -28,7 +30,9 @@ async function refresh(initial=false){
   for(const row of meta.bindings){
     const card=Workbench.node('article','','binding');card.dataset.binding=String(row.id);
     card.append(Workbench.node('strong',`New API #${row.remote_id} → 公共渠道 #${row.registry_id} · ${row.model}`));
-    card.append(Workbench.node('p',`${row.locked?'已锁定':'自动管理'} · ${row.owned_reason?(row.owned_reason==='quality'?'质量停用，等待答对且匹配':'故障停用，等待请求正常'):'当前无自动停用所有权'} · 连续质量异常 ${row.quality_streak}/2`));
+    card.append(Workbench.node('p',`${row.locked?'已锁定':'自动管理'} · ${row.owned_reason?(row.owned_reason==='quality'?'质量停用，等待答对且匹配':'故障停用，等待请求正常'):'当前无自动停用所有权'}`));
+    const outcome=row.last_result?.outcome;
+    card.append(Workbench.node('p',`糖果错且 MT 偏离 ${outcome==='quality_failure'?row.quality_streak:0}/${thresholds.quality_failure} · 糖果对且 MT 偏离 ${outcome==='mt_mismatch'?row.quality_streak:0}/${thresholds.mt_mismatch}`));
     if(row.last_result){card.append(Workbench.node('p',names[row.last_result.outcome]||row.last_result.outcome));if(row.last_result.modeltrace)card.append(Workbench.node('p','MT 预测：'+(row.last_result.modeltrace.prediction||'无法判定')));}
     const actions=Workbench.node('div','','actions');
     actions.append(button(row.locked?'解除锁定':'人工锁定',()=>api(`/bindings/${row.id}/lock`,{method:'PUT',body:JSON.stringify({locked:!row.locked})})));
@@ -40,7 +44,7 @@ async function refresh(initial=false){
   for(const e of history.events){const node=Workbench.node('div',`${time(e.created)} · ${e.binding_id==null?'本轮':'映射 #'+e.binding_id} · ${events[e.kind]||e.kind}`,'event');if(e.kind==='minimum_channels')for(const d of e.detail.deficient)node.append(Workbench.node('p',`${d.group} / ${d.model}：禁用后剩 ${d.remaining} 条，至少需要 4 条`));$('events').append(node);}
   if(!history.events.length)$('events').append(Workbench.node('p','暂无告警或动作。'));
   $('actions').replaceChildren();
-  for(const action of history.actions){const target=action.target;const item=Workbench.node('div',`#${action.id} · ${time(action.started)} · New API #${target.remote_id} · ${action.desired===2?'停用':'启用'} · ${action.status}`,'event');item.append(Workbench.node('p',`公共渠道 #${target.registry_id} · ${target.model} · ${target.protocol}`));const evidence=Workbench.node('details');evidence.append(Workbench.node('summary','冻结目标与操作依据'),Workbench.node('pre',JSON.stringify(target,null,2)));item.append(evidence);$('actions').append(item);}
+  for(const action of history.actions){const target=action.target;const item=Workbench.node('div',`#${action.id} · ${time(action.started)} · New API #${target.remote_id} · ${action.desired===2?'停用':'启用'} · ${action.status}`,'event');item.append(Workbench.node('p',`公共渠道 #${target.registry_id} · ${target.model} · ${target.protocol}`));if(target.trigger_outcome)item.append(Workbench.node('p',(names[target.trigger_outcome]||target.trigger_outcome)+(target.threshold?` · 连续 ${target.streak}/${target.threshold} 轮`:'')));const evidence=Workbench.node('details');evidence.append(Workbench.node('summary','冻结目标与操作依据'),Workbench.node('pre',JSON.stringify(target,null,2)));item.append(evidence);$('actions').append(item);}
   if(!history.actions.length)$('actions').append(Workbench.node('p','暂无管理动作。'));
   $('rounds').replaceChildren();
   for(const round of history.rounds)$('rounds').append(button(`#${round.id} · ${time(round.due)} · ${round.status}`,async()=>{$('attempts').textContent=JSON.stringify(await api(`/rounds/${round.id}/attempts`),null,2);}));
