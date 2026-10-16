@@ -323,6 +323,99 @@ class ServiceTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(self.svc.store.attempts(1), [])
         self.assertEqual(self.management.writes, [])
 
+    def change_registry_mapping(self):
+        model = next(m for m in self.svc.catalog.models() if m["model"] == "gpt-6-astra")
+        self.svc.catalog.bind(self.channel["id"], model["id"], "gpt-6-astra-changed", "responses")
+
+    async def registry_edit_during_final_send_guard(self, edit):
+        entered, release = asyncio.Event(), asyncio.Event()
+        checking_send = False
+        original_management, original_sender = self.management.handler, self.svc.sender
+
+        async def management(request):
+            if checking_send and request.method == "GET" and request.url.path == "/api/channel/1":
+                entered.set()
+                await release.wait()
+            return await original_management(request)
+
+        async def sender(channel, probe, *, before_send):
+            async def final_guard():
+                nonlocal checking_send
+                checking_send = True
+                await before_send()
+            return await original_sender(channel, probe, before_send=final_guard)
+
+        self.management.handler, self.svc.sender = management, sender
+        task = asyncio.create_task(self.round())
+        try:
+            await asyncio.wait_for(entered.wait(), 2)
+            edit()
+            release.set()
+            await asyncio.wait_for(task, 2)
+        finally:
+            release.set()
+            await self.svc.stop()
+            await asyncio.gather(task, return_exceptions=True)
+        self.assertEqual(self.models.calls, [])
+        self.assertEqual(self.svc.store.attempts(1), [])
+        self.assertEqual(self.management.writes, [])
+        self.assertEqual(self.svc.store.history()["rounds"][0]["status"], "partial")
+
+    async def test_registry_disabled_during_final_management_read_blocks_model_request(self):
+        def disable():
+            row = self.registry.get(self.channel["id"])
+            self.registry.save({**row, "enabled": False}, row["id"], row["version"])
+        await self.registry_edit_during_final_send_guard(disable)
+
+    async def test_registry_key_changed_during_final_management_read_blocks_model_request(self):
+        def replace_key():
+            row = self.registry.get(self.channel["id"])
+            self.registry.save({**row, "api_key": "synthetic-replaced-key"}, row["id"], row["version"])
+        await self.registry_edit_during_final_send_guard(replace_key)
+
+    async def test_registry_mapping_changed_during_final_management_read_blocks_model_request(self):
+        await self.registry_edit_during_final_send_guard(self.change_registry_mapping)
+
+    async def registry_edit_during_action_read(self, path, edit):
+        entered, release = asyncio.Event(), asyncio.Event()
+        original = self.management.handler
+
+        async def management(request):
+            state = self.svc.store.binding(self.binding["id"])
+            if request.method == "GET" and request.url.path == path and state["last_result"]:
+                entered.set()
+                await release.wait()
+            return await original(request)
+
+        self.management.handler = management
+        task = asyncio.create_task(self.round())
+        try:
+            await asyncio.wait_for(entered.wait(), 2)
+            edit()
+            release.set()
+            await asyncio.wait_for(task, 2)
+        finally:
+            release.set()
+            await self.svc.stop()
+            await asyncio.gather(task, return_exceptions=True)
+        self.assertEqual(self.management.writes, [])
+        self.assertEqual(self.svc.store.history()["actions"], [])
+        self.assertEqual(self.svc.store.binding(self.binding["id"])["owned_reason"], "")
+        self.assertEqual(self.svc.store.history()["rounds"][0]["status"], "partial")
+
+    async def test_registry_disabled_during_action_version_read_blocks_management_write(self):
+        self.models.phase = "fault"
+        def disable():
+            row = self.registry.get(self.channel["id"])
+            self.registry.save({**row, "enabled": False}, row["id"], row["version"])
+        await self.registry_edit_during_action_read("/api/status", disable)
+        self.assertEqual(len(self.models.calls), 5)
+
+    async def test_registry_mapping_changed_during_quality_inventory_read_blocks_management_write(self):
+        self.models.phase = "mismatch"
+        await self.round()
+        await self.registry_edit_during_action_read("/api/channel/", self.change_registry_mapping)
+
     async def test_remote_config_change_and_version_mismatch_prevent_actions(self):
         self.management.rows[1]["base_url"] = "http://127.0.0.1:9/other"
         await self.round()

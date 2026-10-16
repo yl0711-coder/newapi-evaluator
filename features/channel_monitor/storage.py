@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 
+from features.integrity.execution import resolve_registry_target
 from features.integrity.strategies import canonical_hash
 from .domain import INTERVAL, ROUND_WINDOW, next_due
 
@@ -174,19 +175,26 @@ class Store:
                 VALUES(?,?,?,?,?,'running')""", (due, "manual" if manual else "scheduled", plan["revision"], now, deadline))
             return dict(db.execute("SELECT * FROM channel_monitor_rounds WHERE id=?", (cur.lastrowid,)).fetchone())
 
-    def guard(self, run, binding, now):
-        with self.registry.connect() as db:
-            plan = db.execute("SELECT enabled,revision FROM channel_monitor_settings WHERE id=1").fetchone()
-            row = db.execute("SELECT locked,revision FROM channel_monitor_bindings WHERE id=?", (binding["id"],)).fetchone()
-            state = db.execute("SELECT status FROM channel_monitor_rounds WHERE id=?", (run["id"],)).fetchone()
+    def guard(self, run, binding, now, *, conn=None):
+        if conn is None:
+            with self.registry.connect() as current:
+                return self.guard(run, binding, now, conn=current)
+        plan = conn.execute("SELECT enabled,revision FROM channel_monitor_settings WHERE id=1").fetchone()
+        row = conn.execute("SELECT locked,revision FROM channel_monitor_bindings WHERE id=?", (binding["id"],)).fetchone()
+        state = conn.execute("SELECT status FROM channel_monitor_rounds WHERE id=?", (run["id"],)).fetchone()
         if (not plan["enabled"] or plan["revision"] != run["revision"] or not row or row["locked"]
                 or row["revision"] != binding["revision"] or now >= run["deadline"] or not state or state[0] != "running"):
             raise ValueError("监控已暂停、配置变化或本轮窗口已结束")
+        target = resolve_registry_target(self.registry, binding["registry_id"], binding["model"],
+                                         binding["protocol"], conn=conn)
+        if target.snapshot != binding["snapshot"]:
+            raise ValueError("直测连接或模型映射变化，请重新绑定")
+        return target
 
     def reserve(self, run, binding, probe, attempt, now):
         with self.registry.connect() as db:
             db.execute("BEGIN IMMEDIATE")
-            self.guard(run, binding, now)
+            self.guard(run, binding, now, conn=db)
             db.execute("""INSERT INTO channel_monitor_attempts
                 (round_id,binding_id,probe,attempt,status,started) VALUES(?,?,?,?,'sending',?)""",
                        (run["id"], binding["id"], probe, attempt, now))
@@ -200,7 +208,7 @@ class Store:
     def result(self, run, binding, result, now):
         with self.registry.connect() as db:
             db.execute("BEGIN IMMEDIATE")
-            self.guard(run, binding, now)
+            self.guard(run, binding, now, conn=db)
             current = db.execute("SELECT quality_streak,last_slot FROM channel_monitor_bindings WHERE id=?", (binding["id"],)).fetchone()
             prior = current["quality_streak"] if current["last_slot"] == run["due"] - INTERVAL else 0
             streak = prior + 1 if result["outcome"] == "quality_failure" else 0
@@ -219,7 +227,7 @@ class Store:
     def reserve_action(self, run, binding, desired, reason, now):
         with self.registry.connect() as db:
             db.execute("BEGIN IMMEDIATE")
-            self.guard(run, binding, now)
+            self.guard(run, binding, now, conn=db)
             config = self.instance(secret=True)
             target = {key: binding[key] for key in ("remote_id", "registry_id", "model", "protocol", "expected", "condition_hash")}
             target["instance_fingerprint"] = canonical_hash({"base_url": config["base_url"], "user_id": config.get("user_id")})

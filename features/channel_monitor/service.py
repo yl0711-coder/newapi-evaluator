@@ -87,15 +87,12 @@ class Service:
 
     async def fresh(self, run, binding, client):
         self.store.guard(run, binding, self.clock())
-        target = resolve_registry_target(self.registry, binding["registry_id"], binding["model"], binding["protocol"])
-        if target.snapshot != binding["snapshot"]:
-            raise ValueError("直测连接或模型映射变化，请重新绑定")
         remote = await client.channel(binding["remote_id"])
+        target = self.store.guard(run, binding, self.clock())
         domain.validate_mapping(remote, target, binding["model"])
         if (remote["config_hash"] != binding["remote_hash"] or
                 domain.condition_hash(target.snapshot, remote["config_hash"], binding["model"], binding["expected"]) != binding["condition_hash"]):
             raise ValueError("渠道配置或检测合同变化，请重新绑定")
-        self.store.guard(run, binding, self.clock())
         return target, remote
 
     async def question(self, run, binding, client, probe, *, manifest=None):

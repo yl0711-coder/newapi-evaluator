@@ -1,7 +1,7 @@
 {
   "version": 1,
   "created_at": "2026-09-27T06:21:51Z",
-  "updated_at": "2026-10-16T03:29:30Z",
+  "updated_at": "2026-10-16T04:04:04Z",
   "files": {
     ".dockerignore": {
       "role": "index",
@@ -59,9 +59,9 @@
     },
     "aoci.code.txt": {
       "role": "index",
-      "sha256": "35bf5ddaa183b284bdadc98cc1b803aa654226094c8e36f2252028978fd51385",
-      "size": 147859,
-      "normalized_sha256": "35bf5ddaa183b284bdadc98cc1b803aa654226094c8e36f2252028978fd51385"
+      "sha256": "e0d8e601835240b388bd737031080cfa48b5f2c9270f4f0922f99d7f08466052",
+      "size": 147949,
+      "normalized_sha256": "e0d8e601835240b388bd737031080cfa48b5f2c9270f4f0922f99d7f08466052"
     },
     "aoci.meta.txt": {
       "role": "index",
@@ -269,9 +269,9 @@
     },
     "docs/newapi-channel-monitor.md": {
       "role": "index",
-      "sha256": "26c22dbc7e49290a982eb4d0c307c14d54e207beaaac1f8b1c99eb4402b949b8",
-      "size": 4349,
-      "normalized_sha256": "26c22dbc7e49290a982eb4d0c307c14d54e207beaaac1f8b1c99eb4402b949b8"
+      "sha256": "f75d83519a27853000b08d2be2531e1b017d5f7587fc4bac85c8571935e719e3",
+      "size": 4690,
+      "normalized_sha256": "f75d83519a27853000b08d2be2531e1b017d5f7587fc4bac85c8571935e719e3"
     },
     "docs/protocol-admission-testing.md": {
       "role": "index",
@@ -449,15 +449,15 @@
     },
     "features/channel_monitor/service.py": {
       "role": "index",
-      "sha256": "ff7998c6390020ad81de06201397901b4191d5d5ab11679f0b11c0e2ac21cb53",
-      "size": 16356,
-      "normalized_sha256": "ff7998c6390020ad81de06201397901b4191d5d5ab11679f0b11c0e2ac21cb53"
+      "sha256": "8b758ad6fd47461628cc05351f5c55e8af992fc75ee269f890bb5fde04887a88",
+      "size": 16111,
+      "normalized_sha256": "8b758ad6fd47461628cc05351f5c55e8af992fc75ee269f890bb5fde04887a88"
     },
     "features/channel_monitor/storage.py": {
       "role": "index",
-      "sha256": "7d4004e5aae1d8e5447037a3a4e1b5d1a313379d86b6f4be3c280872265ab6e5",
-      "size": 17065,
-      "normalized_sha256": "7d4004e5aae1d8e5447037a3a4e1b5d1a313379d86b6f4be3c280872265ab6e5"
+      "sha256": "173ae273d5bfe80a8c34d7a748d97ab912d8613d7a8c3ec415dd2c9966fee20d",
+      "size": 17594,
+      "normalized_sha256": "173ae273d5bfe80a8c34d7a748d97ab912d8613d7a8c3ec415dd2c9966fee20d"
     },
     "features/channel_monitor/web/app.js": {
       "role": "index",
@@ -1954,9 +1954,9 @@
     },
     "tests/test_channel_monitor.py": {
       "role": "observe",
-      "sha256": "0a06826091ebbb90aca3eee8820c13925a7d089074109631265d5cdb33116070",
-      "size": 21379,
-      "normalized_sha256": "0a06826091ebbb90aca3eee8820c13925a7d089074109631265d5cdb33116070"
+      "sha256": "551af7d9bc3e4bba0a044c563be2637d308aee7c9a704c8af17c4bf157f4dd29",
+      "size": 25786,
+      "normalized_sha256": "551af7d9bc3e4bba0a044c563be2637d308aee7c9a704c8af17c4bf157f4dd29"
     },
     "tests/test_cli.py": {
       "role": "observe",
