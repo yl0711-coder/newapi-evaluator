@@ -8,6 +8,28 @@ import httpx
 
 from features.channel_monitor import domain
 from features.integrity.strategies import get_strategy, load_bank
+from shared.feishu_channels import ChannelSync, SettingsInput
+
+
+class OnlineInventory:
+    def __init__(self, registry, base="http://127.0.0.1:9/direct"):
+        self.sync = ChannelSync(registry)
+        self.sync.configure(SettingsInput(app_id="cli_synthetic", app_secret="synthetic-app-secret",
+                                          table_url="https://synthetic.feishu.cn/base/synthetic?table=tblSynthetic"))
+        self.rows = [{"record_id": "record-1", "fields": {"是否在线": "已上线", "apikey": "synthetic-model-key",
+                     "baseurl": base, "渠道名称": "Synthetic upstream", "模型家族": "GPT", "倍率": 1}}]
+        self.calls, self.failure = 0, False
+        self.import_rows()
+
+    def import_rows(self):
+        snapshot = {"source_id": "synthetic-source", "rows": copy.deepcopy(self.rows)}
+        self.sync.apply(self.sync.begin(), snapshot, self.sync.prepare(snapshot["rows"], "synthetic-app-secret"))
+
+    async def read(self, settings, secret):
+        self.calls += 1
+        if self.failure:
+            raise ValueError("synthetic incomplete inventory")
+        return {"source_id": "synthetic-source", "rows": copy.deepcopy(self.rows)}
 
 
 def matching_answers():

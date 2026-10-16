@@ -10,7 +10,7 @@
 
 清单只描述测试，不读取业务数据库、不加载凭据、不发真实请求。以下 `python` 指仓库支持的 Python 3.10+ 解释器；实际测试环境按候选版本安装 `requirements.txt`。查看清单使用：
 
-`integrity` 登记 `channel-monitor-inspect`（60秒）与 `channel-monitor-browser`（180秒），`tests.test_channel_monitor` 进入 Python 非零收集门禁。检查半小时、五次故障与质量两轮的独立规则，以及管理回读、人工状态、未知请求和精确目标审计；管理及模型端均使用合成回环服务。功能与接口见 [渠道自动启停](newapi-channel-monitor.md)。
+`integrity` 登记 `channel-monitor-inspect`（60秒）与 `channel-monitor-browser`（180秒），`tests.test_channel_monitor` 进入 Python 非零收集门禁。检查半小时、五次机会及退避、质量2/3轮独立计数、故障与质量统一四条保护、延迟单次连通性复测、本轮完整飞书白名单恢复和先确认补位、多渠道故障持久熔断与全集复验解除，以及管理回读、人工状态、未知请求、确认API和精确目标审计；管理及模型端均使用合成回环服务，飞书只替换外部读取传输。功能与接口见 [渠道自动启停](newapi-channel-monitor.md)。
 
 `integrity` 登记每日报告的 `daily-checks-inspect`（60秒）与 `daily-checks-browser`（180秒），`tests.test_daily_checks` 进入 Python 必需模块门禁。开发31组、独立32组；原报告和消费者回归仍全部执行。每日浏览器使用自有回环模型服务与合成飞书传输，不读真实渠道或发送外部通知。
 

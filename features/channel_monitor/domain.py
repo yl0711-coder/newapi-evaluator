@@ -8,12 +8,15 @@ from urllib.parse import urlsplit
 from features.daily_checks.domain import MT_ALIASES, identity_verdict
 from features.integrity.strategies import canonical_hash, get_strategy, load_bank
 
-VERSION = "newapi-channel-monitor-v2"
+VERSION = "newapi-channel-monitor-v3"
 INTERVAL = 1800
 MAX_ATTEMPTS = 5
 QUALITY_ROUNDS = {"quality_failure": 2, "mt_mismatch": 3}
 MIN_CHANNELS = 4
 ROUND_WINDOW = 1100
+RETRY_DELAYS = (0, 2, 4, 8, 16)
+FLOOR_RECHECK_DELAY = 60
+CIRCUIT_FAILURES = 2
 RETRYABLE = frozenset({"network_error", "timeout", "empty_response", "stream_break",
                        "upstream_error", "rate_limited", "upstream_5xx", "auth_error", "http_error"})
 
@@ -25,13 +28,19 @@ def retryable(status):
 def contract():
     return {"version": VERSION, "interval_seconds": INTERVAL, "max_attempts_per_question": MAX_ATTEMPTS,
             "quality_rounds": dict(QUALITY_ROUNDS), "minimum_channels": MIN_CHANNELS,
-            "modeltrace_after_completed_candy": True, "modeltrace_probes_per_round": 3,
-            "transport_failure_bypasses_minimum": True, "recovery_success_rounds": 1,
+            "modeltrace_after_completed_primary_candy": True, "modeltrace_probes_per_round": 3,
+            "transport_failure_bypasses_minimum": False, "recovery_success_rounds": 1,
+            "retry_delays_seconds": list(RETRY_DELAYS), "floor_recheck_delay_seconds": FLOOR_RECHECK_DELAY,
+            "circuit_failure_channels": CIRCUIT_FAILURES, "circuit_scope": "all_automatic_disables",
+            "circuit_release": "later_scheduled_round_all_unlocked_bindings_healthy_minimum_two",
+            "floor_recheck": "one_connectivity_only_candy_after_exhausted_transport_before_disabling",
+            "recovery_requires_fresh_feishu_online_inventory": True,
+            "recovery_requires_correct_candy_and_matching_mt": True,
             "identity_authenticated": False, "calibration_status": "unvalidated",
             "candy_expected_answer": 21, "candy_scorer": "candy-final-integer-v1",
             "round_window_seconds": ROUND_WINDOW, "schedule_basis": "fixed_start_to_start",
-            "missed_slots": "skip", "maximum_questions_per_binding": 4,
-            "maximum_attempts_per_binding": 20, "supported_newapi_channel_types": [1]}
+            "missed_slots": "skip", "maximum_questions_per_binding": 5,
+            "maximum_attempts_per_binding": 21, "supported_newapi_channel_types": [1]}
 
 
 def endpoint(value):

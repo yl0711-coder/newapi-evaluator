@@ -200,7 +200,8 @@ class ChannelSync:
                     result["pending"] += 1
                     if len(result["issues"]) < 100:
                         result["issues"].append({"record_id": item["record_id"], "reason": reason})
-            current.update(source_id=source_id, last_result=result, last_success=result["synced_at"],
+            current.update(source_id=source_id, generation=uuid.uuid4().hex,
+                           last_result=result, last_success=result["synced_at"],
                            last_error="", lease_id="", lease_until=0)
             self._store(conn, current)
         return result
@@ -229,6 +230,43 @@ class ChannelSync:
             message = "飞书同步未完成，现有渠道未改变，请重试"
             self.fail(settings, message)
             raise RegistryError(message) from None
+
+    async def read_online_inventory(self, reader=None):
+        """Read a complete allowlist without importing or re-enabling registry rows."""
+        with self.registry.connect() as conn:
+            settings = self._load(conn)
+        if not settings.get("secret_enc") or not settings.get("source_id") or not settings.get("generation"):
+            raise RegistryError("请先配置飞书并完成一次渠道同步")
+        try:
+            secret = self.registry._cipher.decrypt(settings["secret_enc"].encode()).decode()
+            snapshot = await asyncio.wait_for((reader or FeishuReader()).read(settings, secret), 90)
+            prepared = self.prepare(snapshot["rows"], secret)
+        except asyncio.CancelledError:
+            raise
+        except Exception:
+            raise RegistryError("飞书白名单读取未完成，本轮不自动恢复") from None
+        if snapshot["source_id"] != settings["source_id"]:
+            raise RegistryError("飞书来源变化，请重新同步")
+        active = Counter(self.registry._identity(x["data"]) for x in prepared if x["action"] == "upsert")
+        members = []
+        with self.registry.connect() as conn:
+            current = self._load(conn)
+            if (current["version"] != settings["version"] or current.get("source_id") != snapshot["source_id"]
+                    or current.get("generation") != settings["generation"] or current.get("lease_id")):
+                raise Conflict("读取期间飞书设置变化，本轮不自动恢复")
+            bindings = {r["record_id"]: r["channel_id"] for r in conn.execute(
+                "SELECT record_id,channel_id FROM feishu_channel_bindings WHERE source_id=?", (snapshot["source_id"],))}
+            for item in prepared:
+                if item["action"] != "upsert":
+                    continue
+                fingerprint = self.registry._identity(item["data"])
+                channel_id = bindings.get(item["record_id"])
+                row = conn.execute("SELECT fingerprint,enabled,status FROM channels WHERE id=?", (channel_id,)).fetchone()
+                if (active[fingerprint] == 1 and row and row["enabled"] and row["status"] == "online"
+                        and row["fingerprint"] == fingerprint):
+                    members.append({"registry_id": channel_id, "record_id": item["record_id"], "fingerprint": fingerprint})
+        return {"settings_version": settings["version"], "source_id": snapshot["source_id"],
+                "generation": settings["generation"], "members": members}
 
 
 @router.get("/settings")

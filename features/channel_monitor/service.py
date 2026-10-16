@@ -10,6 +10,7 @@ from features.integrity.scoring import project_observation, score_strategy
 from features.integrity.strategies import get_strategy
 from features.integrity.transport import send_probe
 from features.model_coverage.catalog import Catalog
+from shared.feishu_channels import ChannelSync
 from shared.registry import get_registry
 from . import domain
 from .newapi import NewAPI
@@ -17,16 +18,19 @@ from .storage import Store
 
 
 class Service:
-    def __init__(self, registry, *, clock=time.time, sender=send_probe, client_factory=NewAPI):
+    def __init__(self, registry, *, clock=time.time, sender=send_probe, client_factory=NewAPI,
+                 inventory_reader=None, sleep=asyncio.sleep):
         self.registry, self.clock, self.sender = registry, clock, sender
         self.store, self.catalog = Store(registry), Catalog(registry)
         self.client_factory = client_factory
+        self.inventory_reader, self.sleep = inventory_reader, sleep
         self.worker = None
         self.action_lock = asyncio.Lock()
         self.started = False
 
     def status(self):
-        return {"running": bool(self.worker and not self.worker.done()), "plan": self.store.plan()}
+        return {"running": bool(self.worker and not self.worker.done()), "plan": self.store.plan(),
+                "circuit": self.store.circuit()}
 
     def meta(self):
         models = [{"model": m["model"], "protocol": m["protocol"]} for m in self.catalog.models()
@@ -78,9 +82,9 @@ class Service:
         return self.store.add(remote_id, registry_id, model, protocol, expected,
                               target.snapshot, remote["config_hash"], identity)
 
-    def enable(self, enabled, *, confirm_live=False, confirm_manage=False):
-        if enabled and (confirm_live is not True or confirm_manage is not True):
-            raise ValueError("请确认定时模型请求和自动启停渠道")
+    def enable(self, enabled, *, confirm_live=False, confirm_manage=False, confirm_inventory=False):
+        if enabled and (confirm_live is not True or confirm_manage is not True or confirm_inventory is not True):
+            raise ValueError("请确认定时模型请求、自动启停及飞书上线名单读取")
         if enabled:
             self.client()
         return self.store.set_enabled(enabled, self.clock())
@@ -95,8 +99,15 @@ class Service:
             raise ValueError("渠道配置或检测合同变化，请重新绑定")
         return target, remote
 
-    async def question(self, run, binding, client, probe, *, manifest=None):
-        for attempt in range(domain.MAX_ATTEMPTS):
+    async def delay(self, run, seconds):
+        if self.clock() + seconds >= run["deadline"]:
+            raise ValueError("本轮窗口不足，不延长窗口")
+        await self.sleep(seconds)
+
+    async def question(self, run, binding, client, probe, *, manifest=None, attempts=domain.MAX_ATTEMPTS):
+        for attempt in range(attempts):
+            if domain.RETRY_DELAYS[attempt]:
+                await self.delay(run, domain.RETRY_DELAYS[attempt])
             target, remote = await self.fresh(run, binding, client)
             wanted = 2 if binding["owned_reason"] else 1
             if remote["status"] != wanted:
@@ -177,11 +188,7 @@ class Service:
         result["modeltrace"]["not_run"] = not_run
         verdict = domain.mt_verdict(score)
         result["mt_verdict"] = verdict
-        # A valid candy response still satisfies the original transport recovery
-        # rule; MT evidence cannot turn it into a stricter quality recovery rule.
-        if binding["owned_reason"] == "transport":
-            result["outcome"] = "transport_recovered"
-        elif exhausted:
+        if exhausted:
             result["outcome"] = "transport_failure"
         elif candy["answer"] is True and verdict == "match":
             result["outcome"] = "healthy"
@@ -197,7 +204,11 @@ class Service:
             if remote["status"] != (1 if desired == 2 else 2):
                 raise ValueError("动作前渠道状态变化")
             await client.verify_version()
-            if desired == 2 and reason == "quality":
+            if desired == 1:
+                _, remote = await self.fresh(run, binding, client)
+                if remote["status"] != 2:
+                    raise ValueError("恢复前渠道状态变化")
+            if desired == 2:
                 inventory = await client.channels()
                 current = next((c for c in inventory if c["id"] == remote["id"]), None)
                 if not current or current["config_hash"] != remote["config_hash"] or current["status"] != 1:
@@ -215,6 +226,9 @@ class Service:
                 after = await client.channel(binding["remote_id"])
                 if after["status"] != desired or after["config_hash"] != remote["config_hash"]:
                     raise ValueError("状态回读未确认")
+                self.store.guard(run, binding, self.clock())
+                if desired == 1:
+                    self.store.inventory_guard(run, binding, self.clock())
             except BaseException:
                 self.store.finish_action(action, "unknown", self.clock())
                 self.store.event(run["id"], binding["id"], "management_action_unconfirmed", {"action_id": action}, self.clock())
@@ -222,33 +236,90 @@ class Service:
             self.store.finish_action(action, "confirmed", self.clock())
             self.store.event(run["id"], binding["id"], "channel_disabled" if desired == 2 else "channel_enabled",
                              {"action_id": action, "reason": reason}, self.clock())
+            return True
 
     async def binding_run(self, run, binding, client):
+        item = {"binding": binding, "state": "partial", "result": {}, "desired": None, "reason": None}
         if binding["locked"]:
-            return "locked"
+            return {**item, "state": "locked"}
         try:
             _, remote = await self.fresh(run, binding, client)
             if binding["owned_reason"] and remote["status"] == 1:
                 self.store.release_ownership(binding["id"])
                 self.store.event(run["id"], binding["id"], "externally_enabled", {}, self.clock())
-                return "external"
+                return {**item, "state": "external"}
             if remote["status"] != (2 if binding["owned_reason"] else 1):
                 self.store.event(run["id"], binding["id"], "external_status", {"status": remote["status"]}, self.clock())
-                return "external"
-            result = await self.evaluate(run, binding, client)
-            streak = self.store.result(run, binding, result, self.clock())
+                return {**item, "state": "external"}
             if binding["owned_reason"]:
-                if ((binding["owned_reason"] == "transport" and result["outcome"] == "transport_recovered")
-                        or (binding["owned_reason"] == "quality" and result["outcome"] == "healthy")):
-                    await self.act(run, binding, client, 1, binding["owned_reason"])
+                self.store.inventory_guard(run, binding, self.clock())
+            result = await self.evaluate(run, binding, client)
+            if binding["owned_reason"]:
+                self.store.inventory_guard(run, binding, self.clock())
+            streak = self.store.result(run, binding, result, self.clock())
+            item.update(state="tested", result=result)
+            if binding["owned_reason"]:
+                if result["outcome"] == "healthy":
+                    item.update(desired=1, reason=binding["owned_reason"])
             elif result["outcome"] == "transport_failure":
-                await self.act(run, binding, client, 2, "transport")
+                item.update(desired=2, reason="transport")
             elif result["outcome"] in domain.QUALITY_ROUNDS and streak >= domain.QUALITY_ROUNDS[result["outcome"]]:
-                await self.act(run, binding, client, 2, "quality")
-            return "tested"
+                item.update(desired=2, reason="quality")
+            return item
         except (ValueError, KeyError):
             self.store.event(run["id"], binding["id"], "binding_unavailable", {}, self.clock())
-            return "partial"
+            return item
+
+    async def floor_recheck(self, run, binding, client):
+        _, remote = await self.fresh(run, binding, client)
+        inventory = await client.channels()
+        self.store.guard(run, binding, self.clock())
+        if not domain.protection(remote, inventory):
+            return False
+        await self.delay(run, domain.FLOOR_RECHECK_DELAY)
+        probe = {**domain.candy_probe(), "id": "candy-recheck"}
+        check = await self.question(run, binding, client, probe, attempts=1)
+        self.store.event(run["id"], binding["id"], "floor_connectivity_recheck",
+                         {"completed": check["completed"], "delay_seconds": domain.FLOOR_RECHECK_DELAY}, self.clock())
+        return check["completed"]
+
+    async def apply_results(self, run, items, client):
+        if self.store.circuit()["opened"]:
+            for item in items:
+                if item["state"] != "tested":
+                    continue
+                try:
+                    _, remote = await self.fresh(run, item["binding"], client)
+                    if remote["status"] != (2 if item["binding"]["owned_reason"] else 1):
+                        raise ValueError("检测后状态变化")
+                except (ValueError, KeyError):
+                    item.update(state="partial", desired=None)
+        opened = self.store.circuit_for_round(run, items, self.clock())
+        partial, recovery_failed = False, False
+        for item in items:
+            if item["desired"] != 1:
+                continue
+            try:
+                await self.act(run, item["binding"], client, 1, item["reason"])
+            except (ValueError, KeyError):
+                partial, recovery_failed = True, True
+                self.store.event(run["id"], item["binding"]["id"], "recovery_unavailable", {}, self.clock())
+        for item in items:
+            if item["desired"] != 2:
+                continue
+            binding = item["binding"]
+            if opened or recovery_failed:
+                self.store.event(run["id"], binding["id"], "disable_suspended",
+                                 {"circuit": opened, "recovery_unconfirmed": recovery_failed}, self.clock())
+                continue
+            try:
+                if item["reason"] == "transport" and await self.floor_recheck(run, binding, client):
+                    continue
+                await self.act(run, binding, client, 2, item["reason"])
+            except (ValueError, KeyError):
+                partial = True
+                self.store.event(run["id"], binding["id"], "binding_unavailable", {}, self.clock())
+        return partial or any(item["state"] == "partial" for item in items)
 
     async def run(self, run):
         status = "completed"
@@ -256,9 +327,20 @@ class Service:
         try:
             client = self.client()
             await client.verify_version()
-            tasks = [asyncio.create_task(self.binding_run(run, b, client)) for b in self.store.bindings()]
+            bindings = self.store.bindings()
+            if any(b["owned_reason"] and not b["locked"] for b in bindings):
+                try:
+                    snapshot = await asyncio.wait_for(ChannelSync(self.registry).read_online_inventory(self.inventory_reader),
+                                                      max(.001, run["deadline"] - self.clock()))
+                    self.store.save_inventory(run, snapshot, self.clock())
+                except ValueError:
+                    self.store.event(run["id"], None, "online_inventory_unavailable", {}, self.clock())
+                    status = "partial"
+            tasks = [asyncio.create_task(self.binding_run(run, b, client)) for b in bindings]
             results = await asyncio.wait_for(asyncio.gather(*tasks), max(.001, run["deadline"] - self.clock()))
-            if "partial" in results:
+            if any(item["state"] == "partial" for item in results):
+                status = "partial"
+            if await asyncio.wait_for(self.apply_results(run, results, client), max(.001, run["deadline"] - self.clock())):
                 status = "partial"
         except asyncio.CancelledError:
             status = "interrupted"

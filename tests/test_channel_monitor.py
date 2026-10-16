@@ -17,7 +17,7 @@ from features.integrity.transport import run_probe
 from shared.access import install_access
 from shared.network import SocketEgressDenied
 from shared.registry import Registry
-from tests.fixtures.channel_monitor import Management, Models
+from tests.fixtures.channel_monitor import Management, Models, OnlineInventory
 
 
 class DomainTests(unittest.TestCase):
@@ -84,7 +84,7 @@ class DomainTests(unittest.TestCase):
         value = json.loads(result.stdout)
         self.assertEqual((value["interval_seconds"], value["max_attempts_per_question"]), (1800, 5))
         self.assertEqual(value["quality_rounds"], {"quality_failure": 2, "mt_mismatch": 3})
-        self.assertTrue(value["modeltrace_after_completed_candy"])
+        self.assertTrue(value["modeltrace_after_completed_primary_candy"])
         self.assertEqual(value["requests_sent"], 0)
         self.assertFalse(value["credentials_read"] or value["database_opened"])
 
@@ -141,18 +141,23 @@ class ServiceTests(unittest.IsolatedAsyncioTestCase):
         self.registry = Registry(Path(self.tmp.name))
         self.now = 1_800_000_000.
         self.management, self.models = Management(), Models()
-        self.channel = self.registry.save({"name": "Synthetic upstream", "api_key": "synthetic-model-key",
-                                           "base_url": "http://127.0.0.1:9/direct"})
+        self.inventory = OnlineInventory(self.registry)
+        self.channel = self.registry.get(1)
+        self.delays = []
+        async def sleep(seconds):
+            self.delays.append(seconds)
+            await asyncio.sleep(0)
         self.validation = patch("features.integrity.transport.validate_url", new=AsyncMock(return_value=None))
         self.validation.start()
         async def sender(channel, probe, *, before_send):
             async with httpx.AsyncClient(transport=httpx.MockTransport(self.models.handler)) as client:
                 return await run_probe(client, channel, probe, before_send=before_send)
         self.svc = Service(self.registry, clock=lambda: self.now, sender=sender,
+                           inventory_reader=self.inventory, sleep=sleep,
                            client_factory=lambda config: NewAPI(config, transport=httpx.MockTransport(self.management.handler)))
         self.svc.save_instance("http://127.0.0.1:9", "synthetic-management", 9)
         self.binding = await self.add(1, self.channel["id"])
-        self.svc.enable(True, confirm_live=True, confirm_manage=True)
+        self.svc.enable(True, confirm_live=True, confirm_manage=True, confirm_inventory=True)
 
     async def asyncTearDown(self):
         await self.svc.stop()
@@ -171,6 +176,26 @@ class ServiceTests(unittest.IsolatedAsyncioTestCase):
             await self.svc.worker
         return self.svc.store.binding(self.binding["id"])
 
+    async def second_binding(self):
+        self.svc.enable(False)
+        self.inventory.rows.append({"record_id": "record-2", "fields": {
+            **self.inventory.rows[0]["fields"], "apikey": "synthetic-second-key", "渠道名称": "Synthetic second"}})
+        self.inventory.import_rows()
+        binding = await self.add(2, 2)
+        second = Models()
+        async def sender(channel, probe, *, before_send):
+            models = second if channel["api_key"] == "synthetic-second-key" else self.models
+            async with httpx.AsyncClient(transport=httpx.MockTransport(models.handler)) as client:
+                return await run_probe(client, channel, probe, before_send=before_send)
+        self.svc.sender = sender
+        self.svc.enable(True, confirm_live=True, confirm_manage=True, confirm_inventory=True)
+        return binding, second
+
+    async def disable_first(self):
+        self.models.queue = ["timeout"] * 5
+        state = await self.round()
+        self.assertEqual((state["owned_reason"], self.management.writes), ("transport", [(1, 2)]))
+
     async def test_save_and_read_do_not_send_models_or_status_changes(self):
         self.assertEqual((len(self.models.calls), self.management.writes), (0, []))
         self.assertFalse(self.svc.status()["running"])
@@ -180,18 +205,16 @@ class ServiceTests(unittest.IsolatedAsyncioTestCase):
         self.assertNotIn("synthetic-model-key", public)
         self.assertNotIn(b"synthetic-management", self.registry.path.read_bytes())
 
-    async def test_five_timeouts_disable_below_four_and_one_normal_reply_restores(self):
+    async def test_five_timeouts_below_four_recheck_once_and_keep_floor(self):
         self.management.rows = {1: self.management.rows[1]}
-        self.models.queue = ["timeout"]*5
+        self.models.queue = ["timeout"]*6
         state = await self.round()
-        self.assertEqual((state["owned_reason"], self.management.rows[1]["status"]), ("transport", 2))
-        self.assertEqual(len(self.models.calls), 5)
-        self.assertNotIn("minimum_channels", [e["kind"] for e in self.svc.store.history()["events"]])
-        self.models.queue = ["答案：20"]
-        state = await self.round()
-        self.assertEqual((state["owned_reason"], self.management.writes), ("", [(1, 2), (1, 1)]))
-        self.assertEqual(len(self.models.calls), 9)
-        self.assertIsNotNone(state["last_result"]["modeltrace"])
+        self.assertEqual((state["owned_reason"], self.management.rows[1]["status"]), ("", 1))
+        self.assertEqual(len(self.models.calls), 6)
+        self.assertEqual(self.delays, [2, 4, 8, 16, 60])
+        self.assertIn("minimum_channels", [e["kind"] for e in self.svc.store.history()["events"]])
+        attempts = self.svc.store.attempts(1)
+        self.assertEqual([(a["probe"], a["attempt"]) for a in attempts if a["probe"] == "candy-recheck"], [("candy-recheck", 0)])
 
     async def test_four_failures_then_success_uses_fifth_chance_without_disable(self):
         self.models.queue = ["network", "timeout", "", 503, "答案：21"]
@@ -260,16 +283,16 @@ class ServiceTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual((state["owned_reason"], self.management.writes), ("", [(1, 2), (1, 1)]))
         self.assertEqual(self.svc.store.history()["actions"][-1]["target"], trigger)
 
-    async def test_quality_protection_alert_and_transport_bypass_are_separate(self):
+    async def test_quality_and_transport_both_obey_four_channel_floor(self):
         self.management.rows.pop(5)
         self.models.phase = "mismatch"
         await self.round(); await self.round()
         self.assertEqual(self.management.writes, [])
         alarms = [e for e in self.svc.store.history()["events"] if e["kind"] == "minimum_channels"]
         self.assertEqual(alarms[0]["detail"]["deficient"], [{"group": "default", "model": "gpt-6-astra", "remaining": 3}])
-        self.models.queue = ["timeout"]*5
+        self.models.queue = ["timeout"]*6
         await self.round()
-        self.assertEqual(self.management.writes, [(1, 2)])
+        self.assertEqual(self.management.writes, [])
 
     async def test_correct_candy_mt_mismatch_respects_four_channel_protection(self):
         self.management.rows.pop(5)
@@ -286,7 +309,7 @@ class ServiceTests(unittest.IsolatedAsyncioTestCase):
         for interrupt in ("match", "mt_unknown", "candy_unknown", "manual", "missed"):
             with self.subTest(interrupt=interrupt):
                 self.svc.enable(False)
-                self.svc.enable(True, confirm_live=True, confirm_manage=True)
+                self.svc.enable(True, confirm_live=True, confirm_manage=True, confirm_inventory=True)
                 self.models.phase = "candy-pass-mismatch"
                 await self.round()
                 self.assertEqual((await self.round())["quality_streak"], 2)
@@ -330,7 +353,7 @@ class ServiceTests(unittest.IsolatedAsyncioTestCase):
         for interruption in ("stop", "restart", "version_rejected"):
             with self.subTest(interruption=interruption):
                 self.svc.enable(False)
-                self.svc.enable(True, confirm_live=True, confirm_manage=True)
+                self.svc.enable(True, confirm_live=True, confirm_manage=True, confirm_inventory=True)
                 self.models.phase = "candy-pass-mismatch"
                 await self.round()
                 self.assertEqual((await self.round())["quality_streak"], 2)
@@ -383,8 +406,7 @@ class ServiceTests(unittest.IsolatedAsyncioTestCase):
             self.models.gate.set()
         self.assertEqual(self.management.writes, [])
 
-    async def test_correct_candy_then_five_mt_failures_disable_without_protection(self):
-        self.management.rows = {1: self.management.rows[1]}
+    async def test_correct_candy_then_five_mt_failures_disable_with_floor(self):
         self.models.queue = ["答案：21"] + ["timeout"]*5
         state = await self.round()
         self.assertEqual((state["owned_reason"], self.management.writes), ("transport", [(1, 2)]))
@@ -394,21 +416,22 @@ class ServiceTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(state["last_result"]["mt_verdict"], "unknown")
         self.assertNotIn("minimum_channels", [e["kind"] for e in self.svc.store.history()["events"]])
 
-    async def test_transport_recovery_keeps_valid_candy_priority_over_mt_evidence(self):
+    async def test_transport_recovery_requires_correct_candy_and_matching_mt(self):
+        self.models.queue = ["timeout"]*5
+        await self.round()
         for condition in ("mismatch", "unknown", "fault"):
             with self.subTest(condition=condition):
-                self.models.queue = ["timeout"]*5
-                await self.round()
                 self.models.phase = "candy-pass-mismatch"
                 if condition == "unknown":
                     self.models.queue = ["无法确定"]
                 elif condition == "fault":
                     self.models.queue = ["答案：21"] + ["timeout"]*5
                 state = await self.round()
-                self.assertEqual((state["owned_reason"], self.management.rows[1]["status"]), ("", 1))
-                self.assertEqual(state["last_result"]["outcome"], "transport_recovered")
+                self.assertEqual((state["owned_reason"], self.management.rows[1]["status"]), ("transport", 2))
                 self.assertIsNotNone(state["last_result"]["modeltrace"])
-        self.assertEqual(self.management.writes, [(1, 2), (1, 1)]*3)
+        self.models.phase = "healthy"
+        state = await self.round()
+        self.assertEqual((state["owned_reason"], self.management.writes), ("", [(1, 2), (1, 1)]))
 
     async def test_quality_owner_is_not_downgraded_by_mt_transport_failure(self):
         self.models.phase = "candy-pass-mismatch"
@@ -518,7 +541,7 @@ class ServiceTests(unittest.IsolatedAsyncioTestCase):
         self.svc.enable(False)
         second = self.registry.save({"name": "Synthetic second", "api_key": "synthetic-second-key", "base_url": self.channel["base_url"]})
         await self.add(2, second["id"])
-        self.svc.enable(True, confirm_live=True, confirm_manage=True)
+        self.svc.enable(True, confirm_live=True, confirm_manage=True, confirm_inventory=True)
         self.models.phase = "mismatch"
         await self.round(); await self.round()
         self.assertEqual(sum(r["status"] == 1 for r in self.management.rows.values()), 4)
@@ -537,8 +560,7 @@ class ServiceTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(self.management.writes, [])
         self.assertEqual(len(self.svc.store.history()["rounds"]), 4)
 
-    async def test_five_failures_in_modeltrace_also_disable_without_protection(self):
-        self.management.rows = {1: self.management.rows[1]}
+    async def test_five_failures_in_modeltrace_also_disable_with_floor(self):
         self.models.queue = ["答案：20"] + ["timeout"]*5
         state = await self.round()
         self.assertEqual(state["owned_reason"], "transport")
@@ -745,6 +767,7 @@ class ServiceTests(unittest.IsolatedAsyncioTestCase):
         run = self.svc.store.begin(self.now+1800)
         self.now += 1800
         self.svc.store.reserve(run, self.binding, "candy", 0, self.now)
+        self.svc.store.result(run, self.binding, {"outcome": "transport_failure"}, self.now)
         self.svc.store.reserve_action(run, self.binding, 2, "transport", self.now)
         self.svc.store.recover(self.now)
         self.assertTrue(self.svc.store.binding(self.binding["id"])["locked"])
@@ -759,11 +782,225 @@ class ServiceTests(unittest.IsolatedAsyncioTestCase):
             async with httpx.AsyncClient(transport=httpx.ASGITransport(app=app), base_url="http://localhost") as client:
                 response = await client.put("/api/channel-monitor/plan", json={"enabled": True})
                 self.assertEqual(response.status_code, 422)
-                response = await client.put("/api/channel-monitor/plan", json={"enabled": True, "confirm_live": True, "confirm_manage": True})
+                response = await client.put("/api/channel-monitor/plan", json={"enabled": True, "confirm_live": True, "confirm_manage": True, "confirm_inventory": True})
                 self.assertEqual(response.status_code, 200)
                 response = await client.post("/api/channel-monitor/bindings", json={"remote_id": True, "token": "synthetic-input-secret"})
                 self.assertEqual(response.status_code, 422)
                 self.assertNotIn("synthetic-input-secret", response.text)
+
+    async def test_floor_recheck_valid_response_keeps_channel_even_if_wrong(self):
+        self.management.rows.pop(5)
+        self.models.queue = ["timeout"] * 5 + ["答案：20"]
+        state = await self.round()
+        self.assertEqual(self.management.writes, [])
+        self.assertEqual(len(self.models.calls), 6)
+        self.assertEqual(self.delays, [2, 4, 8, 16, 60])
+        self.assertEqual(state["quality_streak"], 0)
+        self.assertEqual(state["last_result"]["outcome"], "transport_failure")
+        event = self.svc.store.history()["events"][0]
+        self.assertEqual((event["kind"], event["detail"]["completed"]), ("floor_connectivity_recheck", True))
+
+    async def test_floor_recheck_cancelled_after_permit_is_unknown_and_never_disables(self):
+        self.management.rows.pop(5)
+        self.models.queue = ["timeout"] * 5 + ["block"]
+        self.now += 1800
+        await self.svc.tick()
+        await asyncio.wait_for(self.models.entered.wait(), 2)
+        await self.svc.stop()
+        attempts = self.svc.store.attempts(1)
+        self.assertEqual([(a["probe"], a["status"]) for a in attempts][-1], ("candy-recheck", "unknown"))
+        self.assertEqual(len(attempts), 6)
+        self.assertEqual(self.management.writes, [])
+
+    async def test_backoff_cannot_extend_original_window_or_send_fifth_chance(self):
+        async def sleep(seconds):
+            self.now += 1090
+        self.svc.sleep = sleep
+        self.models.phase = "fault"
+        await self.round()
+        self.assertEqual(len(self.models.calls), 2)
+        self.assertEqual(self.management.writes, [])
+        self.assertEqual(self.svc.store.history()["rounds"][0]["status"], "partial")
+
+    async def test_fresh_inventory_missing_offline_bad_or_duplicate_never_restores(self):
+        await self.disable_first()
+        original = self.inventory.rows[0]
+        variants = [[], [{**original, "fields": {**original["fields"], "是否在线": "已下线"}}],
+                    [{**original, "fields": {**original["fields"], "apikey": ""}}],
+                    [{**original, "fields": {**original["fields"], "倍率": 0}}],
+                    [original, {**original, "record_id": "duplicate"}]]
+        for rows in variants:
+            with self.subTest(rows=len(rows)):
+                self.inventory.rows = rows
+                await self.round()
+                self.assertEqual(self.management.writes, [(1, 2)])
+                self.assertEqual(len(self.models.calls), 5)
+                self.assertTrue(self.registry.get(1)["enabled"])
+        self.inventory.rows = [original]
+        state = await self.round()
+        self.assertEqual((state["owned_reason"], self.management.writes), ("", [(1, 2), (1, 1)]))
+
+    async def test_failed_new_read_does_not_reuse_previous_round_inventory(self):
+        await self.disable_first()
+        self.models.phase = "candy-pass-mismatch"
+        await self.round()
+        calls = len(self.models.calls)
+        self.inventory.failure = True
+        await self.round()
+        self.assertEqual(len(self.models.calls), calls)
+        self.assertEqual(self.management.writes, [(1, 2)])
+        self.assertEqual(self.svc.store.history()["rounds"][0]["status"], "partial")
+
+    async def test_external_enable_releases_ownership_without_duplicate_enable(self):
+        await self.disable_first()
+        self.management.rows[1]["status"] = 1
+        state = await self.round()
+        self.assertEqual(state["owned_reason"], "")
+        self.assertEqual(self.management.writes, [(1, 2)])
+        self.assertEqual(len(self.models.calls), 5)
+
+    async def test_resync_generation_change_during_mt_blocks_recovery(self):
+        await self.interrupt_transport_recovery_during_mt(self.inventory.import_rows)
+
+    async def test_new_settings_without_successful_sync_blocks_old_allowlist(self):
+        await self.disable_first()
+        from shared.feishu_channels import SettingsInput
+        self.inventory.sync.configure(SettingsInput(app_id="cli_synthetic", version=1,
+            table_url="https://synthetic.feishu.cn/base/another?table=tblSynthetic"))
+        await self.round()
+        self.assertEqual(self.management.writes, [(1, 2)])
+        self.assertEqual(len(self.models.calls), 5)
+
+    async def test_final_enable_transaction_rechecks_inventory_generation(self):
+        await self.disable_first()
+        original = self.management.handler
+        async def handler(request):
+            if request.url.path == "/api/status" and self.svc.store.binding(1)["last_result"]["outcome"] == "healthy":
+                self.inventory.import_rows()
+            return await original(request)
+        self.management.handler = handler
+        await self.round()
+        self.assertEqual(self.management.writes, [(1, 2)])
+        self.assertEqual(len(self.svc.store.history()["actions"]), 1)
+
+    async def test_two_failed_channels_wait_for_all_results_then_open_persistent_circuit(self):
+        _, second = await self.second_binding()
+        self.models.phase = "fault"
+        second.queue = ["block"] + ["timeout"] * 5
+        self.now += 1800
+        await self.svc.tick()
+        await asyncio.wait_for(second.entered.wait(), 2)
+        self.assertEqual(self.management.writes, [])
+        second.gate.set()
+        await self.svc.worker
+        self.assertEqual(self.management.writes, [])
+        self.assertTrue(self.svc.store.circuit()["opened"])
+        from features.channel_monitor.storage import Store
+        self.assertTrue(Store(self.registry).circuit()["opened"])
+        self.assertTrue(all(row["status"] == 1 for row in self.management.rows.values()))
+
+    async def test_circuit_release_requires_later_scheduled_complete_healthy_round(self):
+        _, second = await self.second_binding()
+        self.models.phase = second.phase = "fault"
+        await self.round()
+        self.assertTrue(self.svc.store.circuit()["opened"])
+        self.models.phase = second.phase = "healthy"
+        await self.svc.run_now()
+        await self.svc.worker
+        self.assertTrue(self.svc.store.circuit()["opened"])
+        second.queue = ["无法确定"]
+        await self.round()
+        self.assertTrue(self.svc.store.circuit()["opened"])
+        await self.round()
+        self.assertFalse(self.svc.store.circuit()["opened"])
+        self.assertEqual(self.management.writes, [])
+
+    async def test_circuit_release_rechecks_current_unlocked_set_and_registry(self):
+        _, second = await self.second_binding()
+        self.svc.enable(False)
+        third_channel = self.registry.save({"name": "Synthetic third", "api_key": "synthetic-third-key",
+                                            "base_url": self.channel["base_url"]})
+        third = await self.add(3, third_channel["id"])
+        self.svc.store.lock(third["id"], True)
+        self.svc.enable(True, confirm_live=True, confirm_manage=True, confirm_inventory=True)
+        self.models.phase = second.phase = "fault"
+        await self.round()
+        self.assertTrue(self.svc.store.circuit()["opened"])
+        self.models.phase = second.phase = "healthy"
+        original = second.handler
+        for change in (lambda: self.svc.store.lock(third["id"], False), self.change_registry_mapping):
+            entered, release = asyncio.Event(), asyncio.Event()
+            start = len(second.calls)
+            async def delayed(request):
+                if len(second.calls) == start + 3:
+                    entered.set()
+                    await release.wait()
+                return await original(request)
+            second.handler = delayed
+            task = asyncio.create_task(self.round())
+            try:
+                await asyncio.wait_for(entered.wait(), 2)
+                change()
+                release.set()
+                await asyncio.wait_for(task, 2)
+                self.assertTrue(self.svc.store.circuit()["opened"])
+                self.assertEqual(self.management.writes, [])
+            finally:
+                release.set()
+                await asyncio.gather(task, return_exceptions=True)
+                second.handler = original
+                self.svc.store.lock(third["id"], True)
+
+    async def test_healthy_owned_replacement_is_confirmed_before_faulty_channel_disable(self):
+        await self.disable_first()
+        _, second = await self.second_binding()
+        second.phase = "fault"
+        await self.round()
+        self.assertEqual(self.management.writes, [(1, 2), (1, 1), (2, 2)])
+        self.assertEqual(sum(r["status"] == 1 for r in self.management.rows.values()), 4)
+        self.assertEqual(self.svc.store.binding(1)["owned_reason"], "")
+        self.assertEqual(self.svc.store.binding(2)["owned_reason"], "transport")
+        recovery = self.svc.store.history()["actions"][1]["target"]
+        self.assertTrue(recovery["online_inventory_hash"])
+
+    async def test_unconfirmed_replacement_prevents_later_disable(self):
+        await self.disable_first()
+        _, second = await self.second_binding()
+        second.phase = "fault"
+        self.management.mode = "timeout"
+        await self.round()
+        self.assertEqual(self.management.writes, [(1, 2), (1, 1)])
+        self.assertTrue(self.svc.store.binding(1)["locked"])
+        self.assertEqual(self.svc.store.history()["actions"][0]["status"], "unknown")
+        self.assertEqual(self.management.rows[2]["status"], 1)
+
+    async def test_replacement_covering_only_some_combinations_cannot_authorize_disable(self):
+        await self.disable_first()
+        self.management.rows[2]["group"] = "default,second"
+        _, second = await self.second_binding()
+        second.phase = "fault"
+        await self.round()
+        self.assertEqual(self.management.writes, [(1, 2), (1, 1)])
+        deficient = [e for e in self.svc.store.history()["events"] if e["kind"] == "minimum_channels"]
+        self.assertEqual(deficient[0]["detail"]["deficient"], [{"group": "second", "model": "gpt-6-astra", "remaining": 0}])
+
+    async def test_circuit_reset_requires_pause_confirmation_and_current_revision(self):
+        _, second = await self.second_binding()
+        self.models.phase = second.phase = "fault"
+        await self.round()
+        revision = self.svc.store.circuit()["revision"]
+        app = FastAPI(); app.include_router(api.router)
+        with patch.object(api, "get_service", return_value=self.svc):
+            async with httpx.AsyncClient(transport=httpx.ASGITransport(app=app), base_url="http://localhost") as client:
+                for body in ({"revision": revision}, {"revision": revision, "confirm_reset": False},
+                             {"revision": revision, "confirm_reset": True}):
+                    self.assertEqual((await client.post("/api/channel-monitor/circuit/reset", json=body)).status_code, 422)
+                self.svc.enable(False)
+                self.assertEqual((await client.post("/api/channel-monitor/circuit/reset", json={"revision": revision-1, "confirm_reset": True})).status_code, 422)
+                response = await client.post("/api/channel-monitor/circuit/reset", json={"revision": revision, "confirm_reset": True})
+                self.assertEqual(response.status_code, 200)
+                self.assertFalse(response.json()["opened"])
+                self.assertFalse(self.svc.store.plan()["enabled"])
 
 
 if __name__ == "__main__":

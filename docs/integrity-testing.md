@@ -6,7 +6,7 @@
 
 | suite_id | 入口 | 验证与时限 |
 | --- | --- | --- |
-| channel-monitor-inspect / channel-monitor-browser | `python -m features.channel_monitor inspect-config` / `scripts/channel_monitor_ui.cjs` | 半小时与五次机会规则零发送检查；精确映射、确认、答错偏离两轮及答对偏离三轮停用、一次恢复、四条保护、故障绕过、人工锁定、动作依据及390/900/1440布局；60/180秒 |
+| channel-monitor-inspect / channel-monitor-browser | `python -m features.channel_monitor inspect-config` / `scripts/channel_monitor_ui.cjs` | 半小时与五次机会规则零发送检查；精确映射、三项启用确认、答错偏离两轮及答对偏离三轮停用、飞书白名单恢复、故障与质量统一四条保护、延迟复测、持久熔断及暂停确认解除、人工锁定、动作依据及390/900/1440布局；60/180秒 |
 | volcengine-admission-inspect / volcengine-admission-browser | `scripts/inspect_volcengine_admission.py` / `scripts/volcengine_admission_ui.cjs` | 11 型号及默认6款、价格与规格、一次提交、样片/报告、确认及只读恢复、390/900/1440布局；60/300秒 |
 | daily-checks-inspect / daily-checks-browser | `scripts/inspect_daily_checks.py` / `scripts/daily_checks_ui.cjs` | 四时段零发送检查，单来源模型获取、公共登记/手填/重复/失败保留、九类入口复用、新ID实际每日请求、配置确认、报告、飞书分片、导出及窄屏；60/180秒 |
 | feishu-channels-inspect / feishu-channels-browser | `scripts/inspect_feishu_channels.py` / `scripts/feishu_channels_ui.cjs` | 只读合同检查及合成飞书的设置、筛选、同步、换 Key、下线与失败保留；60/180 秒 |
@@ -29,7 +29,7 @@
 
 ## 定时采样与结论
 
-`test_channel_monitor` 覆盖 rc.26 真实字段、默认设置、启停元数据、分页和明确确认，五次故障及第五次成功、答错偏离相邻两轮与答对偏离相邻三轮、匹配/无法判定/手动/漏轮断链、路径切换不混算、两种所有权恢复优先级、MT漏测分母、全分组模型四条保护及并发重读、配置/版本漂移、人工锁定/接管、取消与重启 unknown、管理假成功/回读不符/未知写入，以及恢复或删除映射后动作目标和触发依据可追溯。此模块单独采用首次加四次重试，不改变既有 MT/Nerfed 定时合同。浏览器使用可控时钟推进三个真实调度轮次，核对45次回环模型请求、6次管理动作及2/3计数截图，不等待真实90分钟。完整性容器组验证新入口、静态资源、默认暂停及空账本。
+`test_channel_monitor` 覆盖 rc.26 真实字段、默认设置、启停元数据、分页和明确确认，五次故障及第五次成功、2/4/8/16秒退避与原窗、60秒后仅一次连通性复测、答错偏离相邻两轮与答对偏离相邻三轮、匹配/无法判定/手动/漏轮断链及路径切换不混算。所有恢复统一要求本轮完整飞书正向上线成员、确认自有停用、糖果正确及3MT匹配；覆盖缺行、下线、空Key、坏行、重复、换Key、读取失败、换表未同步和generation漂移，已启用不重复启用。覆盖观测屏障后多渠道故障持久熔断、manual不自动解除、完整健康scheduled解除、解除前当前未锁定映射全集及Registry/管理状态复验、暂停确认和revision门闩；先确认补位再逐项检查全分组模型四条，候补未知或覆盖不全不能继续停用。另保留MT漏测分母、配置/版本漂移、人工锁定/接管、取消与重启 unknown、管理假成功/回读不符/未知写入，以及恢复或删除映射后动作依据可追溯。此模块单独采用首次加四次重试，不改变既有 MT/Nerfed 定时合同。浏览器使用可控时钟推进真实调度轮次，核对61次回环模型请求、6次管理动作、熔断确认门闩及2/3计数截图，不等待真实90分钟。完整性容器组验证入口、静态资源、默认暂停及空账本。
 
 `test_integrity_timetable` 验证 `layered-integrity-v3` 每个选定时刻各执行MT三题和Nerfed三题，互不复用答案，无health或Canary。默认全天48轮（整点/半点），单渠道首次288请求；已确认连接故障、超时或断流每题再重试三次，最多1152物理请求。十分钟刻度仍可显式自定义，已有配置与双空保留。成功立即停止重试；HTTP错误、格式无效及unknown不重发。固定逻辑分母与物理尝试、最终错误分别计数；早期断联后成功只用最终结果评分。
 

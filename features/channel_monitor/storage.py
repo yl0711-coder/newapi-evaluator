@@ -4,7 +4,8 @@ import json
 
 from features.integrity.execution import resolve_registry_target
 from features.integrity.strategies import canonical_hash
-from .domain import INTERVAL, QUALITY_ROUNDS, ROUND_WINDOW, next_due
+from shared.feishu_channels import ChannelSync
+from .domain import CIRCUIT_FAILURES, INTERVAL, QUALITY_ROUNDS, ROUND_WINDOW, next_due
 
 
 def encode(value):
@@ -14,6 +15,7 @@ def encode(value):
 class Store:
     def __init__(self, registry):
         self.registry = registry
+        ChannelSync(registry)
         with registry.connect() as db:
             db.executescript("""
                 CREATE TABLE IF NOT EXISTS channel_monitor_settings (
@@ -50,6 +52,15 @@ class Store:
                 CREATE TABLE IF NOT EXISTS channel_monitor_events (
                     id INTEGER PRIMARY KEY AUTOINCREMENT, round_id INTEGER, binding_id INTEGER,
                     kind TEXT NOT NULL, created REAL NOT NULL, detail TEXT NOT NULL);
+                CREATE TABLE IF NOT EXISTS channel_monitor_inventories (
+                    round_id INTEGER PRIMARY KEY, checked_at REAL NOT NULL, snapshot TEXT NOT NULL);
+                CREATE TABLE IF NOT EXISTS channel_monitor_results (
+                    round_id INTEGER NOT NULL, binding_id INTEGER NOT NULL, result TEXT NOT NULL,
+                    PRIMARY KEY(round_id,binding_id));
+                CREATE TABLE IF NOT EXISTS channel_monitor_circuit (
+                    id INTEGER PRIMARY KEY CHECK(id=1), opened INTEGER NOT NULL DEFAULT 0,
+                    revision INTEGER NOT NULL DEFAULT 0, round_id INTEGER, changed_at REAL);
+                INSERT OR IGNORE INTO channel_monitor_circuit(id) VALUES(1);
             """)
 
     def plan(self):
@@ -197,6 +208,8 @@ class Store:
         with self.registry.connect() as db:
             db.execute("BEGIN IMMEDIATE")
             self.guard(run, binding, now, conn=db)
+            if binding["owned_reason"]:
+                self.inventory_guard(run, binding, now, conn=db)
             db.execute("""INSERT INTO channel_monitor_attempts
                 (round_id,binding_id,probe,attempt,status,started) VALUES(?,?,?,?,'sending',?)""",
                        (run["id"], binding["id"], probe, attempt, now))
@@ -221,6 +234,8 @@ class Store:
                 streak = 0
             db.execute("UPDATE channel_monitor_bindings SET last_result=?,quality_streak=?,last_slot=? WHERE id=?",
                        (encode(result), streak, run["due"] if run["source"] == "scheduled" else None, binding["id"]))
+            db.execute("INSERT INTO channel_monitor_results(round_id,binding_id,result) VALUES(?,?,?)",
+                       (run["id"], binding["id"], encode(result)))
         return streak
 
     def event(self, run_id, binding_id, kind, detail, now):
@@ -228,17 +243,113 @@ class Store:
             db.execute("INSERT INTO channel_monitor_events(round_id,binding_id,kind,created,detail) VALUES(?,?,?,?,?)",
                        (run_id, binding_id, kind, now, encode(detail)))
 
+    def save_inventory(self, run, snapshot, now):
+        with self.registry.connect() as db:
+            db.execute("INSERT INTO channel_monitor_inventories(round_id,checked_at,snapshot) VALUES(?,?,?)",
+                       (run["id"], now, encode(snapshot)))
+
+    def inventory_guard(self, run, binding, now, *, conn=None):
+        if conn is None:
+            with self.registry.connect() as db:
+                return self.inventory_guard(run, binding, now, conn=db)
+        self.guard(run, binding, now, conn=conn)
+        record = conn.execute("SELECT snapshot FROM channel_monitor_inventories WHERE round_id=?", (run["id"],)).fetchone()
+        if not record:
+            raise ValueError("本轮无完整飞书白名单")
+        snapshot = json.loads(record[0])
+        settings = ChannelSync._load(conn)
+        row = conn.execute("SELECT fingerprint,enabled,status FROM channels WHERE id=?", (binding["registry_id"],)).fetchone()
+        member = next((m for m in snapshot["members"] if m["registry_id"] == binding["registry_id"]), None)
+        source_binding = conn.execute("SELECT channel_id FROM feishu_channel_bindings WHERE source_id=? AND record_id=?",
+                                      (snapshot["source_id"], member["record_id"] if member else "")).fetchone()
+        if (settings["version"] != snapshot["settings_version"] or settings.get("source_id") != snapshot["source_id"]
+                or settings.get("generation") != snapshot["generation"] or settings.get("lease_id")
+                or not row or not row["enabled"] or row["status"] != "online" or not member
+                or member["fingerprint"] != row["fingerprint"] or not source_binding
+                or source_binding[0] != binding["registry_id"]):
+            raise ValueError("渠道不在本轮有效飞书上线白名单")
+        return canonical_hash(snapshot)
+
+    def circuit(self):
+        with self.registry.connect() as db:
+            row = dict(db.execute("SELECT * FROM channel_monitor_circuit WHERE id=1").fetchone())
+        row["opened"] = bool(row["opened"])
+        return row
+
+    def circuit_for_round(self, run, items, now):
+        failures = {item["binding"]["remote_id"] for item in items
+                    if item.get("result", {}).get("outcome") == "transport_failure"}
+        tested = [item for item in items if item["state"] != "locked"]
+        complete = (len(tested) >= CIRCUIT_FAILURES and all(item["state"] == "tested"
+                    and item["result"].get("outcome") == "healthy" for item in tested))
+        with self.registry.connect() as db:
+            db.execute("BEGIN IMMEDIATE")
+            current = db.execute("SELECT opened FROM channel_monitor_circuit WHERE id=1").fetchone()[0]
+            plan = db.execute("SELECT enabled,revision FROM channel_monitor_settings WHERE id=1").fetchone()
+            state = db.execute("SELECT status FROM channel_monitor_rounds WHERE id=?", (run["id"],)).fetchone()
+            complete = (complete and plan["enabled"] and plan["revision"] == run["revision"]
+                        and state and state[0] == "running" and now < run["deadline"])
+            live = {r["id"]: r["revision"] for r in db.execute("SELECT id,revision FROM channel_monitor_bindings WHERE locked=0")}
+            complete = complete and set(live) == {item["binding"]["id"] for item in tested}
+            if complete:
+                try:
+                    for item in tested:
+                        self.guard(run, item["binding"], now, conn=db)
+                except (ValueError, KeyError):
+                    complete = False
+            opened = True if len(failures) >= CIRCUIT_FAILURES else (False if complete and run["source"] == "scheduled" else bool(current))
+            if opened != bool(current):
+                db.execute("UPDATE channel_monitor_circuit SET opened=?,revision=revision+1,round_id=?,changed_at=? WHERE id=1",
+                           (int(opened), run["id"], now))
+                db.execute("INSERT INTO channel_monitor_events(round_id,kind,created,detail) VALUES(?,?,?,?)",
+                           (run["id"], "circuit_opened" if opened else "circuit_closed", now,
+                            encode({"failure_remote_ids": sorted(failures)})))
+        return opened
+
+    def reset_circuit(self, revision, now):
+        with self.registry.connect() as db:
+            db.execute("BEGIN IMMEDIATE")
+            if db.execute("SELECT enabled FROM channel_monitor_settings WHERE id=1").fetchone()[0]:
+                raise ValueError("请先暂停监控并核对故障原因")
+            changed = db.execute("UPDATE channel_monitor_circuit SET opened=0,revision=revision+1,changed_at=? WHERE id=1 AND revision=? AND opened=1",
+                                 (now, revision))
+            if not changed.rowcount:
+                raise ValueError("熔断状态已变化，请刷新")
+            db.execute("INSERT INTO channel_monitor_events(kind,created,detail) VALUES('circuit_reset',?,'{}')", (now,))
+        return self.circuit()
+
     def reserve_action(self, run, binding, desired, reason, now):
         with self.registry.connect() as db:
             db.execute("BEGIN IMMEDIATE")
             self.guard(run, binding, now, conn=db)
+            current_result = db.execute("SELECT result FROM channel_monitor_results WHERE round_id=? AND binding_id=?",
+                                        (run["id"], binding["id"])).fetchone()
+            if not current_result:
+                raise ValueError("本轮无已确认检测结果")
+            inventory_hash = None
+            if desired == 1:
+                inventory_hash = self.inventory_guard(run, binding, now, conn=db)
+                owner = db.execute("""SELECT a.status,a.desired FROM channel_monitor_bindings b
+                    JOIN channel_monitor_actions a ON a.id=b.owner_action AND a.binding_id=b.id
+                    WHERE b.id=? AND b.owned_reason!=''""", (binding["id"],)).fetchone()
+                if not owner or owner["status"] != "confirmed" or owner["desired"] != 2:
+                    raise ValueError("没有可确认的自有停用记录")
+            elif db.execute("SELECT opened FROM channel_monitor_circuit WHERE id=1").fetchone()[0]:
+                raise ValueError("多渠道故障熔断中，禁止自动停用")
             config = self.instance(secret=True)
             target = {key: binding[key] for key in ("remote_id", "registry_id", "model", "protocol", "expected", "condition_hash")}
             target["instance_fingerprint"] = canonical_hash({"base_url": config["base_url"], "user_id": config.get("user_id")})
             current = db.execute("SELECT last_result,quality_streak FROM channel_monitor_bindings WHERE id=?", (binding["id"],)).fetchone()
-            result = json.loads(current["last_result"]) if current["last_result"] else {}
+            result = json.loads(current_result[0])
+            if current["last_result"] != current_result[0]:
+                raise ValueError("动作依据已变化")
             target.update(trigger_outcome=result.get("outcome"), streak=current["quality_streak"],
                           threshold=QUALITY_ROUNDS.get(result.get("outcome")))
+            if desired == 1:
+                if (result.get("candy_correct") is not True or result.get("mt_verdict") != "match"
+                        or result.get("outcome") != "healthy" or result.get("modeltrace", {}).get("valid_answers") != 3):
+                    raise ValueError("本轮未同时答对糖果且MT匹配")
+                target["online_inventory_hash"] = inventory_hash
             cur = db.execute("""INSERT INTO channel_monitor_actions
                 (round_id,binding_id,binding_revision,desired,reason,target,started,status) VALUES(?,?,?,?,?,?,?,'sending')""",
                              (run["id"], binding["id"], binding["revision"], desired, reason, encode(target), now))

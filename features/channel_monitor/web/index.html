@@ -6,14 +6,17 @@
 <header><h1>渠道自动启停</h1><p>每 30 分钟直测原上游，在 New API 中停用异常渠道并持续检测恢复。</p></header>
 <p id="message" role="status" aria-live="polite"></p>
 <section class="panel"><h2>监控规则</h2>
-<p>每题最多 5 次机会。请求故障连续耗尽 5 次即停用，不受四条保底限制；下一次请求正常即启用。</p>
+<p>每题最多 5 次机会，重试前依次等待 2、4、8、16 秒。请求故障耗尽后，若禁用会少于 4 条，等待 60 秒再做一次连通性复测；有效响应则保留。</p>
 <p id="quality-rules">正在加载质量监控规则…</p>
-<p>两条质量路径均要求停用后每个受影响分组及模型至少保留 4 条启用渠道；不足时保留并告警。质量停用后，一轮答对且 MT 匹配即恢复。</p>
-<p>只恢复本系统自行停用且没有人工锁定的渠道。无法判定不会记作模型不匹配。指纹是未校准的行为信号，不能认证模型身份。</p>
+<p>所有自动停用均保留每个受影响分组及模型至少 4 条启用渠道。先恢复合格候补并回读，再重新计数；不足则保留故障渠道并告警。</p>
+<p>候补与普通恢复均须在本轮完整飞书上线名单内、由本监控确认停用且当前仍禁用、无人工锁定，并且一轮糖果答对且 3 个有效 MT 探针明确匹配。请先通过<a href="/channels">公共渠道 → 从飞书同步渠道</a>配置并完成同步。</p>
+<p>同轮至少 2 条渠道耗尽请求机会，暂停全部自动停用；合格恢复继续。后续定时轮次所有未锁定映射均检测正常且至少 2 条，才自动解除；也可暂停后核对原因并手动解除。无法判定不算匹配或偏离，指纹不能认证模型身份。</p>
+<p id="circuit-status" role="status"></p><label><input id="confirm-reset" type="checkbox">已核对集中故障原因，允许解除熔断</label><button id="reset-circuit" class="secondary">解除熔断</button>
 <div class="actions"><strong id="plan-status">加载中</strong><button id="refresh" class="secondary">刷新</button><button id="pause" class="secondary">暂停监控</button><button id="run">立即测试</button></div>
 <p id="schedule" class="hint"></p>
 <label><input id="confirm-live" type="checkbox">允许每半小时发送模型测试请求，可能产生上游费用</label>
 <label><input id="confirm-manage" type="checkbox">允许按上述规则自动禁用及启用所绑定的 New API 渠道</label>
+<label><input id="confirm-inventory" type="checkbox">允许有待恢复渠道时，每轮只读获取完整飞书上线名单，用于自动恢复资格校验</label>
 <button id="enable">启用半小时监控</button></section>
 <div class="configuration">
 <section class="panel"><h2>New API 管理连接</h2><p>支持 v1.0.0-rc.26。管理令牌需要渠道读取及操作权限。</p>

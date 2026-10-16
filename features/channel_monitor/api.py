@@ -32,6 +32,12 @@ class PlanInput(Input):
     enabled: bool
     confirm_live: bool = False
     confirm_manage: bool = False
+    confirm_inventory: bool = False
+
+
+class CircuitInput(Input):
+    revision: int = Field(ge=0)
+    confirm_reset: bool = False
 
 
 class LockInput(Input):
@@ -108,6 +114,17 @@ async def run():
 @router.get("/history")
 async def history():
     return get_service().store.history()
+
+
+@router.post("/circuit/reset")
+async def reset_circuit(body: CircuitInput):
+    service = get_service()
+    try:
+        if body.confirm_reset is not True:
+            raise ValueError("请确认已核对故障原因后解除熔断")
+        return service.store.reset_circuit(body.revision, service.clock())
+    except ValueError as exc:
+        raise error(exc) from None
 
 
 @router.get("/rounds/{round_id}/attempts")

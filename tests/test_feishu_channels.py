@@ -133,6 +133,42 @@ class FeishuSyncTests(unittest.IsolatedAsyncioTestCase):
             self.assertEqual((await self.run_sync([record(**fields)]))["pending"], 1)
             self.assertEqual(self.registry.list(), before)
 
+    async def test_readonly_online_inventory_uses_current_positive_members_and_preserves_registry(self):
+        await self.run_sync([record()])
+        before = self.registry.list()
+        allowed = await self.sync.read_online_inventory(FeishuFixture([record()]).reader())
+        self.assertEqual([(m["registry_id"], m["record_id"]) for m in allowed["members"]], [(before[0]["id"], "recOne")])
+        self.assertTrue(allowed["generation"])
+        for rows in ([], [record(是否在线="已下线")], [record(apikey="")], [record(倍率=0)],
+                     [record(), record("recDuplicate")], [record(apikey="synthetic-new-key")]):
+            with self.subTest(rows=len(rows)):
+                self.assertEqual((await self.sync.read_online_inventory(FeishuFixture(rows).reader()))["members"], [])
+                self.assertEqual(self.registry.list(), before)
+
+    async def test_readonly_inventory_rejects_partial_pages_and_inflight_resync(self):
+        await self.run_sync([record()])
+        fixture = FeishuFixture([record()])
+        fixture.pages.append([record("recTwo")])
+        fixture.failure_page = 1
+        with self.assertRaisesRegex(RegistryError, "白名单读取未完成"):
+            await self.sync.read_online_inventory(fixture.reader())
+        original = FeishuFixture([record()]).reader()
+        sync = self.sync
+        class ConcurrentReader:
+            async def read(self, settings, secret):
+                snapshot = await original.read(settings, secret)
+                await sync.sync(FeishuFixture([record()]).reader())
+                return snapshot
+        with self.assertRaisesRegex(Conflict, "读取期间飞书设置变化"):
+            await self.sync.read_online_inventory(ConcurrentReader())
+
+    async def test_readonly_inventory_never_reenables_disabled_registry_channel(self):
+        await self.run_sync([record()])
+        row = self.registry.list()[0]
+        self.registry.save({**row, "enabled": False}, row["id"], row["version"])
+        self.assertEqual((await self.sync.read_online_inventory(FeishuFixture([record()]).reader()))["members"], [])
+        self.assertFalse(self.registry.get(row["id"])["enabled"])
+
     async def test_different_families_remain_separate(self):
         result = await self.run_sync([record(), record("recClaude", 模型家族="claude")])
         self.assertEqual(result["added"], 2)
