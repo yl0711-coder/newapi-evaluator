@@ -87,9 +87,18 @@ class MixedBurstTests(unittest.IsolatedAsyncioTestCase):
         stop = asyncio.Event()
         lab = Lab(self.cfg, self.root / 'stop', stop=stop)
         task = asyncio.create_task(lab.run('account-test'))
-        await asyncio.sleep(.13)
-        stop.set()
-        summary = await asyncio.wait_for(task, 1)
+        try:
+            async with asyncio.timeout(5):
+                while True:
+                    live = lab.burst_snapshot()
+                    if live['issued_requests'] == 10 and live['total_output_chars'] > 0:
+                        break
+                    if task.done():
+                        self.fail('Batch ended before partial output was observed')
+                    await asyncio.sleep(.005)
+        finally:
+            stop.set()
+            summary = await asyncio.wait_for(task, 1)
         self.assertEqual(summary['status'], 'interrupted')
         self.assertEqual(summary['result_count'], 10)
         self.assertTrue(all(r['end_seconds'] is not None for r in summary['analysis']['burst']['timeline']))
