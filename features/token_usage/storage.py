@@ -8,11 +8,11 @@ import time
 from contextlib import contextmanager
 
 from shared.registry import Conflict
+from shared.json_codec import encode_json
 from .domain import digest, empty_result, observation
 
-
-def encode(value):
-    return json.dumps(value, ensure_ascii=False, sort_keys=True, separators=(",", ":"), allow_nan=False)
+# Kept under the historical module name for external scripts and old imports.
+encode = encode_json
 
 
 class ScheduleStopped(RuntimeError):

@@ -17,6 +17,7 @@ from typing import Any
 from zoneinfo import ZoneInfo
 
 from .execution import ExecutionStopped, ProbeRequest, ResolvedTarget
+from shared.json_codec import encode_json
 
 _ID = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._:/@+\-]{0,199}$")
 _SHA = re.compile(r"^[a-f0-9]{64}$")
@@ -29,8 +30,8 @@ PROJECTION_FIELDS = {"request_id", "status", "valid", "invalid_reason", "vector"
                      "analyzable", "row_counts", "format_compliant", "format_errors", "choice", "number", "reservation_exceeded"}
 
 
-def _json(value):
-    return json.dumps(value, sort_keys=True, ensure_ascii=False, separators=(",", ":"), allow_nan=False)
+# Kept under the historical module name for external scripts and old imports.
+_json = encode_json
 
 
 def _identifier(value):

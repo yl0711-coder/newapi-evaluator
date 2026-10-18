@@ -5,11 +5,11 @@ import json
 from features.integrity.execution import resolve_registry_target
 from features.integrity.strategies import canonical_hash
 from shared.feishu_channels import ChannelSync
+from shared.json_codec import encode_json
 from .domain import CIRCUIT_FAILURES, INTERVAL, QUALITY_ROUNDS, ROUND_WINDOW, next_due
 
-
-def encode(value):
-    return json.dumps(value, ensure_ascii=False, sort_keys=True, separators=(",", ":"), allow_nan=False)
+# Kept under the historical module name for external scripts and old imports.
+encode = encode_json
 
 
 class Store:

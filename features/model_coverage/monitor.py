@@ -21,6 +21,7 @@ from datetime import datetime, timezone
 from typing import Any
 
 from shared.registry import Conflict, RegistryError
+from shared.json_codec import encode_json
 
 SCHEMA_VERSION = "1.0"
 CLIENT = "monitor"
@@ -176,8 +177,8 @@ def executor_enabled() -> bool:
     return os.getenv("EVAL_MONITOR_EXECUTOR", "off").strip().lower() == "live"
 
 
-def _json(value: Any) -> str:
-    return json.dumps(value, ensure_ascii=False, sort_keys=True, separators=(",", ":"), allow_nan=False)
+# Kept under the historical module name for external scripts and old imports.
+_json = encode_json
 
 
 def _new_id(prefix: str) -> str:

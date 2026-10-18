@@ -9,6 +9,7 @@ from zoneinfo import ZoneInfo
 
 from features.integrity.strategies import canonical_hash
 from shared.channel_protocol import SECRET_PATTERN
+from shared.json_codec import encode_json
 from shared.redaction import scrub
 
 VERSION = "online-channel-daily-v1"
@@ -47,9 +48,8 @@ REASONS = {
     "executor_stopped": "进程中断，保留未确认请求及未测项",
 }
 
-
-def encode(value):
-    return json.dumps(value, sort_keys=True, ensure_ascii=False, separators=(",", ":"), allow_nan=False)
+# Kept under the historical module name for external scripts and old imports.
+encode = encode_json
 
 
 def families(scope):
