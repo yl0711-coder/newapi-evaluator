@@ -11,6 +11,13 @@ from . import timetable
 from features.integrity.conclusions import conclusion
 from features.integrity.strategies import get_strategy
 
+METHOD_LABELS = {"canary": "Canary", "modeltrace": "ModelTrace", "nerfed": "Nerfed", "nerfed-api": "Nerfed API"}
+
+
+def method_label(method):
+    """Return the stable report label while preserving unknown legacy names."""
+    return METHOD_LABELS.get(method, str(method))
+
 
 def method_result(slot):
     if slot is None:
@@ -79,7 +86,7 @@ def table_rows(slots):
             displays.append((method, name, multiplier))
         names = {v[1] for v in displays}
         multipliers = {v[2] for v in displays}
-        channel_name = displays[0][1] if len(names) == 1 else " / ".join(f"{'Canary' if m == 'canary' else 'MT'}: {n}" for m, n, _ in displays)
+        channel_name = displays[0][1] if len(names) == 1 else " / ".join(f"{method_label(m)}: {n}" for m, n, _ in displays)
         multiplier = displays[0][2] if len(multipliers) == 1 else None
         states = {r["state"] for r in results.values()} - {"not_scheduled"}
         state = next((s for s in ("degraded", "review", "incomplete", "reference_missing", "sampling", "waiting", "observed") if s in states), "incomplete")

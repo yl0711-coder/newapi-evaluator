@@ -16,7 +16,7 @@ from features.integrity.conclusions import conclusion
 from features.integrity.strategies import get_strategy
 from features.stability.app import storage, timetable, timetable_executor as executor, integrity
 from features.stability.app.main import ScheduleInput, app
-from features.stability.app.timetable_report import report, method_result
+from features.stability.app.timetable_report import report, method_result, method_label, table_rows
 from features.stability.app.timetable_contract import upgrade_config
 
 
@@ -62,6 +62,60 @@ class TimetableContractTests(unittest.TestCase):
                 self.assertEqual(upgraded['legacy_plan']['config'], old)
                 self.assertNotIn('baseline_ids', upgraded)
         self.assertEqual(upgrade_config({}, 'layered-integrity-v1')['modeltrace_times'], timetable.DEFAULTS['modeltrace_times'])
+
+
+class TimetableReportLabelTests(unittest.TestCase):
+    @staticmethod
+    def slot(method, name, multiplier, *, legacy=False):
+        return {
+            'run_id': 1, 'due': 1790000000.0, 'registry_channel_id': 7,
+            'snapshot': {'timezone': 'Asia/Shanghai', 'layered_config': {
+                'channel_names': {'7': name}, 'channel_multipliers': ({'7': multiplier} if multiplier is not None else {}),
+            }},
+            'status': 'completed', 'reason': '', 'method': method,
+            'slot_key': ('timetable:synthetic' if legacy else f'sampling-v3:1:1790000000:7:{method}'),
+            'budget_date': '2026-10-18',
+            'summary': {'attempted': 3, 'valid': 3, 'unknown': 0, 'not_run': 0,
+                        'request_errors': 0, 'score': {'status': 'incomplete'},
+                        'sampling_started_at': 1.0, 'sampling_finished_at': 2.0},
+        }
+
+    def test_cross_method_names_keep_modeltrace_and_nerfed_labels(self):
+        row = table_rows([
+            self.slot('modeltrace', 'Old ModelTrace', 2.5),
+            self.slot('nerfed', 'New Nerfed', 9),
+        ])[0]
+        self.assertEqual(row['channel_name'], 'ModelTrace: Old ModelTrace / Nerfed: New Nerfed')
+        self.assertEqual(row['method_multipliers'], {'modeltrace': 2.5, 'nerfed': 9})
+        self.assertEqual(row['multiplier_basis'], '用户配置的渠道倍率标记，未验证实际扣费')
+        self.assertIn('modeltrace', row)
+        self.assertIn('nerfed', row)
+
+    def test_equal_and_missing_multipliers_keep_existing_api_fields(self):
+        equal = table_rows([
+            self.slot('modeltrace', 'Shared', 2.5),
+            self.slot('nerfed', 'Shared', 2.5),
+        ])[0]
+        self.assertEqual(equal['channel_name'], 'Shared')
+        self.assertEqual(equal['channel_multiplier'], 2.5)
+        self.assertEqual(equal['method_multipliers'], {'modeltrace': 2.5, 'nerfed': 2.5})
+
+        missing = table_rows([
+            self.slot('modeltrace', 'Configured', None),
+            self.slot('nerfed', 'Changed', 9),
+        ])[0]
+        self.assertIsNone(missing['channel_multiplier'])
+        self.assertEqual(missing['method_multipliers'], {'modeltrace': None, 'nerfed': 9})
+        self.assertEqual(missing['multiplier_basis'], '用户配置的渠道倍率标记，未验证实际扣费')
+
+    def test_legacy_canary_and_unknown_method_labels_are_stable(self):
+        legacy = table_rows([
+            self.slot('canary', 'Legacy Canary', 1, legacy=True),
+            self.slot('modeltrace', 'Legacy ModelTrace', 1, legacy=True),
+        ])[0]
+        self.assertEqual(legacy['channel_name'], 'Canary: Legacy Canary / ModelTrace: Legacy ModelTrace')
+        self.assertEqual(method_label('nerfed-api'), 'Nerfed API')
+        self.assertEqual(method_label('legacy-method'), 'legacy-method')
 
 
 class TimetableExecutionTests(unittest.IsolatedAsyncioTestCase):
