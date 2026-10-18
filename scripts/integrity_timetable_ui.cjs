@@ -132,6 +132,22 @@ async function until(fn, message, timeout = 30000) {const end = performance.now(
   check(await table.locator('thead th').count() === 4 && await table.locator('tbody tr').count() === 6, 'demo matrix has one column per channel and row per time');
   const demoText = await table.innerText();
   for (const label of ['更接近 Astra', '更接近 gpt-6-sol', '无法判定：MT 与 Nerfed 结果不一致', '无法判定：采样尚未完成']) check(demoText.includes(label), `demo covers ${label}`);
+  check(await page.evaluate(() => {
+    const source = window.timetableDemoReport().rows[0];
+    const make = patch => ({...source, ...patch, canary: null});
+    const render = (rows, view) => {const root = document.createElement('div'); renderTimetableReport(root, {rows, empty_plans: [], synthetic: true}, null, view); return root.innerText;};
+    const basis = '用户配置的渠道倍率标记，未验证实际扣费';
+    const different = make({method_multipliers: {modeltrace: 2.5, nerfed: 9}, channel_multiplier: null, multiplier_basis: basis});
+    const equal = make({method_multipliers: {modeltrace: 2.5, nerfed: 2.5}, channel_multiplier: 2.5, multiplier_basis: basis});
+    const missing = make({method_multipliers: {}, channel_multiplier: null, multiplier_basis: basis});
+    const legacy = make({method_multipliers: {canary: 3, modeltrace: 2}, channel_multiplier: null, multiplier_basis: basis});
+    const overview = render([different], 'overview'), detail = render([different], 'detail');
+    return overview.includes('ModelTrace: 2.5x') && overview.includes('Nerfed: 9x') && overview.includes(basis)
+      && detail.includes('ModelTrace: 2.5x') && detail.includes('Nerfed: 9x') && detail.includes(basis)
+      && render([equal], 'overview').includes('倍率 2.5x') && !render([equal], 'overview').includes('ModelTrace:')
+      && render([missing], 'detail').includes('倍率 未记录')
+      && render([legacy], 'overview').includes('Canary: 3x') && render([legacy], 'overview').includes('ModelTrace: 2x');
+  }), 'multiplier report distinguishes methods, basis, equal/missing and legacy values in both views');
   check(await page.locator('#timetable-report button, #timetable-report a').count() === 0, 'demo has no baseline mutations or real run downloads');
   const demoIds = await recordIds();
   await page.getByRole('button', {name: '明细表', exact: true}).click(); check(JSON.stringify(await recordIds()) === JSON.stringify(demoIds), 'both demo views use identical records');

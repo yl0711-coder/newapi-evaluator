@@ -47,16 +47,3 @@ def summarize(attempts, planned):
             "not_run": max(0, planned - len(final)),
             "request_errors": sum(r.get("status") not in {"completed", "success", "ok"} for r in outputs),
             "retry_policy": POLICY, "max_retries": MAX_RETRIES, "outputs": outputs}
-
-
-def final_outputs(results):
-    by_probe = {}
-    for result in results:
-        probe = result.get("probe_id", result["request_id"].split(":retry-", 1)[0])
-        previous = by_probe.get(probe)
-        rank = int(result["request_id"].rsplit(":retry-", 1)[1]) if ":retry-" in result["request_id"] else 0
-        previous_rank = (int(previous["request_id"].rsplit(":retry-", 1)[1])
-                         if previous and ":retry-" in previous["request_id"] else 0)
-        if previous is None or rank > previous_rank:
-            by_probe[probe] = result
-    return list(by_probe.values())

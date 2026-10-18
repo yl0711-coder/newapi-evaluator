@@ -336,8 +336,16 @@ async function updateTimetablePreview() {
   } catch (error) {if (generation === state.previewGeneration) $("#timetable-preview").textContent = error.message;}
 }
 function reportMultiplier(item) {
-  const multipliers = Object.entries(item.method_multipliers || {}).sort(([a], [b]) => a.localeCompare(b)), fmt = v => v == null ? "未记录" : `${v}x`;
-  return new Set(multipliers.map(([, v]) => v)).size > 1 ? multipliers.map(([m, v]) => `${m === "canary" ? "Canary" : "MT"}: ${fmt(v)}`).join(" / ") : fmt(item.channel_multiplier);
+  const labels = {canary: "Canary", modeltrace: "ModelTrace", nerfed: "Nerfed", "nerfed-api": "Nerfed API"};
+  const multipliers = Object.entries(item.method_multipliers || {}).sort(([a], [b]) => a.localeCompare(b));
+  const fmt = value => value == null ? "未记录" : `${value}x`;
+  const values = multipliers.map(([, value]) => value);
+  if (new Set(values).size > 1) return multipliers.map(([method, value]) => `${labels[method] || method}: ${fmt(value)}`).join(" / ");
+  return fmt(item.channel_multiplier ?? values[0]);
+}
+function reportMultiplierEvidence(item) {
+  const basis = item.multiplier_basis || "用户配置的渠道倍率标记，未验证实际扣费";
+  return text("small", `倍率 ${reportMultiplier(item)} · ${basis}`, "muted");
 }
 function appendCanaryReport(node, item, synthetic, allowBaseline = true) {
   node.append(text("p", item.canary.label));
@@ -385,7 +393,7 @@ function renderTimetableOverview(root, data) {
       if (!records.length) td.append(text("p", "无符合筛选的采样记录", "muted"));
       for (const record of records) {
         const cell = text("article", "", `timetable-cell state-${record.state}`); cell.dataset.record = recordIdentity(record);
-        cell.append(text("strong", record.conclusion?.label || record.status));
+        cell.append(text("strong", record.conclusion?.label || record.status), reportMultiplierEvidence(record));
         if (record.canary) cell.append(reportEvidence(record, data.synthetic, true));
         td.append(cell);
       }
@@ -413,6 +421,7 @@ function renderTimetableReport(root, data, run = null, view = "detail") {
     const row = document.createElement("tr"); row.dataset.channel = item.registry_channel_id; row.dataset.record = recordIdentity(item);
     const time = document.createElement("td"); time.append(text("p", item.scheduled_at), text("p", item.sampling_period), text("small", `${item.timezone} · ${data.synthetic ? "演示" : "Run"} ${item.run_id}`));
     const channel = text("td", `${item.channel_name} · Registry #${item.registry_channel_id}`);
+    channel.append(reportMultiplierEvidence(item));
     const decision = text("td", item.conclusion?.label || item.status);
     if (item.canary) {
       appendCanaryReport(decision, item, data.synthetic);
