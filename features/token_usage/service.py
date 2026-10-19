@@ -61,7 +61,9 @@ class TokenUsageService:
                     keys.append(self.registry.get(row["id"], secret=True)["api_key"])
                 except (KeyError, RegistryError):
                     pass  # A concurrent removal/replacement does not break choices.
-        return [{"id": row["id"], "name": scrub(row["name"], keys), "enabled": row["enabled"], "credential_status": row["credential_status"]}
+        return [{"id": row["id"], "name": scrub(row["name"], keys), "scope": row["scope"],
+                 "multiplier": row["multiplier"], "status": row["status"], "enabled": row["enabled"],
+                 "credential_status": row["credential_status"]}
                 for row in rows]
 
     def _spec(self, channel_id, model, wire_protocol, *, source, log_evidence=None):
@@ -79,7 +81,9 @@ class TokenUsageService:
         spec["frozen_hash"] = digest({k: spec[k] for k in ("candidate", "reference", "binding_revision", "condition_hash")})
         # Display names belong to the historical record, not connection identity.
         paired_secrets = [candidate.channel["api_key"], reference.channel["api_key"]]
-        spec["display_identity"] = {side: {"name": scrub(resolved.channel["name"], paired_secrets), "registry_channel_id": resolved.snapshot["registry_channel_id"],
+        spec["display_identity"] = {side: {"name": scrub(resolved.channel["name"], paired_secrets),
+                                          "scope": resolved.channel["scope"], "multiplier": resolved.channel["multiplier"],
+                                          "status": resolved.channel["status"], "registry_channel_id": resolved.snapshot["registry_channel_id"],
                                           "model": resolved.snapshot["canonical_model"], "protocol": kind}
                                     for side, resolved in (("candidate", candidate), ("reference", reference))}
         return spec

@@ -37,6 +37,7 @@ async function until(fn,message,timeout=30000){const end=performance.now()+timeo
   await page.addInitScript(()=>Object.defineProperty(crypto,'randomUUID',{value:undefined,configurable:true}));
   await page.goto(base+'/');await page.getByRole('link',{name:/模型完整性复核/}).first().waitFor();
   await page.goto(base+'/integrity/');await page.locator('#unified-channel option').nth(1).waitFor({state:'attached'});
+  check(await page.locator(`#unified-channel option[value="${channel.id}"]`).textContent()==='Synthetic first recorded · 通用 · 1x · #1 · 已记录','integrity option includes name and multiplier');
   check((await request('/stability/api/channels')).channels.length===0,'recorded channel has zero existing targets');
   await page.locator('#unified-channel').selectOption(String(channel.id));
   check(await page.locator('#unified-model').inputValue()==='gpt-6-astra','unified default Astra');

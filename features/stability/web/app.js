@@ -13,6 +13,15 @@ function text(tag, value, className = "") {
   return node;
 }
 
+function publicChannelLabel(channel = {}) {
+  return Workbench.label({
+    ...channel,
+    id: channel.registry_channel_id ?? channel.id,
+    name: channel.name ?? channel.channel_name,
+    multiplier: channel.multiplier ?? channel.channel_multiplier,
+  });
+}
+
 function toast(message) {
   const node = $("#toast");
   node.textContent = message;
@@ -184,7 +193,7 @@ function renderSchedules() {
         : schedule.speed_threshold_mode === "off" ? "不判定速度" : `P95 ≤ ${schedule.max_p95_ms} ms`;
       card.append(text("p", `成功率 ≥ ${percent(schedule.min_success_rate)} · 超时率 ≤ ${percent(schedule.max_timeout_rate)} · ${speedRule}`));
     }
-    const names = schedule.channel_ids.map((id) => state.channels.find((item) => item.id === id)?.name || `#${id}`);
+    const names = schedule.channel_ids.map((id) => publicChannelLabel(state.channels.find((item) => item.id === id) || {id}));
     card.append(text("p", `渠道：${names.join("、")} · ${schedule.enabled ? "已启用" : "已停用"}`));
     const actions = text("div", "", "actions");
     actions.append(action("立即运行", () => runNow(schedule)));
@@ -203,7 +212,7 @@ function renderLegacyPicker(selected = []) {
     input.type = "checkbox";
     input.value = channel.id;
     input.checked = selected.includes(channel.id);
-    label.append(input, document.createTextNode(`${channel.name} · ${channel.model}`));
+    label.append(input, document.createTextNode(`${publicChannelLabel(channel)} · ${channel.model}`));
     return label;
   }));
 }
@@ -221,14 +230,14 @@ function renderChannelPicker(selected = [], registrySelected = []) {
     const input = document.createElement("input"); input.type = "checkbox";
     input.dataset.registry = channel.registry_channel_id;
     input.checked = registrySelected.includes(channel.registry_channel_id);
-    input.setAttribute("aria-label", `选择公共渠道 ${channel.name}`);
+    input.setAttribute("aria-label", `选择公共渠道 ${publicChannelLabel(channel)}`);
     const reason = !channel.enabled ? "registry_disabled" : channel.credential_status !== "available" ? `credential_${channel.credential_status}` : "";
     input.disabled = Boolean(reason);
-    label.append(input, document.createTextNode(`${channel.name} · Registry #${channel.registry_channel_id} · ${channel.status} · 凭据 ${channel.credential_status} · ${channel.discovery_status}`));
+    label.append(input, document.createTextNode(`${publicChannelLabel(channel)} · ${channel.status} · 凭据 ${channel.credential_status} · ${channel.discovery_status}`));
     row.append(label);
     let eligible = !reason;
     for (const model of v2 ? ["gpt-6-astra"] : ["gpt-6-astra", "gpt-6.1-sol"]) {
-      const select = document.createElement("select"); select.dataset.model = model; select.setAttribute("aria-label", `${channel.name} ${model} 模型与协议`);
+      const select = document.createElement("select"); select.dataset.model = model; select.setAttribute("aria-label", `${publicChannelLabel(channel)} ${model} 模型与协议`);
       const choices = channel.models.filter(item => item.catalog_model === model);
       select.replaceChildren(...choices.map(item => new Option(`${item.model} / ${item.protocol}${item.reason ? " · " + item.reason : ""}`, JSON.stringify(item))));
       if (!choices.some(item => item.eligible)) eligible = false;
@@ -255,7 +264,7 @@ function renderLayeredRun(root, run) {
   root.append(controls);
   for (const slot of run.slots || []) {
     const card = text("article", "", "panel"); const evidence = slot.summary || {}, score = evidence.score || {};
-    card.append(text("h3", `${slot.slot} · Registry #${slot.registry_channel_id ?? "待轮转"} · ${slot.model}/${slot.protocol}`));
+    card.append(text("h3", `${slot.slot} · ${publicChannelLabel(state.candidates.find((item) => item.registry_channel_id === slot.registry_channel_id) || {registry_channel_id: slot.registry_channel_id})} · ${slot.model}/${slot.protocol}`));
     card.append(text("p", `费用估算 USD ${evidence.fees?.estimated_usd ?? "unknown"} · reasoning 用量见导出；不设每日金额上限`));
     card.append(text("p", `${slot.status}${slot.reason ? " · " + slot.reason : ""} · 计划 ${evidence.planned ?? (slot.method === "canary" ? 192 : slot.method === "modeltrace" ? 3 : 1)} · 尝试 ${evidence.attempted ?? 0} · 有效 ${evidence.valid ?? 0} · 无效 ${evidence.invalid ?? 0} · unknown ${evidence.unknown ?? 0} · not_run ${evidence.not_run ?? "未测"}`));
     if (slot.method === "canary") {
@@ -382,7 +391,7 @@ function renderTimetableOverview(root, data) {
   const table = document.createElement("table"); table.className = "detail-table timetable-overview";
   table.style.minWidth = `${185 + ids.length * 260}px`;
   const head = document.createElement("thead"), h = document.createElement("tr"); h.append(text("th", "计划时刻（时区）"));
-  for (const id of ids) h.append(text("th", `${[...channels.get(id)].join(" / ")} · Registry #${id}`));
+  for (const id of ids) h.append(text("th", publicChannelLabel({id, name: [...channels.get(id)].join(" / "), channel_multiplier: data.rows.find((item) => item.registry_channel_id === id)?.channel_multiplier})));
   head.append(h); const body = document.createElement("tbody");
   for (const {item, cells} of [...times.values()].sort((a, b) => a.item.scheduled_at_utc - b.item.scheduled_at_utc || a.item.timezone.localeCompare(b.item.timezone))) {
     const tr = document.createElement("tr"), time = document.createElement("th"); time.scope = "row";
@@ -420,7 +429,7 @@ function renderTimetableReport(root, data, run = null, view = "detail") {
   for (const item of data.rows) {
     const row = document.createElement("tr"); row.dataset.channel = item.registry_channel_id; row.dataset.record = recordIdentity(item);
     const time = document.createElement("td"); time.append(text("p", item.scheduled_at), text("p", item.sampling_period), text("small", `${item.timezone} · ${data.synthetic ? "演示" : "Run"} ${item.run_id}`));
-    const channel = text("td", `${item.channel_name} · Registry #${item.registry_channel_id}`);
+    const channel = text("td", publicChannelLabel(item));
     channel.append(reportMultiplierEvidence(item));
     const decision = text("td", item.conclusion?.label || item.status);
     if (item.canary) {
@@ -446,9 +455,9 @@ async function loadTimetableReport(choices = false) {
   if (choices) {
     const all = demoData || await api(`/api/timetable/report?${params}`), channels = new Map();
     if (generation !== state.reportGeneration) return;
-    all.rows.forEach(r => channels.set(r.registry_channel_id, r.channel_name));
+    all.rows.forEach(r => channels.set(r.registry_channel_id, {name: r.channel_name, multiplier: r.channel_multiplier}));
     const selected = $("#report-channel").value;
-    $("#report-channel").replaceChildren(new Option("全部渠道", ""), ...[...channels].map(([id, name]) => new Option(`${name} · #${id}`, id)));
+    $("#report-channel").replaceChildren(new Option("全部渠道", ""), ...[...channels].map(([id, channel]) => new Option(publicChannelLabel({...channel, id}), id)));
     $("#report-channel").value = channels.has(Number(selected)) ? selected : "";
   }
   if ($("#report-channel").value) params.set("channel_id", $("#report-channel").value);
@@ -465,13 +474,14 @@ async function loadTimetableReport(choices = false) {
 }
 async function toggleReportDemo() {
   if (!state.reportDemo) {
-    state.realReportFilters = {date: $("#report-date").value, channel: $("#report-channel").value, anomalies: $("#report-anomalies").checked};
+    state.realReportFilters = {date: $("#report-date").value, channel: $("#report-channel").value,
+      channelLabel: $("#report-channel").selectedOptions[0]?.textContent, anomalies: $("#report-anomalies").checked};
     state.reportDemo = true; $("#report-date").value = "2026-10-08"; $("#report-channel").value = ""; $("#report-anomalies").checked = false;
   } else {
     state.reportDemo = false;
     $("#report-date").value = state.realReportFilters.date; $("#report-anomalies").checked = state.realReportFilters.anomalies;
     $("#report-channel").replaceChildren(new Option("全部渠道", ""));
-    if (state.realReportFilters.channel) $("#report-channel").append(new Option(`Registry #${state.realReportFilters.channel}`, state.realReportFilters.channel));
+    if (state.realReportFilters.channel) $("#report-channel").append(new Option(state.realReportFilters.channelLabel || `渠道 #${state.realReportFilters.channel}`, state.realReportFilters.channel));
     $("#report-channel").value = state.realReportFilters.channel;
   }
   state.reportGeneration++; state.reportData = null;
@@ -659,7 +669,7 @@ async function loadReportGroups() {
     card.append(text("h3", `${group.family} · ${group.label}`));
     card.append(text("p", group.always_normal
       ? "免测 · 固定显示正常"
-      : `公共渠道 ID：${group.registry_channel_ids.join("、")}`));
+      : `公共渠道：${group.registry_channel_ids.map((id) => publicChannelLabel(state.candidates.find((item) => item.registry_channel_id === id) || state.channels.find((item) => item.registry_channel_id === id) || {id})).join("、")}`));
     return card;
   }));
 }

@@ -43,7 +43,7 @@ async function until(fn, message, timeout = 30000) {const end = performance.now(
   check(await page.getByRole('checkbox', {name: 'MT / Nerfed 09:00', exact: true}).isChecked() && await page.getByRole('checkbox', {name: 'MT / Nerfed 09:30', exact: true}).isChecked(), 'default selects the hour and half hour');
   check(!(await page.getByRole('checkbox', {name: 'MT / Nerfed 09:10', exact: true}).isChecked()), 'ten-minute points remain available but unselected');
   await page.locator('#schedule-name').fill('Synthetic irregular timetable');
-  await page.getByRole('checkbox', {name: '选择公共渠道 Synthetic timetable browser', exact: true}).check(); await page.locator('#schedule-enabled').uncheck();
+  await page.getByRole('checkbox', {name: '选择公共渠道 Synthetic timetable browser · 通用 · 2.5x · #1 · 已上线', exact: true}).check(); await page.locator('#schedule-enabled').uncheck();
   await until(async () => (await page.locator('#timetable-preview').innerText()).includes('首次 288 次'), 'default 288 initial requests per channel');
   await page.getByRole('group', {name:'MT / Nerfed 同步采样时刻',exact:true}).getByRole('button', {name:'全选',exact:true}).click();
   check(await page.locator('#timetable-grid input:checked').count() === 144, 'explicit all selects the ten-minute grid');

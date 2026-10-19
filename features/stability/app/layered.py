@@ -98,6 +98,7 @@ def candidates():
                             "eval_coverage": "configured" if matching else "not_enrolled",
                             "target_ids": [t["id"] for t in matching]})
         rows.append({"registry_channel_id": channel["id"], "name": channel["name"],
+                     "scope": channel["scope"], "multiplier": channel["multiplier"],
                      "enabled": channel["enabled"], "status": channel["status"],
                      "source_kind": channel["source_kind"], "credential_status": credential,
                      "discovery_status": "unknown" if not discovery else "recorded",

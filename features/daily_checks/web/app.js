@@ -19,7 +19,7 @@
       $(id+'-model').replaceChildren(new Option('暂不配置',''));
       for (const model of meta.models.filter(m => m.test_families.includes(family))) $(id+'-model').append(new Option(model.model,model.model));
       $(id+'-reference').replaceChildren(new Option('请选择可信参照',''));
-      for (const channel of meta.channels.filter(c => c.enabled && c.credential_status==='available')) $(id+'-reference').append(new Option(`${channel.name} · #${channel.id}`,channel.id));
+      for (const channel of meta.channels.filter(c => c.enabled && c.credential_status==='available')) $(id+'-reference').append(new Option(Workbench.label(channel),channel.id));
       if (preserveForm) { $(id+'-model').value=current; $(id+'-reference').value=reference; }
       else {
         const profile = meta.plan.profiles.find(p => p.family===family);

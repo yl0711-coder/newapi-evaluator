@@ -135,7 +135,8 @@ class ReviewService:
                 except RegistryError:
                     reason = "凭据不可解密"
             bindings = [catalog.binding(public["id"], m["id"]) for m in models]
-            channels.append({"id": public["id"], "name": public["name"], "status": public["status"],
+            channels.append({"id": public["id"], "name": public["name"], "scope": public["scope"],
+                             "multiplier": public["multiplier"], "status": public["status"],
                              "available": available, "reason": reason,
                              "models": [{"model": m["model"], "upstream_model": m["upstream_model"], "protocol": m["request_protocol"]} for m in bindings]})
         return channels

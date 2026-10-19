@@ -95,7 +95,7 @@ window.ModelCoverage = (() => {
     fetchId = id; $('model-source').value = String(id); renderSharedModels();
     $('fetch-form').reset(); $('fetch-error').textContent = '';
     $('fetch-auth').value = channelData(id)?.discovery?.auth_kind || 'auto';
-    $('fetch-description').textContent = `只获取 ${channels.find(c => c.id === id)?.name || '渠道'} · #${id} 的模型列表，使用已保存凭据。`;
+    $('fetch-description').textContent = `只获取 ${Workbench.label(channels.find(c => c.id === id) || {id})} 的模型列表，使用已保存凭据。`;
     $('fetch-dialog').showModal();
   }
   function openMapping(item) {
@@ -122,7 +122,7 @@ window.ModelCoverage = (() => {
       preview = result;
       $('enroll-preview').append(node('p', `每天 ${result.daily_times}；每批新增 ${result.added_requests_per_run} 个请求，每天新增 ${result.added_requests_per_day} 个请求。`));
       const labels = {skip:'已在计划中，跳过', create:'创建目标并加入', attach:'复用目标并加入', enable:'恢复目标并加入'};
-      for (const item of result.items) $('enroll-preview').append(node('p', `渠道 #${item.channel_id} · ${item.model} · ${labels[item.action]}`));
+      for (const item of result.items) $('enroll-preview').append(node('p', `${Workbench.label(channels.find(c => c.id === item.channel_id) || {id:item.channel_id})} · ${item.model} · ${labels[item.action]}`));
       $('enroll-submit').disabled = false;
     } catch (error) { if (generation === previewGeneration) $('enroll-error').textContent = error.message; }
   }
@@ -166,7 +166,7 @@ window.ModelCoverage = (() => {
       for (const item of info.models.filter(matches)) {
         const row = node('tr'); row.dataset.model = item.model;
         const checkbox = document.createElement('input'); checkbox.type = 'checkbox'; checkbox.checked = selected.has(key(item)); checkbox.disabled = !channel.enabled || channel.credential_status !== 'available';
-        checkbox.setAttribute('aria-label', `选择 ${channel.name} ${item.label}`);
+        checkbox.setAttribute('aria-label', `选择 ${Workbench.label(channel)} ${item.label}`);
         checkbox.addEventListener('change', () => { checkbox.checked ? selected.set(key(item), item) : selected.delete(key(item)); counts(); });
         const selectCell = node('td'); selectCell.append(checkbox);
         const label = node('td', item.label); label.append(node('small', `${item.upstream_model} · ${item.protocol}`, 'hint'));

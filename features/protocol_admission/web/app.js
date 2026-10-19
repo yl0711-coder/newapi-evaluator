@@ -3,6 +3,7 @@ const api = (path, options) => Workbench.api('./api/' + path, options);
 const node = (...args) => Workbench.node(...args);
 const states = {passed:'通过', failed:'未通过', unconfirmed:'待确认', not_run:'未检测', running:'检测中', completed:'已完成', cancelled:'已停止', interrupted:'已中断'};
 let metadata, channels = [], preview = null, active = null, poll = null, generation = 0;
+const channelLabel = (id, name = '') => Workbench.label({...channels.find(channel => channel.id === id), id, name: name || channels.find(channel => channel.id === id)?.name});
 const available = new Set(), selected = new Set();
 let sharedModels = [];
 async function loadSharedModels() {
@@ -74,7 +75,7 @@ async function show(id) {
     const supported = Object.entries(model.protocols).filter(([, value]) => value.status === 'supported').map(([key]) => metadata.protocols[key].name);
     if (model.search.status === 'supported') supported.push('Alpha Search');
     const overall = supported.length ? `可用 · 支持：${supported.join('、')}` : '未确认支持任何协议';
-    const row = node('tr'); row.append(node('td', `${model.channel_name ? model.channel_name + ' · ' : (model.channel_id ? '渠道 #' + model.channel_id + ' · ' : '')}${model.upstream_model} · ${overall}`));
+    const row = node('tr'); row.append(node('td', `${model.channel_id ? channelLabel(model.channel_id, model.channel_name) + ' · ' : ''}${model.upstream_model} · ${overall}`));
     for (const protocol of Object.keys(metadata.protocols)) {
       const value = model.protocols[protocol], cell = node('td', value.label, value.status);
       cell.append(node('small', `普通：${value.details.basic.label} · 流式：${value.details.stream.label}`, 'hint'));
@@ -87,7 +88,7 @@ async function show(id) {
   $('results').replaceChildren(...report.probes.map(probe => {
     const row = node('tr');
     const explanation = metadata.errors[probe.error_class] || probe.error_class || (probe.capability.status === 'supported' ? '本项通过' : probe.capability.label);
-    for (const text of [`${probe.channel_id ? '渠道 #' + probe.channel_id + ' · ' : ''}${probe.model} · ${probe.label}`, probe.capability.label, probe.http_status ?? '—', `${probe.total_ms ?? '—'} ms`, explanation]) row.append(node('td', String(text)));
+    for (const text of [`${probe.channel_id ? channelLabel(probe.channel_id) + ' · ' : ''}${probe.model} · ${probe.label}`, probe.capability.label, probe.http_status ?? '—', `${probe.total_ms ?? '—'} ms`, explanation]) row.append(node('td', String(text)));
     return row;
   }));
   for (const format of ['json', 'html']) $(`export-${format}`).href = `./api/runs/${id}/export/${format}`;

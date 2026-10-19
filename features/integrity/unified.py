@@ -46,7 +46,8 @@ class UnifiedService:
                     reason = str(exc)
                 entries.append({"model": model["model"], "upstream_model": mapped["upstream_model"],
                                 "protocol": mapped["request_protocol"], "eligible": not reason, "reason": reason})
-            rows.append({"id": channel["id"], "name": channel["name"], "status": channel["status"],
+            rows.append({"id": channel["id"], "name": channel["name"], "scope": channel["scope"],
+                         "multiplier": channel["multiplier"], "status": channel["status"],
                          "credential_status": channel["credential_status"], "models": entries,
                          "available": any(m["eligible"] for m in entries)})
         return rows

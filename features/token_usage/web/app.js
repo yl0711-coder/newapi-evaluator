@@ -5,10 +5,11 @@
   let models = [], channels = [], polling = false, renderedResults = '', refreshing = false, lastAttempt = 0, lastSuccess = 0, activeEnabled = false;
   const selected = () => ({channel_id:Number($('candidate').value),model:$('model').value,protocol:$('protocol').value});
   const node = (tag, text) => Workbench.node(tag, text);
-  const channelName = id => channels.find(c => c.id === id)?.name || '#' + id;
+  const channelRecord = (id, display = {}) => ({...(channels.find(c => c.id === id) || {}), ...display, id});
+  const channelName = id => Workbench.label(channelRecord(id));
   const statuses = {queued:'排队中',running:'执行中',completed:'已完成',cancelled:'已取消'};
   const protocols = {openai:'Chat Completions',responses:'Responses',anthropic:'Claude Messages'};
-  const identity = (display, endpoint) => `${display?.name || '未记录渠道名称'} · #${endpoint.registry_channel_id} · ${endpoint.canonical_model || endpoint.model} · ${protocols[endpoint.protocol] || endpoint.protocol}`;
+  const identity = (display, endpoint) => `${Workbench.label(channelRecord(endpoint.registry_channel_id, display))} · ${endpoint.canonical_model || endpoint.model} · ${protocols[endpoint.protocol] || endpoint.protocol}`;
   async function refresh() {
     if (refreshing) return;
     refreshing = true; lastAttempt = Date.now();
@@ -67,7 +68,7 @@
     else $('protocol').value=models[0]?.protocol || 'openai';
     for(const id of ['reference','candidate']) {
       const chosen=$(id).value;
-      $(id).replaceChildren(new Option('请选择渠道',''),...channels.filter(c=>c.enabled && c.credential_status==='available').map(c=>new Option(c.name+' · #'+c.id,c.id)));
+      $(id).replaceChildren(new Option('请选择渠道',''),...channels.filter(c=>c.enabled && c.credential_status==='available').map(c=>new Option(Workbench.label(c),c.id)));
       if(preserve) $(id).value=chosen;
     }
   }

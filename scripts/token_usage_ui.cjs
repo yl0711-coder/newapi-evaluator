@@ -55,6 +55,7 @@ async function port(){const s=net.createServer();await new Promise(r=>s.listen(0
   const page=await browser.newPage({viewport:{width:1440,height:1000}});const errors=[];page.on('pageerror',e=>errors.push(e.name));
   await page.addInitScript(()=>Object.defineProperty(globalThis.crypto,'randomUUID',{value:undefined,configurable:true}));
   await page.goto(base+'/token-usage/');await page.locator('.platform-nav').waitFor();await page.locator('#model option').first().waitFor({state:'attached'});
+  check(await page.locator(`#reference option[value="${reference.id}"]`).textContent()==='Synthetic reference · 通用 · 1x · #2 · 已记录','channel option includes name and multiplier');
   check(calls===0,'Opening page does not send upstream');
   await page.locator('#model').selectOption('gpt-5.5');await page.locator('#reference').selectOption(String(reference.id));await page.locator('#candidate').selectOption(String(candidate.id));
   await page.locator('#trusted').check();await page.locator('#save-binding').click();await page.locator('#bindings').getByText(/可信参照 Synthetic reference/).waitFor();

@@ -22,8 +22,14 @@ window.Workbench = {
     element.className = className;
     return element;
   },
-  label(channel) {
-    return `${channel.name} · ${channel.scope || '通用'} · ${channel.multiplier}x · #${channel.id}${channel.status === 'online' ? ' · 已上线' : ' · 已记录'}`;
+  label(channel = {}) {
+    const id = channel.id ?? channel.registry_channel_id ?? '?';
+    const name = channel.name ?? channel.channel_name ?? '未记录渠道名称';
+    const scope = channel.scope || '通用';
+    const multiplier = channel.multiplier ?? channel.channel_multiplier;
+    const factor = multiplier == null ? '未记录倍率' : `${multiplier}x`;
+    const lifecycle = channel.status === 'online' ? ' · 已上线' : ' · 已记录';
+    return `${name} · ${scope} · ${factor} · #${id}${lifecycle}`;
   },
   async picker(select, selected, options = {}) {
     const {channels} = await this.api('/api/registry/channels');

@@ -21,7 +21,8 @@ def target_snapshot(target, registry):
     if not channel["enabled"]:
         raise ValueError("所选渠道已停用")
     host = urlsplit(channel["base_url"]).hostname or ""
-    return {"mode": "live", "alias": f"渠道 #{channel['id']}", "channel_id": channel["id"],
+    alias = f"{channel['name']} · {channel['scope'] or '通用'} · {channel['multiplier']}x · #{channel['id']}"
+    return {"mode": "live", "alias": alias, "channel_id": channel["id"],
             "version": channel["version"], "protocol": target.protocol, "model": target.model,
             "host_masked": "***", "host_fingerprint": fingerprint(host),
             "endpoint_fingerprint": fingerprint(channel["base_url"])}

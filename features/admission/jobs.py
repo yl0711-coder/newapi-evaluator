@@ -135,7 +135,8 @@ class AdmissionManager:
         configuration = {
             "run_id": run_id, "rounds": body.rounds,
             "candidate": {"base_url": candidate["base_url"], "name": body.candidate.name or "未记录渠道名称", "model": body.candidate.model, "protocol": body.candidate.protocol},
-            "reference": {**body.reference.model_dump(), "name": channel["name"] or "未记录渠道名称", "base_url": channel["base_url"]},
+            "reference": {**body.reference.model_dump(), "name": channel["name"] or "未记录渠道名称", "scope": channel["scope"],
+                           "multiplier": channel["multiplier"], "status": channel["status"], "base_url": channel["base_url"]},
             "candidate_identity": self.registry.connection_fingerprint(candidate),
             "reference_identity": self.registry.connection_fingerprint(channel),
         }
@@ -162,7 +163,8 @@ class AdmissionManager:
                 "status": "running", "rounds": body.rounds, "warmup_rounds": 1 if body.rounds >= 2 else 0,
                 "candidate": configuration["candidate"],
                 "reference": {"base_url": channel["base_url"], "name": channel["name"], "channel_id": channel["id"],
-                              "multiplier": channel["multiplier"], "model": body.reference.model, "protocol": body.reference.protocol},
+                              "scope": channel["scope"], "multiplier": channel["multiplier"], "status": channel["status"],
+                              "model": body.reference.model, "protocol": body.reference.protocol},
                 "questions": [{key: q[key] for key in ("id", "title", "difficulty", "prompt")} for q in engine.QUESTIONS],
                 "responses": [], "measurements": [],
             }

@@ -20,13 +20,19 @@ def inspect(directory, channel_id=None, protocol="openai", model="diagnosis-mock
         conn = sqlite3.connect(path.as_uri() + "?mode=ro", uri=True)
         try:
             conn.execute("PRAGMA query_only=ON")
-            row = conn.execute("SELECT id,version,base_url,enabled FROM channels WHERE id=?", (channel_id,)).fetchone()
+            columns = {item[1] for item in conn.execute("PRAGMA table_info(channels)")}
+            selected = [name for name in ("id", "version", "base_url", "enabled", "scope", "multiplier", "status") if name in columns]
+            row = conn.execute(f"SELECT {','.join(selected)} FROM channels WHERE id=?", (channel_id,)).fetchone()
         finally:
             conn.close()
         if row is None:
             raise ValueError("渠道不存在")
-        result.update(alias=f"渠道 #{row[0]}", version=row[1], enabled=bool(row[3]), host_masked="***",
-                      host_fingerprint=fingerprint(urlsplit(row[2]).hostname or ""), endpoint_fingerprint=fingerprint(row[2]))
+        values = dict(zip(selected, row))
+        result.update(alias=f"渠道 #{values['id']}", version=values["version"], enabled=bool(values["enabled"]),
+                      scope=values.get("scope") or "通用", multiplier=values.get("multiplier"),
+                      status=values.get("status") or "recorded", host_masked="***",
+                      host_fingerprint=fingerprint(urlsplit(values["base_url"]).hostname or ""),
+                      endpoint_fingerprint=fingerprint(values["base_url"]))
     else:
         result["alias"] = "本地 Mock"
     result["fingerprint"] = fingerprint({k: v for k, v in result.items() if k != "checked_at"})

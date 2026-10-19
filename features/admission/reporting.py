@@ -12,7 +12,8 @@ SIDES = ("candidate", "reference")
 def endpoint_identity(value: Any) -> dict[str, Any]:
     endpoint = value if isinstance(value, dict) else {}
     return {"name": endpoint.get("name") or "未记录渠道名称",
-            **{key: endpoint[key] for key in ("channel_id", "model", "protocol") if endpoint.get(key) is not None}}
+            **{key: endpoint[key] for key in ("channel_id", "model", "protocol", "scope", "multiplier", "status")
+               if endpoint.get(key) is not None}}
 
 
 def public_token_usage(value: Any) -> dict[str, Any] | None:

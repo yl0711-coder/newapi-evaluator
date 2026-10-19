@@ -5,6 +5,7 @@ const names = {healthy:'本轮正常',transport_recovered:'请求已恢复',tran
 const events = {minimum_channels:'保底保护：保留渠道并告警',channel_disabled:'已停用渠道',channel_enabled:'已恢复渠道',management_action_unconfirmed:'管理动作未确认，渠道已锁定，请人工核对',binding_unavailable:'目标不可用、配置变化或测试窗口已结束',externally_enabled:'渠道已被外部启用，解除自动恢复所有权',external_status:'外部停用，保持现状',round_interrupted:'本轮未完成，未确认的请求不会计为五次失败'};
 Object.assign(events,{online_inventory_unavailable:'飞书完整上线名单读取失败，本轮不自动恢复',recovery_unavailable:'恢复资格或动作未确认，本轮暂停后续停用',circuit_opened:'多渠道请求故障，已熔断全部自动停用',circuit_closed:'后续定时轮次全部未锁定映射正常，已解除熔断',circuit_reset:'已人工解除熔断，计划保持暂停',disable_suspended:'本轮自动停用已暂停',floor_connectivity_recheck:'四条保底前的延迟连通性复测已完成'});
 const time = value => value == null ? '—' : new Date(value * 1000).toLocaleString();
+const channelLabel = id => Workbench.label(state?.channels?.find(channel => channel.id === id) || {id});
 function message(text){$('message').textContent = text;}
 function button(label, action){const b=Workbench.node('button',label,'secondary');b.type='button';b.addEventListener('click',()=>operate(action));return b;}
 function options(id, rows, value, label){const selected=$(id).value;$(id).replaceChildren(...rows.map(r=>new Option(label(r),value(r))));if([...$(id).options].some(o=>o.value===selected))$(id).value=selected;}
@@ -19,7 +20,7 @@ async function refresh(initial=false){
   $('schedule').textContent=`下次计划开始：${time(meta.executor.plan.next_due)}；按开始到开始计时，错过不补测。`;
   $('instance-status').textContent=meta.instance?'管理令牌已加密保存，页面不回显。':'尚未配置管理连接。';
   if(initial&&meta.instance){$('base-url').value=meta.instance.base_url;$('user-id').value=meta.instance.user_id||'';}
-  options('registry-id',meta.channels.filter(c=>c.enabled&&c.credential_status==='available'),r=>String(r.id),r=>'公共渠道 #'+r.id);
+  options('registry-id',meta.channels.filter(c=>c.enabled&&c.credential_status==='available'),r=>String(r.id),Workbench.label);
   options('model',meta.models,r=>r.model,r=>r.model);
   options('expected',meta.expected_models,r=>r,r=>r);
   if(initial){if(meta.models.some(m=>m.model==='gpt-6-astra'))$('model').value='gpt-6-astra';$('expected').value='gpt-6-astra';}
@@ -32,7 +33,7 @@ async function refresh(initial=false){
   if(!meta.bindings.length)$('bindings').append(Workbench.node('p','尚未绑定渠道。'));
   for(const row of meta.bindings){
     const card=Workbench.node('article','','binding');card.dataset.binding=String(row.id);
-    card.append(Workbench.node('strong',`New API #${row.remote_id} → 公共渠道 #${row.registry_id} · ${row.model}`));
+    card.append(Workbench.node('strong',`New API #${row.remote_id} → ${channelLabel(row.registry_id)} · ${row.model}`));
     card.append(Workbench.node('p',`${row.locked?'已锁定':'自动管理'} · ${row.owned_reason?'自动停用，等待飞书上线资格、糖果答对且 MT 匹配':'当前无自动停用所有权'}`));
     const outcome=row.last_result?.outcome;
     card.append(Workbench.node('p',`糖果错且 MT 偏离 ${outcome==='quality_failure'?row.quality_streak:0}/${thresholds.quality_failure} · 糖果对且 MT 偏离 ${outcome==='mt_mismatch'?row.quality_streak:0}/${thresholds.mt_mismatch}`));
@@ -47,7 +48,7 @@ async function refresh(initial=false){
   for(const e of history.events){const node=Workbench.node('div',`${time(e.created)} · ${e.binding_id==null?'本轮':'映射 #'+e.binding_id} · ${events[e.kind]||e.kind}`,'event');if(e.kind==='minimum_channels')for(const d of e.detail.deficient)node.append(Workbench.node('p',`${d.group} / ${d.model}：禁用后剩 ${d.remaining} 条，至少需要 4 条`));$('events').append(node);}
   if(!history.events.length)$('events').append(Workbench.node('p','暂无告警或动作。'));
   $('actions').replaceChildren();
-  for(const action of history.actions){const target=action.target;const item=Workbench.node('div',`#${action.id} · ${time(action.started)} · New API #${target.remote_id} · ${action.desired===2?'停用':'启用'} · ${action.status}`,'event');item.append(Workbench.node('p',`公共渠道 #${target.registry_id} · ${target.model} · ${target.protocol}`));if(target.trigger_outcome)item.append(Workbench.node('p',(names[target.trigger_outcome]||target.trigger_outcome)+(target.threshold?` · 连续 ${target.streak}/${target.threshold} 轮`:'')));const evidence=Workbench.node('details');evidence.append(Workbench.node('summary','冻结目标与操作依据'),Workbench.node('pre',JSON.stringify(target,null,2)));item.append(evidence);$('actions').append(item);}
+  for(const action of history.actions){const target=action.target;const item=Workbench.node('div',`#${action.id} · ${time(action.started)} · New API #${target.remote_id} · ${action.desired===2?'停用':'启用'} · ${action.status}`,'event');item.append(Workbench.node('p',`${channelLabel(target.registry_id)} · ${target.model} · ${target.protocol}`));if(target.trigger_outcome)item.append(Workbench.node('p',(names[target.trigger_outcome]||target.trigger_outcome)+(target.threshold?` · 连续 ${target.streak}/${target.threshold} 轮`:'')));const evidence=Workbench.node('details');evidence.append(Workbench.node('summary','冻结目标与操作依据'),Workbench.node('pre',JSON.stringify(target,null,2)));item.append(evidence);$('actions').append(item);}
   if(!history.actions.length)$('actions').append(Workbench.node('p','暂无管理动作。'));
   $('rounds').replaceChildren();
   for(const round of history.rounds)$('rounds').append(button(`#${round.id} · ${time(round.due)} · ${round.status}`,async()=>{$('attempts').textContent=JSON.stringify(await api(`/rounds/${round.id}/attempts`),null,2);}));

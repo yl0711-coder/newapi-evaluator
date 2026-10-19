@@ -23,7 +23,10 @@
   function channelLine(task) {
     const target = task.target_snapshot || {};
     const protocol = ({responses:'Responses', openai:'Chat Completions', anthropic:'Messages'})[target.protocol] || '未记录协议';
-    return `${task.display_identity?.channel_name || '未记录渠道名称'} · 渠道 #${target.registry_channel_id ?? '?'} · ${target.canonical_model || target.model || '未记录模型'} · ${protocol}`;
+    const id = target.registry_channel_id;
+    const current = metadata.channels.find(channel => channel.id === id) || metadata.unified?.channels.find(channel => channel.id === id) || {};
+    const display = task.display_identity || {};
+    return `${Workbench.label({...current, ...display, id})} · ${target.canonical_model || target.model || '未记录模型'} · ${protocol}`;
   }
   function verdictLabel(score) {
     const verdict = score?.source_verdict || score?.status;
@@ -101,7 +104,7 @@
     const selected = $('review-channel').value || query.get('registry_channel_id');
     $('review-channel').replaceChildren(new Option('请选择渠道',''));
     for (const channel of metadata.channels) {
-      const option = new Option(`${channel.name} · #${channel.id}${channel.available?'': ' · '+channel.reason}`,String(channel.id));
+      const option = new Option(`${Workbench.label(channel)}${channel.available?'': ' · '+channel.reason}`,String(channel.id));
       option.disabled = !channel.available; $('review-channel').append(option);
     }
     if (selected) $('review-channel').value = selected;
@@ -111,7 +114,7 @@
     const chosen = $('unified-channel').value;
     $('unified-channel').replaceChildren(new Option('请选择渠道',''));
     for (const channel of metadata.unified.channels) {
-      const option = new Option(`${channel.name} · #${channel.id}${channel.available?'':' · 不可执行'}`,String(channel.id));
+      const option = new Option(`${Workbench.label(channel)}${channel.available?'':' · 不可执行'}`,String(channel.id));
       option.disabled=!channel.available; $('unified-channel').append(option);
     }
     if(chosen) $('unified-channel').value=chosen;
@@ -119,7 +122,7 @@
     const canaryChosen = $('canary-channel').value;
     $('canary-channel').replaceChildren(new Option('请选择渠道',''));
     for (const channel of metadata.unified.channels) {
-      const option = new Option(`${channel.name} · #${channel.id}`, String(channel.id));
+      const option = new Option(Workbench.label(channel), String(channel.id));
       option.disabled = !channel.models.some(m => m.model === 'gpt-6-astra' && m.eligible);
       $('canary-channel').append(option);
     }

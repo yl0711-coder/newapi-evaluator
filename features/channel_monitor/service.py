@@ -37,7 +37,9 @@ class Service:
                   if m["protocol"] in {"responses", "openai"}]
         return {**domain.contract(), "instance": self.store.instance(), "executor": self.status(),
                 "bindings": self.store.bindings(), "models": models, "expected_models": domain.expected_models(),
-                "channels": [{"id": c["id"], "enabled": c["enabled"], "credential_status": c["credential_status"]}
+                "channels": [{"id": c["id"], "name": c["name"], "scope": c["scope"],
+                              "multiplier": c["multiplier"], "status": c["status"], "enabled": c["enabled"],
+                              "credential_status": c["credential_status"]}
                              for c in self.registry.list()]}
 
     def save_instance(self, base_url, token, user_id):

@@ -90,7 +90,8 @@ def create_app(directory=None, registry=None):
     async def config(request: Request):
         manager = request.app.state.manager
         return {"channels": [
-            {"id": c["id"], "alias": f"渠道 #{c['id']}", "version": c["version"], "enabled": c["enabled"]}
+            {"id": c["id"], "name": c["name"], "scope": c["scope"], "multiplier": c["multiplier"],
+             "status": c["status"], "alias": c["name"], "version": c["version"], "enabled": c["enabled"]}
             for c in manager.registry.list()]}
 
     @app.get("/api/cases")

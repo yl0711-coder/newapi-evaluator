@@ -31,6 +31,7 @@ const watchdog=setTimeout(()=>{failure=failure||new Error('Browser budget exceed
   await page.goto(base+'/');await page.getByRole('link',{name:'渠道自动启停',exact:true}).first().click();
   await page.getByRole('heading',{name:'渠道自动启停',exact:true}).waitFor();
   await page.waitForFunction(()=>document.querySelector('#plan-status').textContent.includes('暂停'));
+  assert.equal(await page.locator('#registry-id option[value="1"]').textContent(),'Synthetic upstream · gpt · 1x · #1 · 已上线');
   assert.equal((await state()).mockRequests,0);assert.equal((await state()).managementReads,0);
   await page.locator('#base-url').fill(base);await page.locator('#token').fill('synthetic-management');await page.locator('#user-id').fill('9');
   await page.getByRole('button',{name:'保存管理连接',exact:true}).click();

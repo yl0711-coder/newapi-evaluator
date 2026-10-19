@@ -9,7 +9,7 @@ const jobStatus = {queued:'等待测试',running:'测试进行中',waiting_crede
 const duration = value => Number.isFinite(value) ? `${(value / 1000).toFixed(2)} 秒` : '不可用';
 const signedDuration = value => Number.isFinite(value) ? `${value > 0 ? '+' : ''}${(value / 1000).toFixed(2)} 秒` : '不可比较';
 const escapeHtml = value => String(value ?? '').replace(/[&<>"']/g, character => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[character]));
-const endpointText = value => `${value?.name || '未记录渠道名称'}${value?.channel_id ? ` · 渠道 #${value.channel_id}` : ''} · ${value?.model || '未记录模型'} · ${value?.protocol || '未记录协议'}`;
+const endpointText = value => `${value?.channel_id ? Workbench.label({id:value.channel_id,name:value.name,scope:value.scope,multiplier:value.multiplier ?? value.channel_multiplier,status:value.status}) : (value?.name || '未记录渠道名称')} · ${value?.model || '未记录模型'} · ${value?.protocol || '未记录协议'}`;
 const filenamePart = value => String(value || '未记录渠道名称').normalize('NFKC').replace(/[^\p{L}\p{N}._-]+/gu,'-').replace(/^\.+/,'').slice(0,48) || 'channel';
 const exportFilename = (source, kind, extension) => `admission-${filenamePart(source.candidate?.name)}-vs-${filenamePart(source.reference?.name)}-${kind}-${source.id || Date.now()}.${extension}`;
 let precheckGeneration = 0, precheckTimer;
@@ -207,7 +207,7 @@ async function loadReportHistory() {
 }
 
 function ordinaryPayload(source) {
-  const endpoint = value => ({name:value?.name || '未记录渠道名称',...Object.fromEntries(['channel_id','model','protocol'].filter(key=>value?.[key]!==undefined).map(key=>[key,value[key]]))});
+  const endpoint = value => ({name:value?.name || '未记录渠道名称',...Object.fromEntries(['channel_id','model','protocol','scope','multiplier','status'].filter(key=>value?.[key]!==undefined).map(key=>[key,value[key]]))});
   const token = source.token_usage ? Object.fromEntries(['status','conclusion','label','severity','billing_status','reason'].filter(key=>source.token_usage[key]!==undefined).map(key=>[key,source.token_usage[key]])) : undefined;
   return {version:source.version,created_at:source.created_at,status:source.status,rounds:source.rounds,warmup_rounds:source.warmup_rounds,candidate:endpoint(source.candidate),reference:endpoint(source.reference),summary:source.summary,token_usage:token,pairs:(source.pairs || []).filter(pair => pair.round_role === 'evaluated').map(({pair_id,...pair}) => pair)};
 }

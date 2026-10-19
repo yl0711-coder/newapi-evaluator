@@ -32,7 +32,8 @@ const watchdog=setTimeout(()=>{failure=failure || new Error('Daily browser budge
   await page.waitForFunction(()=>document.querySelector('#plan-status').textContent.includes('暂停'));
   assert.equal((await state()).mockRequests,0);assert.equal((await state()).notifications,0);
   await page.locator('#gpt-model').selectOption('gpt-6-astra');await page.locator('#claude-model').selectOption('claude-opus-4.7');
-  await page.locator('#gpt-reference').selectOption({label:'Synthetic reference · #3'});await page.locator('#claude-reference').selectOption({label:'Synthetic reference · #3'});
+  const referenceLabel='Synthetic reference · gpt/claude · 0.15x · #3 · 已记录';
+  await page.locator('#gpt-reference').selectOption({label:referenceLabel});await page.locator('#claude-reference').selectOption({label:referenceLabel});
   const manager=await browser.newPage({viewport:{width:1440,height:1000}});manager.on('pageerror',e=>errors.push(e.name));
   await manager.goto(base+'/channels/#shared-models');
   await manager.locator('#model-source').selectOption('3');await manager.locator('#source-fetch').click();
