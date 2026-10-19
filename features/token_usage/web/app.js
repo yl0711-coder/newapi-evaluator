@@ -5,11 +5,15 @@
   let models = [], channels = [], polling = false, renderedResults = '', refreshing = false, lastAttempt = 0, lastSuccess = 0, activeEnabled = false;
   const selected = () => ({channel_id:Number($('candidate').value),model:$('model').value,protocol:$('protocol').value});
   const node = (tag, text) => Workbench.node(tag, text);
-  const channelRecord = (id, display = {}) => ({...(channels.find(c => c.id === id) || {}), ...display, id});
+  const channelRecord = id => ({...(channels.find(c => c.id === id) || {}), id});
   const channelName = id => Workbench.label(channelRecord(id));
   const statuses = {queued:'排队中',running:'执行中',completed:'已完成',cancelled:'已取消'};
   const protocols = {openai:'Chat Completions',responses:'Responses',anthropic:'Claude Messages'};
-  const identity = (display, endpoint) => `${Workbench.label(channelRecord(endpoint.registry_channel_id, display))} · ${endpoint.canonical_model || endpoint.model} · ${protocols[endpoint.protocol] || endpoint.protocol}`;
+  const identity = (display, endpoint) => {
+    const id = endpoint?.registry_channel_id;
+    const label = display == null ? Workbench.label({id}) : Workbench.label({...display, id});
+    return `${label} · ${endpoint.canonical_model || endpoint.model} · ${protocols[endpoint.protocol] || endpoint.protocol}`;
+  };
   async function refresh() {
     if (refreshing) return;
     refreshing = true; lastAttempt = Date.now();
