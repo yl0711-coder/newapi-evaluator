@@ -14,6 +14,12 @@
 <p id="circuit-status" role="status"></p><label><input id="confirm-reset" type="checkbox">已核对集中故障原因，允许解除熔断</label><button id="reset-circuit" class="secondary">解除熔断</button>
 <div class="actions"><strong id="plan-status">加载中</strong><button id="refresh" class="secondary">刷新</button><button id="pause" class="secondary">暂停监控</button><button id="run">立即测试</button></div>
 <p id="schedule" class="hint"></p>
+<div id="diagnosis" class="hint" role="status" aria-live="polite">
+<p><strong>调度器：</strong><span id="scheduler-status">加载中</span> · 最近 tick：<span id="scheduler-last-tick">加载中</span></p>
+<p><strong>最近轮次：</strong><span id="latest-round">加载中</span></p>
+<p><strong>诊断：</strong><span id="diagnostic-reason">加载中</span></p>
+<p id="latest-event">最近事件：加载中</p>
+</div>
 <label><input id="confirm-live" type="checkbox">允许每半小时发送模型测试请求，可能产生上游费用</label>
 <label><input id="confirm-manage" type="checkbox">允许按上述规则自动禁用及启用所绑定的 New API 渠道</label>
 <label><input id="confirm-inventory" type="checkbox">允许有待恢复渠道时，每轮只读获取完整飞书上线名单，用于自动恢复资格校验</label>

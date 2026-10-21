@@ -31,6 +31,9 @@ const watchdog=setTimeout(()=>{failure=failure||new Error('Browser budget exceed
   await page.goto(base+'/');await page.getByRole('link',{name:'渠道自动启停',exact:true}).first().click();
   await page.getByRole('heading',{name:'渠道自动启停',exact:true}).waitFor();
   await page.waitForFunction(()=>document.querySelector('#plan-status').textContent.includes('暂停'));
+  for(const id of ['scheduler-status','scheduler-last-tick','diagnostic-reason','latest-round'])assert.equal(await page.locator(`#${id}`).count(),1);
+  assert.ok((await page.locator('#diagnostic-reason').innerText()).includes('paused'));
+  assert.ok((await page.locator('#latest-round').innerText()).includes('暂无已记录轮次'));
   assert.equal(await page.locator('#registry-id option[value="1"]').textContent(),'Synthetic upstream · gpt · 1x · #1 · 已上线');
   assert.equal((await state()).mockRequests,0);assert.equal((await state()).managementReads,0);
   await page.locator('#base-url').fill(base);await page.locator('#token').fill('synthetic-management');await page.locator('#user-id').fill('9');

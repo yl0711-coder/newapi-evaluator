@@ -5,10 +5,25 @@ const names = {healthy:'本轮正常',transport_recovered:'请求已恢复',tran
 const events = {minimum_channels:'保底保护：保留渠道并告警',channel_disabled:'已停用渠道',channel_enabled:'已恢复渠道',management_action_unconfirmed:'管理动作未确认，渠道已锁定，请人工核对',binding_unavailable:'目标不可用、配置变化或测试窗口已结束',externally_enabled:'渠道已被外部启用，解除自动恢复所有权',external_status:'外部停用，保持现状',round_interrupted:'本轮未完成，未确认的请求不会计为五次失败'};
 Object.assign(events,{online_inventory_unavailable:'飞书完整上线名单读取失败，本轮不自动恢复',recovery_unavailable:'恢复资格或动作未确认，本轮暂停后续停用',circuit_opened:'多渠道请求故障，已熔断全部自动停用',circuit_closed:'后续定时轮次全部未锁定映射正常，已解除熔断',circuit_reset:'已人工解除熔断，计划保持暂停',disable_suspended:'本轮自动停用已暂停',floor_connectivity_recheck:'四条保底前的延迟连通性复测已完成'});
 const time = value => value == null ? '—' : new Date(value * 1000).toLocaleString();
+const roundSource = {scheduled:'定时',manual:'手动'};
+const roundStatus = {running:'运行中',completed:'已完成',partial:'部分完成',interrupted:'已中断'};
 const channelLabel = id => Workbench.label(state?.channels?.find(channel => channel.id === id) || {id});
 function message(text){$('message').textContent = text;}
 function button(label, action){const b=Workbench.node('button',label,'secondary');b.type='button';b.addEventListener('click',()=>operate(action));return b;}
 function options(id, rows, value, label){const selected=$(id).value;$(id).replaceChildren(...rows.map(r=>new Option(label(r),value(r))));if([...$(id).options].some(o=>o.value===selected))$(id).value=selected;}
+function renderDiagnostics(executor){
+  const diagnostic=executor.diagnosis||{};
+  const scheduler=executor.scheduler||{};
+  $('scheduler-status').textContent=scheduler.running?'运行中':'未运行';
+  $('scheduler-last-tick').textContent=time(scheduler.last_tick_at);
+  const round=diagnostic.latest_round;
+  $('latest-round').textContent=round?`#${round.id} · ${roundSource[round.source]||round.source} · 计划 ${time(round.due)} · ${roundStatus[round.status]||round.status} · 开始 ${time(round.started)} · 结束 ${time(round.finished)}`:'暂无已记录轮次';
+  $('diagnostic-reason').textContent=`${diagnostic.reason||'暂无诊断'}（${diagnostic.code||'unknown'}）`;
+  const event=diagnostic.latest_event;
+  if(!event){$('latest-event').textContent='最近事件：暂无';return;}
+  const detail=event.detail&&Object.keys(event.detail).length?` · ${Object.entries(event.detail).map(([key,value])=>`${key}=${typeof value==='object'?JSON.stringify(value):value}`).join('，')}`:'';
+  $('latest-event').textContent=`最近事件：${time(event.created)} · ${events[event.kind]||event.kind}${detail}`;
+}
 async function refresh(initial=false){
   const ticket=++generation;
   const [meta,history]=await Promise.all([api('/meta'),api('/history')]);
@@ -18,6 +33,7 @@ async function refresh(initial=false){
   $('quality-rules').textContent=`糖果每次完成后均检测 3 个 MT 探针。糖果答错且 MT 明确偏离，连续 ${thresholds.quality_failure} 个半小时轮次停用；糖果答对但 MT 明确偏离，连续 ${thresholds.mt_mismatch} 个半小时轮次停用。两条路径分别计数，无法判定、匹配、漏轮及手动测试会中断连续计数。`;
   $('plan-status').textContent=meta.executor.plan.enabled ? (meta.executor.running?'监控中 · 本轮运行中':'监控已启用') : '监控已暂停';
   $('schedule').textContent=`下次计划开始：${time(meta.executor.plan.next_due)}；按开始到开始计时，错过不补测。`;
+  renderDiagnostics(meta.executor);
   $('instance-status').textContent=meta.instance?'管理令牌已加密保存，页面不回显。':'尚未配置管理连接。';
   if(initial&&meta.instance){$('base-url').value=meta.instance.base_url;$('user-id').value=meta.instance.user_id||'';}
   options('registry-id',meta.channels.filter(c=>c.enabled&&c.credential_status==='available'),r=>String(r.id),Workbench.label);

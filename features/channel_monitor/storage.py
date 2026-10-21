@@ -403,3 +403,120 @@ class Store:
         with self.registry.connect() as db:
             return [{**dict(r), "result": json.loads(r["result"]) if r["result"] else None}
                     for r in db.execute("SELECT * FROM channel_monitor_attempts WHERE round_id=? ORDER BY started,binding_id,probe,attempt", (run_id,))]
+
+    @staticmethod
+    def _event_detail_summary(kind, detail):
+        """Keep diagnostics useful without copying arbitrary event payloads."""
+        if not isinstance(detail, dict):
+            return {}
+
+        def integer(value):
+            return value if type(value) is int and 0 <= value <= 2**63 - 1 else None
+
+        def short(value, limit=80):
+            return value[:limit] if isinstance(value, str) else None
+
+        if kind == "minimum_channels":
+            deficient = []
+            for item in detail.get("deficient", []):
+                if not isinstance(item, dict):
+                    continue
+                group, model = short(item.get("group")), short(item.get("model"))
+                remaining = integer(item.get("remaining"))
+                if group is not None and model is not None and remaining is not None:
+                    deficient.append({"group": group, "model": model, "remaining": remaining})
+            return {"deficient": deficient[:20]}
+        if kind in {"channel_disabled", "channel_enabled"}:
+            result = {}
+            action_id = integer(detail.get("action_id"))
+            reason = short(detail.get("reason"))
+            if action_id is not None:
+                result["action_id"] = action_id
+            if reason is not None:
+                result["reason"] = reason
+            return result
+        if kind == "management_action_unconfirmed":
+            action_id = integer(detail.get("action_id"))
+            return {"action_id": action_id} if action_id is not None else {}
+        if kind == "external_status":
+            status = integer(detail.get("status"))
+            return {"status": status} if status is not None else {}
+        if kind == "floor_connectivity_recheck":
+            result = {}
+            completed = detail.get("completed")
+            delay = detail.get("delay_seconds")
+            if type(completed) is bool:
+                result["completed"] = completed
+            if type(delay) in {int, float} and 0 <= delay <= 3600:
+                result["delay_seconds"] = delay
+            return result
+        if kind in {"circuit_opened", "circuit_closed"}:
+            ids = detail.get("failure_remote_ids")
+            if isinstance(ids, list):
+                ids = [value for value in ids if type(value) is int and value > 0][:20]
+                return {"failure_remote_ids": ids}
+            return {}
+        if kind == "disable_suspended":
+            result = {}
+            for key in ("circuit", "recovery_unconfirmed"):
+                if type(detail.get(key)) is bool:
+                    result[key] = detail[key]
+            return result
+        return {}
+
+    def observability(self, now, *, scheduler_running, worker_running):
+        """Return a redacted, read-only snapshot for the channel monitor UI."""
+        with self.registry.connect() as db:
+            plan = dict(db.execute("SELECT revision,enabled,next_due FROM channel_monitor_settings WHERE id=1").fetchone())
+            latest_round = db.execute(
+                "SELECT id,source,due,status,started,finished FROM channel_monitor_rounds ORDER BY id DESC LIMIT 1"
+            ).fetchone()
+            latest_event = db.execute(
+                "SELECT kind,created,detail FROM channel_monitor_events ORDER BY id DESC LIMIT 1"
+            ).fetchone()
+            available_bindings = db.execute(
+                "SELECT COUNT(*) FROM channel_monitor_bindings WHERE locked=0"
+            ).fetchone()[0]
+            running_round = db.execute(
+                "SELECT 1 FROM channel_monitor_rounds WHERE status='running' LIMIT 1"
+            ).fetchone() is not None
+
+            due = plan["next_due"]
+            missed_window = bool(plan["enabled"] and due is not None and now >= due + ROUND_WINDOW
+                                 and not db.execute(
+                                     "SELECT 1 FROM channel_monitor_rounds WHERE source='scheduled' AND due=?",
+                                     (due,),
+                                 ).fetchone())
+
+        if not plan["enabled"]:
+            code, reason = "paused", "监控已暂停，暂无请求。"
+        elif not scheduler_running:
+            code, reason = "scheduler_not_running", "计划已启用，但总调度器未运行，暂不会发起请求。"
+        elif not available_bindings:
+            code, reason = "no_binding", "没有可用的未锁定渠道映射，暂无请求。"
+        elif worker_running or running_round:
+            code, reason = "running", "本轮正在运行，请等待窗口结束。"
+        elif missed_window:
+            code, reason = "missed_window", "已错过当前计划窗口，本时隙不会补测。"
+        elif latest_round and latest_round["status"] == "partial":
+            code, reason = "last_round_partial", "最近轮次未完整完成，等待下一计划时隙重试。"
+        elif latest_round and latest_round["status"] == "completed":
+            code, reason = "last_round_completed", "最近轮次已完成，等待下一计划时隙。"
+        elif latest_round and latest_round["status"] == "interrupted":
+            code, reason = "last_round_interrupted", "最近轮次已中断，未确认请求不会计为失败，等待下一计划时隙。"
+        else:
+            code, reason = "waiting_next_slot", "等待下一计划时隙，暂无请求。"
+
+        recent = None
+        if latest_round:
+            recent = {key: latest_round[key] for key in ("id", "source", "due", "status", "started", "finished")}
+        event = None
+        if latest_event:
+            try:
+                detail = json.loads(latest_event["detail"])
+            except (TypeError, ValueError, RecursionError):
+                detail = {}
+            event = {"kind": latest_event["kind"], "created": latest_event["created"],
+                     "detail": self._event_detail_summary(latest_event["kind"], detail)}
+        return {"scheduler_running": bool(scheduler_running), "latest_round": recent,
+                "latest_event": event, "code": code, "reason": reason}
