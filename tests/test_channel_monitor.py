@@ -205,6 +205,66 @@ class ServiceTests(unittest.IsolatedAsyncioTestCase):
         self.assertNotIn("synthetic-model-key", public)
         self.assertNotIn(b"synthetic-management", self.registry.path.read_bytes())
 
+    def diagnosis(self, scheduler_running=True):
+        with patch.object(Service, "_scheduler_status",
+                          return_value={"running": scheduler_running, "last_tick_at": self.now}):
+            return self.svc.meta()["executor"]["diagnosis"]
+
+    async def test_meta_diagnosis_explains_pause_scheduler_and_available_wait(self):
+        self.svc.enable(False)
+        self.assertEqual(self.diagnosis()["code"], "paused")
+        self.svc.enable(True, confirm_live=True, confirm_manage=True, confirm_inventory=True)
+        with patch.object(Service, "_scheduler_status",
+                          return_value={"running": True, "last_tick_at": self.now}):
+            self.assertEqual(self.svc.meta()["executor"]["scheduler"]["last_tick_at"], self.now)
+        self.assertEqual(self.diagnosis(False)["code"], "scheduler_not_running")
+        self.assertEqual(self.diagnosis(True)["code"], "waiting_next_slot")
+        self.svc.store.lock(self.binding["id"], True)
+        self.assertEqual(self.diagnosis(True)["code"], "no_binding")
+
+    async def test_meta_diagnosis_reports_recent_partial_and_completed_rounds(self):
+        self.now += 1800
+        partial = self.svc.store.begin(self.now)
+        self.assertIsNotNone(partial)
+        self.svc.store.finish(partial["id"], "partial", self.now + 1)
+        diagnosis = self.diagnosis()
+        self.assertEqual(diagnosis["code"], "last_round_partial")
+        self.assertEqual(diagnosis["latest_round"], {
+            "id": partial["id"], "source": "scheduled", "due": partial["due"],
+            "status": "partial", "started": partial["started"], "finished": self.now + 1,
+        })
+        self.now += 1800
+        completed = self.svc.store.begin(self.now)
+        self.assertIsNotNone(completed)
+        self.svc.store.finish(completed["id"], "completed", self.now + 1)
+        self.assertEqual(self.diagnosis()["code"], "last_round_completed")
+
+    async def test_meta_diagnosis_reports_interrupted_round(self):
+        self.now += 1800
+        run = self.svc.store.begin(self.now)
+        self.assertIsNotNone(run)
+        self.svc.store.finish(run["id"], "interrupted", self.now + 1)
+        self.assertEqual(self.diagnosis()["code"], "last_round_interrupted")
+
+    async def test_meta_diagnosis_marks_missed_window_without_creating_round(self):
+        due = self.svc.store.plan()["next_due"]
+        self.now = due + domain.ROUND_WINDOW + 1
+        diagnosis = self.diagnosis()
+        self.assertEqual(diagnosis["code"], "missed_window")
+        self.assertIsNone(diagnosis["latest_round"])
+        self.assertEqual(self.svc.store.history()["rounds"], [])
+
+    async def test_meta_diagnosis_event_is_a_redacted_summary(self):
+        self.svc.store.event(3, self.binding["id"], "channel_disabled",
+                             {"action_id": 7, "reason": "transport", "token": "synthetic-secret",
+                              "prompt": "synthetic prompt", "response": "synthetic response"}, self.now)
+        event = self.diagnosis()["latest_event"]
+        self.assertEqual(event["kind"], "channel_disabled")
+        self.assertEqual(event["detail"], {"action_id": 7, "reason": "transport"})
+        self.assertNotIn("synthetic-secret", json.dumps(event))
+        self.assertNotIn("synthetic prompt", json.dumps(event))
+        self.assertNotIn("synthetic response", json.dumps(event))
+
     async def test_five_timeouts_below_four_recheck_once_and_keep_floor(self):
         self.management.rows = {1: self.management.rows[1]}
         self.models.queue = ["timeout"]*6

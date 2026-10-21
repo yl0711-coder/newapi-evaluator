@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import asyncio
 import math
+import sys
 import time
 
 from features.daily_checks.domain import display
@@ -29,8 +30,27 @@ class Service:
         self.started = False
 
     def status(self):
-        return {"running": bool(self.worker and not self.worker.done()), "plan": self.store.plan(),
-                "circuit": self.store.circuit()}
+        running = bool(self.worker and not self.worker.done())
+        scheduler = self._scheduler_status()
+        diagnosis = self.store.observability(self.clock(), scheduler_running=scheduler["running"],
+                                             worker_running=running)
+        return {"running": running, "plan": self.store.plan(), "circuit": self.store.circuit(),
+                "scheduler": scheduler, "scheduler_running": scheduler["running"],
+                "diagnosis": diagnosis}
+
+    @staticmethod
+    def _scheduler_status():
+        """Read the process-wide scheduler state without starting its storage."""
+        try:
+            scheduler = sys.modules.get("features.stability.app.scheduler")
+            if scheduler is None:
+                return {"running": False, "last_tick_at": None}
+            state = scheduler.status()
+        except Exception:
+            # The channel monitor can be used in a standalone unit-test/service
+            # context where the stability scheduler is not installed.
+            return {"running": False, "last_tick_at": None}
+        return {"running": bool(state.get("running")), "last_tick_at": state.get("last_tick_at")}
 
     def meta(self):
         models = [{"model": m["model"], "protocol": m["protocol"]} for m in self.catalog.models()
