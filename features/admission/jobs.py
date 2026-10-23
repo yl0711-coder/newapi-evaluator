@@ -355,7 +355,8 @@ class AdmissionManager:
 
     async def _single_side(self, side, run, question, client, before_send):
         queue = asyncio.Queue()
-        task = asyncio.create_task(engine.measure_side(side, getattr(run, side), question, queue, client, before_send=before_send))
+        task = asyncio.create_task(engine.measure_side(side, getattr(run, side), question, queue, client, before_send=before_send,
+                                                       secrets=(run.candidate.api_key, run.reference.api_key)))
         event_task = None
         try:
             while True:
@@ -369,6 +370,22 @@ class AdmissionManager:
                 if event["type"] == "side_finished":
                     break
             await task
+        except asyncio.CancelledError:
+            received = []
+            if event_task is not None:
+                event_task.cancel()
+                result = await asyncio.gather(event_task, return_exceptions=True)
+                if isinstance(result[0], dict):
+                    received.extend(result)
+                event_task = None
+            task.cancel()
+            await asyncio.gather(task, return_exceptions=True)
+            while not queue.empty():
+                received.append(queue.get_nowait())
+            for event in received:
+                if event["type"] == "raw_response":
+                    yield event
+            raise
         finally:
             if event_task is not None:
                 event_task.cancel()
@@ -381,12 +398,19 @@ class AdmissionManager:
             for side in ("candidate", "reference"):
                 identity = (event["round"], event["question_id"], side)
                 if not any((row["round"], row["question_id"], row["side"]) == identity for row in report["responses"]):
-                    report["responses"].append({**{key: event[key] for key in ("round", "question_id", "prompt", "pair_id", "round_role", "variant_id")}, "side": side, "content": "", "reasoning": ""})
+                    report["responses"].append({**{key: event[key] for key in ("round", "question_id", "prompt", "pair_id", "round_role", "variant_id")}, "side": side, "content": "", "reasoning": "", "raw_response": "", "raw_response_truncated": False})
         elif event["type"] == "chunk":
             for row in report["responses"]:
                 if (row["round"], row["question_id"], row["side"]) == (event["round"], event["question_id"], event["side"]):
                     for field in ("content", "reasoning"):
                         row[field] = (row[field] + event.get(field, ""))[:200_000]
+                    break
+        elif event["type"] == "raw_response":
+            for row in report["responses"]:
+                if (row["round"], row["question_id"], row["side"]) == (event["round"], event["question_id"], event["side"]):
+                    previous = "" if event.get("raw_response_replace") else row.get("raw_response", "")
+                    row["raw_response"] = previous + event.get("raw_response", "")
+                    row["raw_response_truncated"] = bool(event.get("raw_response_truncated"))
                     break
         elif event["type"] == "side_finished":
             report["measurements"] = [row for row in report["measurements"] if (row["round"], row["question_id"], row["side"]) != (event["round"], event["question_id"], event["side"])]

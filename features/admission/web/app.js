@@ -9,6 +9,7 @@ const jobStatus = {queued:'等待测试',running:'测试进行中',waiting_crede
 const duration = value => Number.isFinite(value) ? `${(value / 1000).toFixed(2)} 秒` : '不可用';
 const signedDuration = value => Number.isFinite(value) ? `${value > 0 ? '+' : ''}${(value / 1000).toFixed(2)} 秒` : '不可比较';
 const escapeHtml = value => String(value ?? '').replace(/[&<>"']/g, character => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[character]));
+const preHtml = value => `\n${escapeHtml(value).replace(/\r/g,'&#13;')}`;
 const endpointText = value => `${value?.channel_id ? Workbench.label({id:value.channel_id,name:value.name,scope:value.scope,multiplier:value.multiplier ?? value.channel_multiplier,status:value.status}) : (value?.name || '未记录渠道名称')} · ${value?.model || '未记录模型'} · ${value?.protocol || '未记录协议'}`;
 const filenamePart = value => String(value || '未记录渠道名称').normalize('NFKC').replace(/[^\p{L}\p{N}._-]+/gu,'-').replace(/^\.+/,'').slice(0,48) || 'channel';
 const exportFilename = (source, kind, extension) => `admission-${filenamePart(source.candidate?.name)}-vs-${filenamePart(source.reference?.name)}-${kind}-${source.id || Date.now()}.${extension}`;
@@ -82,6 +83,30 @@ function metric(label, value) {
   const item = Workbench.node('div');
   item.append(Workbench.node('small', label), Workbench.node('strong', value));
   return item;
+}
+
+function upstreamFacts(measurement) {
+  return [
+    ...(Number.isInteger(measurement.http_status) ? [['HTTP 状态',measurement.http_status]] : []),
+    ...(measurement.upstream_error_code ? [['上游错误码',measurement.upstream_error_code]] : [])
+  ];
+}
+
+function hasResponseError(measurement) {
+  return measurement.ok === false || measurement.http_status >= 400 || Boolean(measurement.upstream_error_code || measurement.upstream_error_message);
+}
+
+function responseStatus(measurement) {
+  return [measurement.ok ? '正常返回' : statusNames[measurement.status] || measurement.status || '缺少数据',
+    ...upstreamFacts(measurement).map(([label,value]) => `${label}：${value}`)].join(' · ');
+}
+
+function rawResponseBlock(response, measurement) {
+  const failed = hasResponseError(measurement), box = Workbench.node(failed ? 'section' : 'details','','evidence-block raw-response');
+  box.append(Workbench.node(failed ? 'h4' : 'summary','渠道原始响应'));
+  if (response.raw_response_truncated) box.append(Workbench.node('p','原始响应超过保存预算，仅保留开头和结尾，中间已省略（最多 16 KiB）。','notice raw-truncated'));
+  box.append(Workbench.node('pre',response.raw_response ?? '','raw-response-body'));
+  return box;
 }
 
 function questionFor(questionId) {
@@ -159,7 +184,7 @@ function renderTechnicalEvidence() {
   const pairs = report.pairs || [];
   $('results').replaceChildren(...pairs.map(pair => {
     const card = Workbench.node('details','','panel evidence-card');
-    card.open = pair.round_role === 'evaluated' && pair.attribution !== 'normal';
+    card.open = (pair.round_role === 'evaluated' && pair.attribution !== 'normal') || Object.keys(names).some(side => hasResponseError(measurements.get(`${pair.round}:${pair.question_id}:${side}`) || {}));
     const role = pair.round_role === 'warmup' ? '预热，不计入结论' : '有效评测';
     card.append(Workbench.node('summary',`第 ${pair.round} 轮 · ${pair.title} · ${role} · ${pair.attribution_label}`));
     const body = Workbench.node('div','','evidence-body'), question = questionFor(pair.question_id);
@@ -170,13 +195,22 @@ function renderTechnicalEvidence() {
     for (const side of Object.keys(names)) {
       const key = `${pair.round}:${pair.question_id}:${side}`, response = responses.get(key) || {}, measurement = measurements.get(key) || {};
       const block = Workbench.node('section','','endpoint-evidence');
+      block.dataset.side = side;
       const metrics = Workbench.node('details','','evidence-block');
       const grid = Workbench.node('div','','metric-grid');
       grid.append(metric('首次可见输出',duration(measurement.ttft_ms)),metric('首次答案正文',duration(measurement.first_answer_ms)),metric('完整响应',duration(measurement.total_ms)),metric('Token/s',measurement.speed_data_valid ? measurement.tokens_per_second : '不可用'),metric('速度数据',measurement.speed_data_valid ? '有效' : measurement.speed_invalid_reason || '不可用'),metric('输出 Token',Number.isFinite(measurement.output_tokens) ? measurement.output_tokens : '未提供'),metric('最大输出停顿',duration(measurement.maximum_output_pause_ms)),metric('启动偏差',duration(pair.start_skew_ms)),metric('异常分类',measurement.error_category || '无'),metric('响应模型',measurement.actual_model || '未提供'),metric('上游请求 ID',measurement.upstream_request_id || '未提供'),metric('系统指纹',measurement.system_fingerprint || '未提供'),metric('响应格式',measurement.response_format || '未识别'), ...responsesMetrics(measurement).map(([label,value]) => metric(label,String(value))));
       metrics.append(Workbench.node('summary','技术指标'),grid);
-      const answerBox = Workbench.node('details','','evidence-block'); answerBox.append(Workbench.node('summary','最终回答原文'),Workbench.node('pre',response.content || '上游未提供答案正文'));
+      const answerBox = Workbench.node('details','','evidence-block answer-response'); answerBox.open = Boolean(response.content); answerBox.append(Workbench.node('summary','最终回答原文'),Workbench.node('pre',response.content ?? ''));
       const reasoningBox = Workbench.node('details','','evidence-block'); const reasoning = Workbench.node('pre',response.reasoning || '上游未提供独立推理字段',response.reasoning ? '' : 'empty-reasoning'); reasoningBox.append(Workbench.node('summary','上游返回的推理内容'),reasoning);
-      block.append(Workbench.node('h3',`${names[side]} · ${endpointText(report[side])}`),Workbench.node('p',measurement.ok ? '正常返回' : `${statusNames[measurement.status] || measurement.status || '缺少数据'}${measurement.error ? ` · ${measurement.error}` : ''}`,'hint endpoint-status'),metrics,answerBox,reasoningBox); sides.append(block);
+      block.append(Workbench.node('h3',`${names[side]} · ${endpointText(report[side])}`),Workbench.node('p',responseStatus(measurement),'hint endpoint-status'));
+      if (measurement.upstream_error_message) block.append(Workbench.node('p',`上游错误信息：${measurement.upstream_error_message}`,'upstream-error-message'));
+      if (measurement.upstream_error_truncated) block.append(Workbench.node('p','上游错误字段超过保存预算，已截断。','notice upstream-error-truncated'));
+      block.append(rawResponseBlock(response,measurement),answerBox,reasoningBox,metrics);
+      if (measurement.error) {
+        const diagnostic = Workbench.node('details','','evidence-block local-diagnostic');
+        diagnostic.append(Workbench.node('summary','检测诊断（本地记录）'),Workbench.node('pre',measurement.error)); block.append(diagnostic);
+      }
+      sides.append(block);
     }
     body.append(promptBox,sides); card.append(body); return card;
   }));
@@ -222,13 +256,13 @@ function reportHtml(source, technical) {
   if (technical) {
     const responses = new Map((source.responses || []).map(item=>[`${item.round}:${item.question_id}:${item.side}`,item]));
     const measurements = new Map((source.measurements || []).map(item=>[`${item.round}:${item.question_id}:${item.side}`,item]));
-    details = (source.pairs || []).map(pair=>`<details><summary>${escapeHtml(`第 ${pair.round} 轮 · ${pair.title} · ${pair.round_role === 'warmup' ? '预热' : '有效评测'}`)}</summary><div class="two">${Object.keys(names).map(side=>{
+    details = (source.pairs || []).map(pair=>`<details${Object.keys(names).some(side=>hasResponseError(measurements.get(`${pair.round}:${pair.question_id}:${side}`) || {})) ? ' open' : ''}><summary>${escapeHtml(`第 ${pair.round} 轮 · ${pair.title} · ${pair.round_role === 'warmup' ? '预热' : '有效评测'}`)}</summary><div class="two">${Object.keys(names).map(side=>{
       const key = `${pair.round}:${pair.question_id}:${side}`, response = responses.get(key) || {}, measurement = measurements.get(key) || {};
       const speed = measurement.speed_data_valid ? measurement.tokens_per_second : `不可用${measurement.speed_invalid_reason ? `（${measurement.speed_invalid_reason}）` : ''}`;
-      return `<section><h3>${escapeHtml(names[side] + " · " + endpointText(source[side]))}</h3><p>状态：${escapeHtml(measurement.ok ? '正常返回' : statusNames[measurement.status] || measurement.status || '缺少数据')}</p><p>首次可见输出：${escapeHtml(duration(measurement.ttft_ms))}；首次答案正文：${escapeHtml(duration(measurement.first_answer_ms))}；完整响应：${escapeHtml(duration(measurement.total_ms))}；Token/s：${escapeHtml(speed)}</p>${(measurement.request_protocol === 'responses' ? [['实际输出 Token',measurement.output_tokens ?? '未提供'], ...responsesMetrics(measurement)] : []).map(([label,value]) => `<p>${escapeHtml(label)}：${escapeHtml(value)}</p>`).join('')}<h4>最终回答原文</h4><pre>${escapeHtml(response.content || '上游未提供答案正文')}</pre><h4>上游返回的推理内容</h4><pre>${escapeHtml(response.reasoning || '上游未提供独立推理字段')}</pre></section>`;
+      return `<section><h3>${escapeHtml(names[side] + " · " + endpointText(source[side]))}</h3><p class="endpoint-status">状态：${escapeHtml(responseStatus(measurement))}</p>${measurement.upstream_error_message ? `<p class="upstream-error-message">上游错误信息：${escapeHtml(measurement.upstream_error_message)}</p>` : ''}${measurement.upstream_error_truncated ? '<p class="notice upstream-error-truncated">上游错误字段超过保存预算，已截断。</p>' : ''}<h4>渠道原始响应</h4>${response.raw_response_truncated ? '<p class="notice raw-truncated">原始响应超过保存预算，仅保留开头和结尾，中间已省略（最多 16 KiB）。</p>' : ''}<pre class="raw-response-body">${preHtml(response.raw_response ?? '')}</pre><h4>最终回答原文</h4><pre class="answer-response-body">${preHtml(response.content ?? '')}</pre><h4>上游返回的推理内容</h4><pre>${escapeHtml(response.reasoning || '上游未提供独立推理字段')}</pre><p>首次可见输出：${escapeHtml(duration(measurement.ttft_ms))}；首次答案正文：${escapeHtml(duration(measurement.first_answer_ms))}；完整响应：${escapeHtml(duration(measurement.total_ms))}；Token/s：${escapeHtml(speed)}</p>${(measurement.request_protocol === 'responses' ? [['实际输出 Token',measurement.output_tokens ?? '未提供'], ...responsesMetrics(measurement)] : []).map(([label,value]) => `<p>${escapeHtml(label)}：${escapeHtml(value)}</p>`).join('')}${measurement.error ? `<details class="local-diagnostic"><summary>检测诊断（本地记录）</summary><pre>${escapeHtml(measurement.error)}</pre></details>` : ''}</section>`;
     }).join('')}</div></details>`).join('');
   }
-  return `<!doctype html><html lang="zh-CN"><meta charset="utf-8"><meta name="viewport" content="width=device-width"><title>准入测试报告</title><style>body{max-width:1100px;margin:32px auto;padding:20px;font:16px/1.6 sans-serif;color:#172c29}.headline{padding:18px;background:#e5eee7;border-left:5px solid #0a675d}.cards,.two{display:grid;grid-template-columns:repeat(2,1fr);gap:12px}.cards{grid-template-columns:repeat(3,1fr);margin:18px 0}.card,details{border:1px solid #d7ded5;border-radius:8px;padding:14px;margin:12px 0}.card small,.card strong{display:block}table{width:100%;border-collapse:collapse}td,th{padding:10px;border-bottom:1px solid #d7ded5;text-align:left}pre{white-space:pre-wrap;overflow-wrap:anywhere;background:#f3f5ef;padding:12px}@media(max-width:700px){.cards,.two{grid-template-columns:1fr}}</style><h1>准入测试报告</h1><p>候选：${escapeHtml(endpointText(source.candidate))}<br>参照：${escapeHtml(endpointText(source.reference))}</p><p>${escapeHtml(evidence.coverage_complete ? "完整报告" : "未完成快照：仅包含当前已记录证据")}</p><p>${escapeHtml(source.created_at)} · ${escapeHtml(reportStatus[source.status] || source.status)}</p><div class="headline"><h2>${escapeHtml(summary.overall?.label || '证据不足')}</h2><p>能力由人员阅读逐题回答后判断，系统不自动给出准入决定。</p></div>${tokenSection}<div class="cards">${cards}</div><ul>${(summary.explanations || []).map(item=>`<li>${escapeHtml(item)}</li>`).join('')}</ul><h2>逐题摘要</h2><table><thead><tr><th>题目</th><th>异常归因</th><th>速度</th><th>能力</th></tr></thead><tbody>${pairRows}</tbody></table>${details}</html>`;
+  return `<!doctype html><html lang="zh-CN"><meta charset="utf-8"><meta name="viewport" content="width=device-width"><title>准入测试报告</title><style>*{box-sizing:border-box}body{max-width:1100px;margin:32px auto;padding:20px;font:16px/1.6 sans-serif;color:#172c29;overflow-wrap:anywhere}.headline{padding:18px;background:#e5eee7;border-left:5px solid #0a675d}.cards,.two{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:12px}.cards{grid-template-columns:repeat(3,minmax(0,1fr));margin:18px 0}section,.card{min-width:0}.card,details{border:1px solid #d7ded5;border-radius:8px;padding:14px;margin:12px 0}.card small,.card strong{display:block}table{width:100%;border-collapse:collapse}td,th{padding:10px;border-bottom:1px solid #d7ded5;text-align:left}pre{white-space:pre-wrap;overflow-wrap:anywhere;background:#f3f5ef;padding:12px}.notice{padding:10px;background:#f7f0df}.upstream-error-message{max-height:160px;overflow:auto;white-space:pre-wrap}@media(max-width:700px){.cards,.two{grid-template-columns:1fr}}</style><h1>准入测试报告</h1><p>候选：${escapeHtml(endpointText(source.candidate))}<br>参照：${escapeHtml(endpointText(source.reference))}</p><p>${escapeHtml(evidence.coverage_complete ? "完整报告" : "未完成快照：仅包含当前已记录证据")}</p><p>${escapeHtml(source.created_at)} · ${escapeHtml(reportStatus[source.status] || source.status)}</p><div class="headline"><h2>${escapeHtml(summary.overall?.label || '证据不足')}</h2><p>能力由人员阅读逐题回答后判断，系统不自动给出准入决定。</p></div>${tokenSection}<div class="cards">${cards}</div><ul>${(summary.explanations || []).map(item=>`<li>${escapeHtml(item)}</li>`).join('')}</ul><h2>逐题摘要</h2><table><thead><tr><th>题目</th><th>异常归因</th><th>速度</th><th>能力</th></tr></thead><tbody>${pairRows}</tbody></table>${details}</html>`;
 }
 
 const queueCards = new Map();
