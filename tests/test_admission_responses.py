@@ -270,7 +270,10 @@ class ResponsesMeasurementTests(unittest.IsolatedAsyncioTestCase):
             with patch.object(engine, "RESPONSES_TOTAL_TIMEOUT_SECONDS", .02):
                 await engine.measure_side("candidate", config, engine.QUESTIONS[0], queue, client)
         self.assertTrue(closed.is_set())
-        self.assertEqual(queue.get_nowait()["error_category"], "total_timeout")
+        events = [queue.get_nowait() for _ in range(queue.qsize())]
+        finished = [event for event in events if event["type"] == "side_finished"]
+        self.assertEqual(len(finished), 1)
+        self.assertEqual(finished[0]["error_category"], "total_timeout")
 
 
 if __name__ == "__main__":

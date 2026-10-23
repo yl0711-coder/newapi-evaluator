@@ -15,6 +15,8 @@ from fastapi.responses import FileResponse, JSONResponse, StreamingResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, Field, model_validator
 
+from shared.redaction import scrub
+
 
 ROOT = Path(__file__).resolve().parent
 QUESTIONS_PATH = ROOT / "questions.json"
@@ -27,6 +29,7 @@ GPT6_MODEL = "gpt-6-astra"
 GPT6_OUTPUT_LIMIT = 4096
 GPT6_REASONING_EFFORT = "low"
 RESPONSES_TOTAL_TIMEOUT_SECONDS = 240
+RAW_RESPONSE_MAX_BYTES = 16_384
 AdmissionProtocol = Literal["openai", "responses", "anthropic"]
 
 
@@ -376,6 +379,8 @@ def _stream_event(
     block_key: tuple[int, int] | None = None,
     reasoning_tokens: int | None = None,
     input_tokens: int | None = None,
+    upstream_error_code: str = "",
+    upstream_error_message: str = "",
 ) -> dict[str, Any]:
     return {
         "content": content,
@@ -396,6 +401,8 @@ def _stream_event(
         "block_key": block_key,
         "reasoning_tokens": reasoning_tokens,
         "input_tokens": input_tokens,
+        "upstream_error_code": upstream_error_code,
+        "upstream_error_message": upstream_error_message,
     }
 
 
@@ -411,9 +418,27 @@ def _response_metadata(payload: dict[str, Any]) -> dict[str, str]:
     }
 
 
-def parse_stream_line(line: str) -> dict[str, Any] | None:
+def _upstream_error(payload: dict[str, Any], *, allow_top_level=False) -> dict[str, str]:
+    response = payload.get("response") if isinstance(payload.get("response"), dict) else {}
+    error = response.get("error") or payload.get("error")
+    if isinstance(error, dict):
+        code = error.get("code")
+        if code is None:
+            code = error.get("type")
+        message = error.get("message")
+    elif isinstance(error, str):
+        code, message = payload.get("code"), error
+    elif payload.get("type") == "error" or allow_top_level:
+        code, message = payload.get("code"), payload.get("message")
+    else:
+        code = message = None
+    return {"upstream_error_code": str(code) if code is not None else "",
+            "upstream_error_message": str(message) if message is not None else ""}
+
+
+def parse_stream_line(line: str, protocol: str | None = None) -> dict[str, Any] | None:
     value = line.strip().lstrip("\ufeff")
-    if not value or value.startswith(":") or value.startswith("event:"):
+    if not value or value.startswith(":") or value in {"event", "id", "retry"} or value.startswith(("event:", "id:", "retry:")):
         return None
     if value.startswith("data:"):
         value = value[5:].strip()
@@ -429,6 +454,9 @@ def parse_stream_line(line: str) -> dict[str, Any] | None:
         return _stream_event(recognized=False, raw=value)
     metadata = _response_metadata(payload)
     output_tokens = _usage_output_tokens(payload)
+    if payload.get("type") == "error" or payload.get("error"):
+        return _stream_event(response_format={"openai": "chat_delta", "anthropic": "anthropic", "responses": "responses"}.get(protocol, "error"), protocol_error="upstream_error",
+                             **_upstream_error(payload), **metadata)
     choices = payload.get("choices") or []
     if choices:
         choice = choices[0]
@@ -462,8 +490,6 @@ def parse_stream_line(line: str) -> dict[str, Any] | None:
         block_key = (payload.get("output_index", 0), payload.get("content_index", 0))
         if any(type(index) is not int or index < 0 for index in block_key):
             return _stream_event(response_format="responses", protocol_error="protocol_error")
-    if event_type == "error":
-        return _stream_event(response_format="responses", protocol_error="upstream_error", **metadata)
     if event_type in {"response.output_text.delta", "response.refusal.delta"}:
         return _stream_event(
             content=_text_value(payload.get("delta")),
@@ -553,6 +579,7 @@ def parse_stream_line(line: str) -> dict[str, Any] | None:
             refused=refused,
             input_tokens=token_count(usage.get("input_tokens")),
             reasoning_tokens=token_count(details.get("reasoning_tokens")),
+            **_upstream_error(payload),
             **metadata,
         )
     if event_type.startswith("response."):
@@ -562,16 +589,424 @@ def parse_stream_line(line: str) -> dict[str, Any] | None:
     return _stream_event(recognized=False, raw=value)
 
 
-async def stream_events(response: httpx.Response, protocol: str) -> AsyncIterator[dict[str, Any]]:
-    if protocol != "responses":
+def _utf8_prefix(value: str, limit: int) -> str:
+    return value.encode("utf-8")[:limit].decode("utf-8", errors="ignore")
+
+
+def _evidence_text(value: str) -> str:
+    # A JSON escape may decode to a lone surrogate. Keep that escape visible
+    # without turning an upstream HTTP error into a local UTF-8 failure.
+    return value.encode("utf-8", errors="backslashreplace").decode("utf-8")
+
+
+def _evidence_bytes(value: str) -> int:
+    # Reports are JSON: escaped controls must count toward the storage budget.
+    return len(json.dumps(value, ensure_ascii=False)[1:-1].encode("utf-8"))
+
+
+def _evidence_prefix(value: str, limit: int) -> str:
+    candidate = _utf8_prefix(value, limit)
+    if _evidence_bytes(candidate) <= limit:
+        return candidate
+    low, high = 0, len(candidate)
+    while low < high:
+        middle = (low + high + 1) // 2
+        if _evidence_bytes(candidate[:middle]) <= limit:
+            low = middle
+        else:
+            high = middle - 1
+    return candidate[:low]
+
+
+def _evidence_suffix(value: str, limit: int) -> str:
+    candidate = value.encode("utf-8")[-limit:].decode("utf-8", errors="ignore") if limit else ""
+    return _evidence_prefix(candidate[::-1], limit)[::-1]
+
+
+def _json_string_spans(value):
+    """Locate decoded JSON strings while keeping their original wire spans."""
+    decoder, spans = json.JSONDecoder(), []
+
+    def whitespace(index):
+        while index < len(value) and value[index] in " \t\r\n":
+            index += 1
+        return index
+
+    def visit(index, path):
+        index = whitespace(index)
+        if value[index] == "{":
+            index = whitespace(index + 1)
+            while value[index] != "}":
+                key_start = index
+                key, index = decoder.raw_decode(value, index)
+                spans.append((None, key_start, index, key))
+                index = visit(whitespace(index) + 1, (*path, key))
+                index = whitespace(index)
+                if value[index] == ",":
+                    index = whitespace(index + 1)
+                else:
+                    break
+            return index + 1
+        if value[index] == "[":
+            index, number = whitespace(index + 1), 0
+            while value[index] != "]":
+                index = whitespace(visit(index, (*path, number)))
+                number += 1
+                if value[index] == ",":
+                    index = whitespace(index + 1)
+                else:
+                    break
+            return index + 1
+        start = index
+        item, index = decoder.raw_decode(value, index)
+        if isinstance(item, str):
+            spans.append((path, start, index, item))
+        return index
+
+    payload = json.loads(value)
+    visit(0, ())
+    return payload, spans
+
+
+def _logical_text_channel(payload, path):
+    if path is None or not isinstance(payload, dict):
+        return None
+
+    def text_leaf(prefix):
+        if path[:len(prefix)] != prefix:
+            return False
+        tail = path[len(prefix):]
+        # These are exactly the string/list/text shapes accepted by _text_value.
+        return not tail or (type(tail[0]) is int and (len(tail) == 1 or tail[1:] == ("text",)))
+
+    for root in (("choices", 0, "delta"), ("choices", 0, "message")):
+        for field in ("content", "reasoning_content"):
+            if text_leaf((*root, field)):
+                return "reasoning" if field == "reasoning_content" else "content"
+    if text_leaf(("choices", 0, "text")):
+        return "content"
+    event_type = payload.get("type")
+    if path == ("delta",):
+        if event_type in {"response.output_text.delta", "response.refusal.delta"}:
+            return "content"
+        if event_type in {"response.reasoning_text.delta", "response.reasoning_summary_text.delta"}:
+            return "reasoning"
+    if text_leaf(("delta", "text")) or text_leaf(("content_block", "text")):
+        return "content"
+    if text_leaf(("delta", "thinking")) or text_leaf(("content_block", "thinking")):
+        return "reasoning"
+    # Buffered completion text is a separate copy, not another delta. Its
+    # adjacent output parts still need the same credential protection.
+    if path[:2] == ("response", "output") and path[-1:] in {("text",), ("refusal",)}:
+        return "final_content"
+    return None
+
+
+class _ProtocolRawRedactor:
+    """Delay only unresolved credential prefixes before publishing raw lines."""
+
+    def __init__(self, sink, forms):
+        self.sink, self.forms = sink, forms
+        self.line = self.frame = ""
+        self.records, self.pending = [], {}
+        self.buffered_bytes = self.serial = 0
+
+    @staticmethod
+    def _mask(slot, start, end):
+        if start < end:
+            slot["masks"].append((start, end))
+
+    def _match(self, slot, channel):
+        previous = self.pending.get(channel, []) if channel else []
+        prefix = "".join(item[2] for item in previous)
+        combined = prefix + slot["value"]
+        for secret in self.forms:
+            index = combined.find(secret)
+            while index >= 0:
+                end = index + len(secret)
+                for old_slot, position, _ in previous[index:min(end, len(prefix))]:
+                    self._mask(old_slot, position, position + 1)
+                self._mask(slot, max(0, index - len(prefix)), max(0, end - len(prefix)))
+                index = combined.find(secret, index + 1)
+        if channel:
+            keep = 0
+            for secret in self.forms:
+                for size in range(min(len(secret) - 1, len(combined)), keep, -1):
+                    if combined.endswith(secret[:size]):
+                        keep = size
+                        break
+            if keep:
+                start = max(0, len(slot["value"]) - keep)
+                tail = [(slot, index, slot["value"][index]) for index in range(start, len(slot["value"]))]
+                self.pending[channel] = (previous + tail)[-keep:]
+            else:
+                self.pending.pop(channel, None)
+
+    @staticmethod
+    def _render(record):
+        value = record["raw"]
+        for slot in reversed(record["slots"]):
+            if not slot["masks"]:
+                continue
+            # Replace only the wire characters covered by a credential. A
+            # decoded/re-serialized string would also rewrite harmless escapes
+            # and could introduce an unencodable lone surrogate.
+            token = record["raw"][slot["start"]:slot["end"]]
+            boundaries, index = [1], 1
+            while index < len(token) and token[index] != '"':
+                if token[index:index + 2] == "\\u":
+                    code = int(token[index + 2:index + 6], 16)
+                    end = index + 6
+                    if (0xD800 <= code <= 0xDBFF and token[end:end + 2] == "\\u"
+                            and 0xDC00 <= int(token[end + 2:end + 6], 16) <= 0xDFFF):
+                        end += 6
+                    index = end
+                else:
+                    index += 2 if token[index] == "\\" else 1
+                boundaries.append(index)
+            parts, cursor = [], 0
+            for start, end in sorted(slot["masks"]):
+                start, end = boundaries[start], boundaries[end]
+                if end <= cursor:
+                    continue
+                if start > cursor:
+                    parts.append(token[cursor:start])
+                    parts.append("[REDACTED]")
+                elif not parts or cursor == 0:
+                    parts.append("[REDACTED]")
+                cursor = end
+            parts.append(token[cursor:])
+            value = value[:slot["start"]] + "".join(parts) + value[slot["end"]:]
+        return value
+
+    def _hide_pending(self):
+        for refs in self.pending.values():
+            for slot, index, _ in refs:
+                self._mask(slot, index, index + 1)
+        self.pending.clear()
+
+    async def _flush(self):
+        held = {slot["record"] for refs in self.pending.values() for slot, _, _ in refs}
+        while self.records and self.records[0]["id"] not in held:
+            record = self.records.pop(0)
+            self.buffered_bytes -= len(record["raw"].encode("utf-8"))
+            await self.sink(self._render(record))
+
+    async def _record(self, raw):
+        segments, pieces, wire_index, text_index = [], [], 0, 0
+        # Python splitlines also splits U+0085/U+2028/U+2029 inside valid JSON
+        # strings. The SSE wire only recognizes CR and LF as line endings.
+        for line in re.findall(r"[^\r\n]*(?:\r\n|\r|\n|$)", raw):
+            offset = len(line) - len(line.lstrip("\ufeff"))
+            if line[offset:].startswith("data:"):
+                offset += 5
+                piece = line[offset:].rstrip("\r\n")
+                segments.append((text_index, text_index + len(piece), wire_index + offset))
+                pieces.append(piece)
+                text_index += len(piece) + 1
+            wire_index += len(line)
+        text = "\n".join(pieces) if pieces else raw
+
+        def wire_position(index):
+            if not segments:
+                return index
+            for start, end, wire_start in segments:
+                if start <= index <= end:
+                    return wire_start + index - start
+            raise ValueError("JSON string crosses an SSE data boundary")
+
+        unparsed_payload = False
+        try:
+            payload, spans = _json_string_spans(text)
+        except (ValueError, TypeError, IndexError, RecursionError):
+            payload, spans = None, []
+            stripped = text.strip()
+            unparsed_payload = bool(stripped and stripped != "[DONE]"
+                                    and (pieces or stripped.startswith(("{", "[", '"'))))
+            if unparsed_payload:
+                # An incomplete JSON tail has no trustworthy logical path.
+                # It may continue any held delta, so hide those prefixes before
+                # releasing them rather than forgetting their association.
+                self._hide_pending()
+            # Pretty printed error JSON can span several physical lines.
+            # Complete JSON string literals are safe to decode independently.
+            for match in re.finditer(r'"(?:[^"\\]|\\.)*(?:"|$)', text):
+                try:
+                    spans.append((None, match.start(), match.end(), json.loads(match.group())))
+                except ValueError:
+                    # A cancelled/malformed body may end inside a string or
+                    # escape. Decode its valid prefix without inventing a
+                    # closing quote in the displayed upstream text.
+                    fragment = match.group().rstrip("\r\n")
+                    for trim in range(min(7, len(fragment))):
+                        prefix = fragment[:-trim] if trim else fragment
+                        try:
+                            decoded = json.loads(prefix + '"')
+                        except ValueError:
+                            continue
+                        spans.append((None, match.start(), match.start() + len(prefix), decoded, False))
+                        break
+        record = {"id": self.serial, "raw": raw, "slots": []}
+        self.serial += 1
+        self.records.append(record)
+        self.buffered_bytes += len(raw.encode("utf-8"))
+        for span in spans:
+            path, start, end, value = span[:4]
+            slot = {"record": record["id"], "start": wire_position(start), "end": wire_position(end),
+                    "value": value, "masks": [], "closed": span[4] if len(span) > 4 else True}
+            record["slots"].append(slot)
+            self._match(slot, "unparsed" if unparsed_payload else _logical_text_channel(payload, path))
+            if unparsed_payload:
+                # A subsequent malformed/valid frame could complete this
+                # string's prefix too. Do not publish an ambiguous prefix.
+                self._hide_pending()
+        if self.buffered_bytes > RAW_RESPONSE_MAX_BYTES:
+            # A stalled prefix followed by unbounded metadata must not hold
+            # an unbounded raw queue. Hide that unresolved prefix before release.
+            self._hide_pending()
+        await self._flush()
+
+    async def _line(self, value):
+        if self.frame or value.lstrip("\ufeff").startswith(("data:", "event:")):
+            complete_line = False
+            if value.lstrip("\ufeff").startswith("data:") and not any(line.startswith("data:") for line in re.split(r"\r\n|\r|\n", self.frame)):
+                try:
+                    json.loads(value.lstrip("\ufeff")[5:])
+                    complete_line = True
+                except (ValueError, RecursionError):
+                    pass
+            self.frame += value
+            if complete_line or not value.strip() or len(self.frame) > 1_048_576:
+                await self._record(self.frame)
+                self.frame = ""
+        else:
+            await self._record(value)
+
+    async def feed(self, value):
+        self.line += value
+        while match := re.search(r"\r\n|\r|\n", self.line):
+            if match.group() == "\r" and match.end() == len(self.line):
+                break
+            end = match.end()
+            await self._line(self.line[:end])
+            self.line = self.line[end:]
+        if len(self.line) > 1_048_576:
+            await self._line(self.line)
+            self.line = ""
+
+    async def finish(self):
+        if self.line:
+            await self._line(self.line)
+            self.line = ""
+        if self.frame:
+            await self._record(self.frame)
+            self.frame = ""
+        self.pending.clear()
+        await self._flush()
+
+
+class _RawResponseCapture:
+    """Keep a bounded, credential-safe preview without changing protocol text."""
+
+    def __init__(self, queue, question_id, side, secrets):
+        self.queue, self.question_id, self.side = queue, question_id, side
+        self.secrets = tuple(set(secret for secret in secrets if secret))
+        self.forms = tuple({form for secret in self.secrets
+                            for form in (secret, json.dumps(secret)[1:-1], json.dumps(secret, ensure_ascii=False)[1:-1])})
+        self.keep = max(map(len, self.forms), default=1) - 1
+        self.pending = self.head = self.tail = ""
+        self.size = 0
+        self.truncated = self.finished = False
+        self.protocol_redactor = _ProtocolRawRedactor(self._feed_wire, self.forms)
+
+    async def _emit(self, value, *, replace=False):
+        await self.queue.put({"type": "raw_response", "question_id": self.question_id,
+                              "side": self.side, "raw_response": value,
+                              "raw_response_truncated": self.truncated,
+                              "raw_response_replace": replace})
+
+    async def _accept(self, value):
+        if not value:
+            return
+        remaining = max(0, RAW_RESPONSE_MAX_BYTES - self.size)
+        delta = _evidence_prefix(value, remaining)
+        self.size += _evidence_bytes(value)
+        was_truncated = self.truncated
+        self.truncated = self.size > RAW_RESPONSE_MAX_BYTES
+        half = RAW_RESPONSE_MAX_BYTES // 2
+        self.head = _evidence_prefix(self.head + value, half)
+        self.tail = _evidence_suffix(self.tail + value, half)
+        if delta or self.truncated != was_truncated:
+            await self._emit(delta)
+
+    async def feed(self, value):
+        await self.protocol_redactor.feed(value)
+
+    async def _feed_wire(self, value):
+        buffer = self.pending + value
+        cutoff = max(0, len(buffer) - self.keep)
+        for secret in self.forms:
+            index = buffer.find(secret)
+            while index >= 0:
+                if index < cutoff < index + len(secret):
+                    cutoff = index
+                index = buffer.find(secret, index + 1)
+        self.pending = buffer[cutoff:]
+        await self._accept(scrub(buffer[:cutoff], self.forms))
+
+    async def finish(self):
+        if self.finished:
+            return
+        self.finished = True
+        await self.protocol_redactor.finish()
+        await self._accept(scrub(self.pending, self.forms))
+        self.pending = ""
+        if self.truncated:
+            # Joining the retained halves can create a new credential after
+            # JSON decoding, even when the join falls inside a Unicode escape.
+            # Recheck this bounded representation before publishing it.
+            parts = []
+            async def collect(value):
+                parts.append(value)
+            preview = _ProtocolRawRedactor(collect, self.forms)
+            await preview.feed(self.head + self.tail)
+            await preview.finish()
+            safe = scrub("".join(parts), self.forms)
+            await self._emit(_evidence_prefix(safe, RAW_RESPONSE_MAX_BYTES), replace=True)
+
+
+async def _response_lines(response, on_raw):
+    if on_raw is None:
         async for line in response.aiter_lines():
-            parsed = parse_stream_line(line)
+            yield line
+        return
+    pending = ""
+    async for value in response.aiter_text():
+        await on_raw(value)
+        pending += value
+        while match := re.search(r"\r\n|\r|\n", pending):
+            if match.group() == "\r" and match.end() == len(pending):
+                break
+            if match.start() > 1_048_576:
+                raise ValueError("上游流单行超过本地读取上限")
+            yield pending[:match.start()]
+            pending = pending[match.end():]
+        if len(pending) > 1_048_576:
+            raise ValueError("上游流单行超过本地读取上限")
+    if pending:
+        yield pending.removesuffix("\r")
+
+
+async def stream_events(response: httpx.Response, protocol: str, on_raw=None) -> AsyncIterator[dict[str, Any]]:
+    if protocol != "responses":
+        async for line in _response_lines(response, on_raw):
+            parsed = parse_stream_line(line, protocol)
             if parsed is not None:
                 yield parsed
         return
     data: list[str] = []
     size = 0
-    async for line in response.aiter_lines():
+    async for line in _response_lines(response, on_raw):
         line = line.lstrip("\ufeff")
         if not line:
             if data:
@@ -579,7 +1014,7 @@ async def stream_events(response: httpx.Response, protocol: str) -> AsyncIterato
                     data, size = [], 0
                     continue
                 try:
-                    parsed = parse_stream_line("\n".join(data))
+                    parsed = parse_stream_line("\n".join(data), protocol)
                 except (AttributeError, TypeError, KeyError, IndexError):
                     parsed = None
                 if parsed is None or parsed["format"] != "responses":
@@ -635,15 +1070,19 @@ async def measure_side(
     client: httpx.AsyncClient,
     start_gate: asyncio.Event | None = None,
     before_send=None,
+    *,
+    secrets=(),
 ) -> None:
     if start_gate is not None:
         await start_gate.wait()
+    evidence = {"http_status": None, "upstream_error_code": "", "upstream_error_message": "", "upstream_error_truncated": False}
+    credentials = (config.api_key, *secrets)
     if config.protocol != "responses":
-        await _measure_side(side, config, question, queue, client, before_send)
+        await _measure_side(side, config, question, queue, client, before_send, evidence, credentials)
         return
     started_ms = round(time() * 1000)
     try:
-        await asyncio.wait_for(_measure_side(side, config, question, queue, client, before_send),
+        await asyncio.wait_for(_measure_side(side, config, question, queue, client, before_send, evidence, credentials),
                                timeout=RESPONSES_TOTAL_TIMEOUT_SECONDS)
     except asyncio.TimeoutError:
         payload = build_payload(config, question)
@@ -652,6 +1091,7 @@ async def measure_side(
                          "request_started_ms": started_ms, "request_protocol": config.protocol,
                          "max_output_tokens": payload["max_output_tokens"],
                          "reasoning_effort": payload.get("reasoning", {}).get("effort"),
+                         **evidence,
                          "error_category": "total_timeout", "error": "Responses 请求超过总时限。"})
 
 
@@ -662,16 +1102,19 @@ async def _measure_side(
     queue: asyncio.Queue[dict[str, Any]],
     client: httpx.AsyncClient,
     before_send=None,
+    evidence=None,
+    secrets=(),
 ) -> None:
+    evidence = evidence if evidence is not None else {"http_status": None, "upstream_error_code": "", "upstream_error_message": "", "upstream_error_truncated": False}
+    capture = _RawResponseCapture(queue, question["id"], side, (config.api_key, *secrets))
     started_at = perf_counter()
     request_started_ms = round(time() * 1000)
     first_chunk_at: float | None = None
     first_answer_at: float | None = None
     last_output_at: float | None = None
-    first_wire_event_at: float | None = None
     answer_parts: list[str] = []
     reasoning_parts: list[str] = []
-    fallback_parts: list[str] = []
+    unrecognized = False
     output_chunk_count = 0
     finish_reason = ""
     reported_output_tokens: int | None = None
@@ -699,20 +1142,38 @@ async def _measure_side(
             headers=build_headers(config),
             json=payload,
         ) as response:
+            evidence["http_status"] = response.status_code
             header_request_id = response.headers.get("x-request-id") or response.headers.get("request-id")
             if header_request_id:
                 upstream_request_ids.add(header_request_id)
             if response.status_code >= 400:
-                body = (await response.aread()).decode("utf-8", errors="replace")
-                raise RuntimeError(f"HTTP {response.status_code}: {_redact(body, config.api_key)}")
-            async for parsed in stream_events(response, config.protocol):
+                error_body = ""
+                error_body_size = 0
+                async for value in response.aiter_text():
+                    await capture.feed(value)
+                    error_body += _utf8_prefix(value, max(0, 1_048_576 - error_body_size))
+                    error_body_size += len(value.encode("utf-8"))
+                await capture.finish()
+                try:
+                    error_payload = json.loads(error_body) if error_body_size <= 1_048_576 else None
+                except (ValueError, TypeError):
+                    error_payload = None
+                if isinstance(error_payload, dict):
+                    for field, value in _upstream_error(error_payload, allow_top_level=True).items():
+                        safe = _evidence_text(scrub(value, capture.secrets))
+                        evidence[field] = _evidence_prefix(safe, RAW_RESPONSE_MAX_BYTES)
+                        evidence["upstream_error_truncated"] |= evidence[field] != safe
+                raise RuntimeError(f"HTTP {response.status_code}")
+            async for parsed in stream_events(response, config.protocol, on_raw=capture.feed):
                 now = perf_counter()
-                if first_wire_event_at is None:
-                    first_wire_event_at = now
                 if not parsed["recognized"]:
-                    if parsed["raw"]:
-                        fallback_parts.append(parsed["raw"])
+                    unrecognized = unrecognized or bool(parsed["raw"])
                     continue
+                for field in ("upstream_error_code", "upstream_error_message"):
+                    if parsed[field]:
+                        safe = _evidence_text(scrub(parsed[field], capture.secrets))
+                        evidence[field] = _evidence_prefix(safe, RAW_RESPONSE_MAX_BYTES)
+                        evidence["upstream_error_truncated"] |= evidence[field] != safe
                 response_formats.add(parsed["format"])
                 if parsed["actual_model"]:
                     actual_models.add(parsed["actual_model"])
@@ -781,24 +1242,13 @@ async def _measure_side(
                     }
                 )
 
+        await capture.finish()
         finished_at = perf_counter()
         answer = "".join(answer_parts)
         reasoning = "".join(reasoning_parts)
         recognized_chars = len(answer) + len(reasoning)
-        fallback_content = "\n".join(fallback_parts) if recognized_chars == 0 else ""
-        if fallback_content:
-            await queue.put(
-                {
-                    "type": "chunk",
-                    "question_id": question["id"],
-                    "side": side,
-                    "content": fallback_content,
-                    "reasoning": "",
-                    "raw": True,
-                }
-            )
-        displayed_chars = recognized_chars + len(fallback_content)
-        first_visible_at = first_chunk_at or (first_wire_event_at if fallback_content else None)
+        displayed_chars = recognized_chars
+        first_visible_at = first_chunk_at
         ttft_ms = round((first_visible_at - started_at) * 1000) if first_visible_at is not None else None
         first_answer_ms = round((first_answer_at - started_at) * 1000) if first_answer_at is not None else None
         total_ms = round((finished_at - started_at) * 1000)
@@ -841,8 +1291,8 @@ async def _measure_side(
 
         normalized_finish_reason = finish_reason.lower()
         truncated_reasons = {"length", "max_tokens", "max_output_tokens", "incomplete"}
-        if config.protocol == "responses" and protocol_error:
-            ok, status, error = False, protocol_error, "上游失败或 Responses 流事件不符合协议。"
+        if protocol_error:
+            ok, status, error = False, protocol_error, ""
         elif config.protocol == "responses" and response_status not in {"completed", "incomplete"}:
             ok, status, error = False, "incomplete_stream", "未收到完整的 Responses 结束事件。"
         elif config.protocol == "responses" and (refused or normalized_finish_reason == "content_filter"):
@@ -855,10 +1305,10 @@ async def _measure_side(
             ok, status, error = False, "incomplete_response", "上游标记回答未完成。"
         elif config.protocol == "responses" and not answer.strip():
             ok, status, error = False, "empty", "上游未返回答案正文。"
-        elif fallback_content:
+        elif unrecognized:
             ok = False
             status = "unrecognized"
-            error = "流式格式暂不兼容；已在回答区原样显示上游响应。"
+            error = ""
         elif recognized_chars == 0:
             ok = False
             status = "empty"
@@ -886,6 +1336,7 @@ async def _measure_side(
                 "chars_per_second": chars_per_second,
                 "output_tokens": reported_output_tokens,
                 **request_metrics,
+                **evidence,
                 **({"input_tokens": input_tokens, "reasoning_tokens": reasoning_tokens,
                     "response_status": response_status,
                     "text_recovered_from_completion": text_recovered,
@@ -906,8 +1357,10 @@ async def _measure_side(
             }
         )
     except asyncio.CancelledError:
+        await capture.finish()
         raise
     except Exception as exc:
+        await capture.finish()
         await queue.put(
             {
                 "type": "side_finished",
@@ -920,8 +1373,9 @@ async def _measure_side(
                 "answer_equivalent": None,
                 "request_started_ms": request_started_ms,
                 **request_metrics,
+                **evidence,
                 "error_category": _exception_category(exc, output_chunk_count > 0),
-                "error": _redact(str(exc), config.api_key),
+                "error": scrub(_redact(str(exc), config.api_key), capture.secrets),
             }
         )
 
@@ -935,8 +1389,10 @@ async def run_question(
     queue: asyncio.Queue[dict[str, Any]] = asyncio.Queue()
     start_gate = asyncio.Event()
     tasks = [
-        asyncio.create_task(measure_side("candidate", body.candidate, question, queue, client, start_gate, before_send)),
-        asyncio.create_task(measure_side("reference", body.reference, question, queue, client, start_gate, before_send)),
+        asyncio.create_task(measure_side("candidate", body.candidate, question, queue, client, start_gate, before_send,
+                                         secrets=(body.reference.api_key,))),
+        asyncio.create_task(measure_side("reference", body.reference, question, queue, client, start_gate, before_send,
+                                         secrets=(body.candidate.api_key,))),
     ]
     await asyncio.sleep(0)
     start_gate.set()
@@ -956,6 +1412,25 @@ async def run_question(
                 finished += 1
             yield event
         await asyncio.gather(*tasks)
+    except asyncio.CancelledError:
+        # Cancellation still checkpoints already received upstream bytes. The
+        # caller owns terminal state; cancelled requests remain unconfirmed.
+        received = []
+        if event_task is not None:
+            event_task.cancel()
+            result = await asyncio.gather(event_task, return_exceptions=True)
+            if isinstance(result[0], dict):
+                received.extend(result)
+            event_task = None
+        for task in tasks:
+            task.cancel()
+        await asyncio.gather(*tasks, return_exceptions=True)
+        while not queue.empty():
+            received.append(queue.get_nowait())
+        for event in received:
+            if event["type"] == "raw_response":
+                yield event
+        raise
     finally:
         if event_task is not None:
             event_task.cancel()

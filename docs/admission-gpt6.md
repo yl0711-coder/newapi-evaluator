@@ -11,6 +11,14 @@
 
 官方依据：[模型迁移](https://developers.openai.com/api/docs/guides/latest-model#migration-quickstart)、[Responses 参数](https://developers.openai.com/api/reference/python/resources/responses/methods/create)。工具调用、WebSocket、中途转向和多轮状态不在本次范围。
 
+## 渠道原始回复
+
+准入页面、任务快照、历史报告和技术 HTML/JSON 保留每端收到的 HTTP 响应正文，包括 SSE 帧、上游错误 JSON、未识别文本，以及部分答案之后的错误。`responses[].raw_response` 是按响应字符集解码、凭据脱敏后的原文，不用本地错误说明或空答案占位替代；没有收到正文时为空字符串。已知双端 Key 的 JSON 转义及跨 SSE 正文、推理片段回显也在发布与保存前脱敏，其他原文字节尽量保留。答案 `content`、可见推理 `reasoning` 和原文分别保存，错误正文不计入答案字符量或输出速度。
+
+每端原文最多保存 16,384 UTF-8 字节，同时受 JSON 序列化保存预算限制，转义字符多时可能更早截断。超限时保留开头和结尾，`raw_response_truncated=true`，页面及技术 HTML 在原文之外明确标示中段省略。每条测量独立记录真实 `http_status`、`upstream_error_code`、`upstream_error_message`；错误码和错误信息各受 16 KiB JSON 保存预算限制，超限时 `upstream_error_truncated=true` 并明确提示；未收到 HTTP 响应时状态为 `null`，上游未给出的错误字段留空。连接、超时及协议解析诊断单独显示，不冒充上游回复。异常题默认展开原文；正常回复的协议正文可展开查看。普通 HTML 继续只导出摘要，历史缺失原文字段时不重建原文。
+
+合成回归在 `tests/test_admission_raw_response.py`，浏览器链路在 `scripts/admission_queue_ui.cjs`；均接入统一测试清单。覆盖三协议错误、HTTP 错误、空正文、损坏正文、部分输出后失败、跨块脱敏和原文截断，并验证历史与技术导出。
+
 ## 注册测试清单 v2
 
 依据正式规范 v1.0。Python 3.13 独立 venv 按 requirements.txt 安装，Node、Playwright 与 Chromium/Edge。venv、TMPDIR、数据与报告位于仓库外的中转站极限测试数据目录，环境白名单不继承业务配置。
@@ -31,7 +39,7 @@
 | image-inspect | python -m features.image_quality inspect-config --config tests/fixtures/image_quality/config.json | 继承生图只读检查；60s |
 | legacy-acceptance | scripts/acceptance.py --sha 完整SHA --output 分配目录 | 独立验收额外运行既有十组验收，含持续/突发 Mock；1200s |
 
-当前开发二十组总体预算 1800 秒，独立验收二十一组总体预算 3000 秒；注册清单以 `scripts/inspect_test_plan.py admission` 为准。Token专项和后台队列新增组见 [功能和接口](token-usage-queue.md)。复用既有失败聚合与进程组清理，超时/取消终止本次子进程，未执行组保留 not_run。共享聚合回归位于 tests/test_diagnosis_verification.py；当前执行器失败聚合和收集/执行中取消回归位于 tests/test_admission_verification.py；Responses 与只读入口回归位于 tests/test_admission_responses.py。只读检查不发请求，不读取渠道库或飞书配置。
+当前基础清单开发二十二组总体预算 1800 秒，独立验收二十三组总体预算 3000 秒；注册清单以 `scripts/inspect_test_plan.py admission` 为准。Token专项和后台队列新增组见 [功能和接口](token-usage-queue.md)。复用既有失败聚合与进程组清理，超时/取消终止本次子进程，未执行组保留 not_run。共享聚合回归位于 tests/test_diagnosis_verification.py；当前执行器失败聚合和收集/执行中取消回归位于 tests/test_admission_verification.py；Responses 与只读入口回归位于 tests/test_admission_responses.py。只读检查不发请求，不读取渠道库或飞书配置。
 
 准入参数的基础清单不含容器组。涉及工作台生命周期或容器配置时，采用 [完整性清单](integrity-testing.md) 的全部适用组，并执行 `build-container`；Token 专项与服务器队列变更采用该完整清单，包含主动 off 的定时与空闲刷新。实验室引擎无源码修改，五模式回归仍保留。Mock 不证明真实模型可用性或真实推理表现。
 

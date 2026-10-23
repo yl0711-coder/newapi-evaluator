@@ -76,10 +76,18 @@ class ReportResponseInput(BaseModel):
     side: Literal["candidate", "reference"]
     content: str = Field(default="", max_length=200_000)
     reasoning: str = Field(default="", max_length=200_000)
+    raw_response: str = Field(default="", max_length=engine.RAW_RESPONSE_MAX_BYTES)
+    raw_response_truncated: bool = False
     pair_id: str = Field(default="", max_length=160)
     round_role: Literal["warmup", "evaluated"] = "evaluated"
     variant_id: str = Field(default="original", max_length=80)
     prompt: str = Field(default="", max_length=20_000)
+
+    @model_validator(mode="after")
+    def limit_raw_response_bytes(self):
+        if engine._evidence_bytes(self.raw_response) > engine.RAW_RESPONSE_MAX_BYTES:
+            raise ValueError("原始响应超过 16384 字节 JSON 保存预算")
+        return self
 
 
 class AdmissionReportInput(BaseModel):

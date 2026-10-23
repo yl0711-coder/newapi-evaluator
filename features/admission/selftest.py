@@ -333,13 +333,14 @@ class StreamingMeasurementTests(unittest.IsolatedAsyncioTestCase):
             StaticStream(b'data: {"unexpected":{"text":"visible upstream answer"}}\n\n')
         )
         chunks = [event for event in events if event["type"] == "chunk"]
+        raw = "".join(event["raw_response"] for event in events if event["type"] == "raw_response")
         finished = next(event for event in events if event["type"] == "side_finished")
-        self.assertEqual(len(chunks), 1)
-        self.assertIn("visible upstream answer", chunks[0]["content"])
+        self.assertFalse(chunks)
+        self.assertEqual(raw, 'data: {"unexpected":{"text":"visible upstream answer"}}\n\n')
         self.assertFalse(finished["ok"])
         self.assertEqual(finished["status"], "unrecognized")
-        self.assertGreater(finished["chars"], 0)
-        self.assertIsNotNone(finished["ttft_ms"])
+        self.assertEqual(finished["chars"], 0)
+        self.assertIsNone(finished["ttft_ms"])
 
     async def test_root_url_uses_the_v1_chat_completions_endpoint_without_a_probe(self) -> None:
         requested_urls: list[str] = []

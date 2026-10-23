@@ -16,6 +16,19 @@ const python = process.env.PYTHON_EXECUTABLE || path.join(root, '.venv', 'bin', 
 const requests = [], active = new Map(), held = new Map(), errors = [];
 const gated = new Set(['fifo-one', 'fifo-two', 'restart-head', 'stop-visible', 'stop-pending', 'variable-height']);
 const candidateKeys = new Set();
+const splitCredentialKeys = new Set(), splitHeld = new Map();
+const splitCases = [
+  {owner:'split-chat', protocol:'openai'}, {owner:'split-responses', protocol:'responses'}, {owner:'split-messages', protocol:'anthropic'}
+];
+const expectedMockRequests = 126 + splitCases.length * 12;
+const expectedChecks = 20 + splitCases.length;
+const browserBudgetMs = 240000;
+const runStartedAt = performance.now();
+const rawCases = [
+  {owner:'raw-http', protocol:'openai'}, {owner:'raw-chat', protocol:'openai'},
+  {owner:'raw-responses', protocol:'responses'}, {owner:'raw-messages', protocol:'anthropic'},
+  {owner:'raw-empty', protocol:'openai'}, {owner:'raw-malformed', protocol:'openai'}
+];
 let app, appExit, appError, browser, base, upstreamUrl, port, maxActiveJobs = 0, fixtureError;
 let stderrBytes = 0, phase = 'startup';
 const checks = [];
@@ -33,10 +46,21 @@ async function until(predicate, message, timeout = 30000) {
   assert.fail(message);
 }
 
-function finishResponse(res, body) {
+function finishResponse(res, body, protocol = 'openai') {
   const usage = {prompt_tokens:10, completion_tokens:3};
   if (body.stream) {
     res.writeHead(200, {'Content-Type':'text/event-stream'});
+    if (protocol === 'responses') {
+      res.end('data: ' + JSON.stringify({type:'response.output_text.delta', delta:'Synthetic queue answer'}) + '\n\ndata: ' +
+        JSON.stringify({type:'response.completed', response:{status:'completed', model:body.model,
+          output:[{type:'message', content:[{type:'output_text', text:'Synthetic queue answer'}]}], usage:{input_tokens:10, output_tokens:3}}}) + '\n\n');
+      return;
+    }
+    if (protocol === 'anthropic') {
+      res.end('data: ' + JSON.stringify({type:'content_block_delta', delta:{type:'text_delta', text:'Synthetic queue answer'}}) + '\n\ndata: ' +
+        JSON.stringify({type:'message_stop'}) + '\n\n');
+      return;
+    }
     res.end('data: ' + JSON.stringify({model:body.model, choices:[{delta:{content:'Synthetic queue answer'}, finish_reason:'stop'}], usage}) + '\n\ndata: [DONE]\n\n');
   } else {
     res.writeHead(200, {'Content-Type':'application/json'});
@@ -44,13 +68,87 @@ function finishResponse(res, body) {
   }
 }
 
+function rawFixtureResponse(res, body, owner, side, protocol) {
+  if (side === 'reference') { finishResponse(res, body, protocol); return; }
+  if (owner === 'raw-http') {
+    const index = requests.filter(item => item.owner === owner && item.side === side).length - 1;
+    const status = [401, 429, 503][index % 3];
+    res.writeHead(status, {'Content-Type':'application/json'});
+    res.end(JSON.stringify({error:{message:'Synthetic HTTP error <script>globalThis.__rawInjection=true</script> ' + 'x'.repeat(18000),
+      code:`synthetic_http_${status}`}}));
+    return;
+  }
+  res.writeHead(200, {'Content-Type':owner === 'raw-malformed' ? 'text/plain' : 'text/event-stream'});
+  if (owner === 'raw-empty') { res.end(); return; }
+  if (owner === 'raw-malformed') { res.end('\n\r\n<html><script>globalThis.__rawInjection=true</script>Synthetic malformed body</html>'); return; }
+  const message = 'Synthetic upstream failure <script>globalThis.__rawInjection=true</script> Bearer synthetic-candidate-' + owner;
+  if (protocol === 'responses') {
+    res.end('data: ' + JSON.stringify({type:'response.output_text.delta', delta:'Synthetic partial answer'}) + '\n\ndata: ' +
+      JSON.stringify({type:'response.failed', response:{status:'failed', error:{code:'synthetic_responses_error', message}}}) + '\n\n');
+  } else if (protocol === 'anthropic') {
+    res.end('data: ' + JSON.stringify({type:'content_block_delta', delta:{type:'text_delta', text:'Synthetic partial answer'}}) + '\n\ndata: ' +
+      JSON.stringify({type:'error', error:{type:'synthetic_messages_error', message}}) + '\n\n');
+  } else {
+    res.end('data: ' + JSON.stringify({model:body.model, choices:[{delta:{content:'Synthetic partial answer'}}]}) + '\n\ndata: ' +
+      JSON.stringify({error:{code:'synthetic_chat_error', message}}) + '\n\n');
+  }
+}
+
+function unicodeJson(payload) {
+  return JSON.stringify(payload).replace(/"(?:\\.|[^"\\])*"/g, token =>
+    '"' + JSON.parse(token).split('').map(character => '\\u' + character.charCodeAt(0).toString(16).padStart(4,'0')).join('') + '"');
+}
+
+function splitDelta(protocol, field, text) {
+  if (protocol === 'responses') return {type:field === 'content' ? 'response.output_text.delta' : 'response.reasoning_text.delta', delta:text};
+  if (protocol === 'anthropic') return {type:'content_block_delta', delta:field === 'content' ? {type:'text_delta',text} : {type:'thinking_delta',thinking:text}};
+  return {choices:[{delta:{[field === 'content' ? 'content' : 'reasoning_content']:text}}]};
+}
+
+async function writeSplitWire(res, wire) {
+  const bytes = Buffer.from(wire);
+  for (let offset = 0; offset < bytes.length && !res.destroyed; offset += 11) {
+    res.write(bytes.subarray(offset, offset + 11));
+    await new Promise(resolve => setImmediate(resolve));
+  }
+}
+
+async function splitFixtureResponse(res, owner, side, protocol) {
+  const candidateKey = `synthetic-candidate-${owner}`, referenceKey = `synthetic-reference-${owner}`;
+  splitCredentialKeys.add(candidateKey); splitCredentialKeys.add(referenceKey);
+  const safeContent = 'Synthetic safe content 合成🌊 '.repeat(3), safeReasoning = 'Synthetic safe reasoning 合成🌊 '.repeat(3);
+  const initial = [splitDelta(protocol,'content',safeContent), splitDelta(protocol,'content',candidateKey.slice(0,12)),
+    splitDelta(protocol,'reasoning',safeReasoning), splitDelta(protocol,'reasoning',referenceKey.slice(0,12))];
+  const rest = [
+    ...[candidateKey.slice(12),'|',referenceKey.slice(0,12),referenceKey.slice(12)].map(text=>splitDelta(protocol,'content',text)),
+    ...[referenceKey.slice(12),'|',candidateKey.slice(0,12),candidateKey.slice(12)].map(text=>splitDelta(protocol,'reasoning',text)),
+    protocol === 'responses' ? {type:'response.failed',response:{status:'failed',error:{code:'synthetic_split_error',message:'Synthetic split error 合成🌊'}}} :
+      {type:'error',error:{code:'synthetic_split_error',type:'synthetic_split_error',message:'Synthetic split error 合成🌊'}}
+  ];
+  const encode = frames => frames.map(payload=>'data: ' + unicodeJson(payload) + '\n\n').join('');
+  res.writeHead(200, {'Content-Type':'text/event-stream'});
+  if (requests.filter(item=>item.owner === owner && item.side === side).length === 1) {
+    await writeSplitWire(res,encode(initial));
+    if (!splitHeld.has(owner)) splitHeld.set(owner,new Map());
+    splitHeld.get(owner).set(res,encode(rest));
+  } else {
+    await writeSplitWire(res,encode([...initial,...rest])); res.end();
+  }
+}
+
+async function releaseSplit(owner) {
+  for (const [res,wire] of [...(splitHeld.get(owner) || [])]) { await writeSplitWire(res,wire); res.end(); }
+  splitHeld.delete(owner);
+}
+
 const upstream = http.createServer(async (req, res) => {
   try {
     const parts = []; for await (const chunk of req) parts.push(chunk);
     const body = JSON.parse(Buffer.concat(parts));
-    const match = req.url.match(/^\/([a-z-]+)\/(candidate|reference)\/v1\/chat\/completions$/);
+    const match = req.url.match(/^\/([a-z-]+)\/(candidate|reference)\/v1\/(chat\/completions|responses|messages)$/);
     assert.ok(match, 'Only the owned synthetic upstream path is requested');
-    const [, owner, side] = match;
+    const [, owner, side, endpoint] = match;
+    const protocol = {responses:'responses', messages:'anthropic'}[endpoint] || 'openai';
     assert.equal(body.model, 'synthetic-queue-model');
     const input = body.messages?.at(-1)?.content || '';
     requests.push({owner, side, stream:Boolean(body.stream), specialized:input.startsWith('Read the synthetic inventory below. Reply only OK.\nrecord-0000:'),
@@ -65,12 +163,15 @@ const upstream = http.createServer(async (req, res) => {
       const count = active.get(owner) - 1;
       if (count) active.set(owner, count); else active.delete(owner);
       held.get(owner)?.delete(res);
+      splitHeld.get(owner)?.delete(res);
     };
     res.once('finish', close); res.once('close', close);
     if (gated.has(owner)) {
       if (!held.has(owner)) held.set(owner, new Map());
       held.get(owner).set(res, body);
-    } else finishResponse(res, body);
+    } else if (splitCases.some(item => item.owner === owner)) await splitFixtureResponse(res, owner, side, protocol);
+    else if (rawCases.some(item => item.owner === owner)) rawFixtureResponse(res, body, owner, side, protocol);
+    else finishResponse(res, body, protocol);
   } catch (error) {
     fixtureError = error;
     res.destroy();
@@ -144,15 +245,15 @@ function card(page, id) {
   return page.locator('#admission-queue article').filter({has:page.getByRole('heading', {name:new RegExp(`^任务 #${id} ·`)})});
 }
 
-async function submit(page, owner, channelId) {
+async function submit(page, owner, channelId, protocol = 'openai') {
   const key = `synthetic-candidate-${owner}`; candidateKeys.add(key);
   await page.locator('#candidate-name').fill(`候选 ${owner} <script>/..`);
   await page.locator('#candidate-url').fill(`${upstreamUrl}/${owner}/candidate/v1`);
   await page.locator('#candidate-key').fill(key);
   await page.locator('#candidate-model').fill('synthetic-queue-model');
   await page.locator('#reference-model').fill('synthetic-queue-model');
-  await page.locator('#candidate-protocol').selectOption('openai');
-  await page.locator('#reference-protocol').selectOption('openai');
+  await page.locator('#candidate-protocol').selectOption(protocol);
+  await page.locator('#reference-protocol').selectOption(protocol);
   await page.locator('#reference-id').selectOption(String(channelId));
   await page.locator('#rounds').selectOption('1');
   const accepted = page.waitForResponse(response => new URL(response.url()).pathname === '/admission/api/jobs' && response.request().method() === 'POST');
@@ -227,7 +328,227 @@ async function screenshot(page, label) {
 
 function assertNoCandidateKeys(value) {
   const text = typeof value === 'string' ? value : JSON.stringify(value);
-  for (const key of candidateKeys) assert.ok(!text.includes(key), 'Temporary candidate keys never appear in public output');
+  for (const key of new Set([...candidateKeys,...splitCredentialKeys])) assert.ok(!text.includes(key), 'Temporary credentials never appear in public output');
+}
+
+function logicalRawText(raw, allowIncomplete = false) {
+  const text = {content:'',reasoning:''};
+  const lines = raw.split(/\r\n|\r|\n/);
+  if (allowIncomplete && !/[\r\n]$/.test(raw)) lines.pop();
+  for (const line of lines) {
+    if (!line.startsWith('data:')) continue;
+    const value = line.slice(5).trim();
+    if (!value || value === '[DONE]') continue;
+    const payload = JSON.parse(value), delta = payload.choices?.[0]?.delta;
+    if (delta) { text.content += delta.content || ''; text.reasoning += delta.reasoning_content || ''; }
+    else if (payload.type === 'response.output_text.delta') text.content += payload.delta;
+    else if (payload.type === 'response.reasoning_text.delta') text.reasoning += payload.delta;
+    else if (payload.type === 'content_block_delta') {
+      text.content += payload.delta.text || ''; text.reasoning += payload.delta.thinking || '';
+    }
+  }
+  return text;
+}
+
+function assertSplitResponseSafe(response, {pending = false} = {}) {
+  assertNoCandidateKeys(response);
+  const decoded = logicalRawText(response.raw_response || '',pending);
+  assertNoCandidateKeys(decoded);
+  if (pending) {
+    for (const field of ['content','reasoning','raw_response']) {
+      const text = response[field] || '';
+      assert.ok(!text.includes('synthetic-'), 'Unresolved credential prefixes are withheld in live evidence');
+      assert.ok(!text.includes('\\u0073\\u0079\\u006e'), 'Unicode-escaped credential prefixes are withheld in live raw evidence');
+    }
+  } else {
+    assert.equal(response.raw_response_truncated,false,'Split-key fixture retains complete parseable wire evidence');
+    assert.ok(response.raw_response.includes('\\u'),'Legal Unicode JSON escapes remain in upstream wire text');
+    for (const field of ['content','reasoning']) {
+      assert.ok(decoded[field].includes('合成🌊'),'Unicode escapes decode to the original safe Unicode text');
+      assert.ok(decoded[field].includes('[REDACTED]'),'Credential spans are masked before logical stream reconstruction');
+      assert.ok((response[field] || '').includes('[REDACTED]'),'Parsed answer and reasoning are independently credential safe');
+    }
+  }
+}
+
+function rawEventResponses(events) {
+  const responses = new Map();
+  for (const event of events) {
+    if (!['raw_response','chunk'].includes(event.type)) continue;
+    const key = `${event.round}:${event.question_id}:${event.side}`;
+    if (!responses.has(key)) responses.set(key,{content:'',reasoning:'',raw_response:''});
+    const response = responses.get(key);
+    if (event.type === 'raw_response') response.raw_response = event.raw_response_replace ? event.raw_response : response.raw_response + (event.raw_response || '');
+    else for (const field of ['content','reasoning']) response[field] += event[field] || '';
+  }
+  return [...responses.values()];
+}
+
+async function splitKeyChecks(page) {
+  for (const {owner,protocol} of splitCases) {
+    phase = owner;
+    const referenceKey = `synthetic-reference-${owner}`;
+    splitCredentialKeys.add(referenceKey);
+    const channelId = (await request('/api/registry/channels',{body:{name:`Synthetic ${owner}`,base_url:`${upstreamUrl}/${owner}/reference/v1`,api_key:referenceKey,multiplier:1}})).id;
+    await page.locator('#refresh-reference').click();
+    await page.locator(`#reference-id option[value="${channelId}"]`).waitFor({state:'attached'});
+    const id = await submit(page,owner,channelId,protocol);
+    await until(()=>splitHeld.get(owner)?.size === 2,'Both first-question streams pause after incomplete credentials');
+    const live = await until(async()=>{
+      const snapshot = await job(id), responses = snapshot.report?.responses || [];
+      return responses.length === 2 && responses.every(response=>response.content?.includes('Synthetic safe content') && response.raw_response?.startsWith('data:')) && snapshot;
+    },'Live snapshots contain safe text before the split-key suffix is released');
+    assert.equal(live.state,'running'); assert.equal(live.progress.sending,2);
+    assertNoCandidateKeys(live);
+    for (const response of live.report.responses) assertSplitResponseSafe(response,{pending:true});
+    const liveEvents = await request(`/admission/api/jobs/${id}/events`);
+    assertNoCandidateKeys(liveEvents);
+    const eventResponses = rawEventResponses(liveEvents.events);
+    assert.ok(eventResponses.length > 0,'Live event evidence is inspected before completion');
+    for (const response of eventResponses) assertSplitResponseSafe(response,{pending:true});
+    await page.locator('#refresh-queue').click();
+    await page.waitForFunction(owner=>document.querySelector('#report-channels').textContent.includes(`候选 ${owner}`),owner);
+    assertNoCandidateKeys(await page.locator('#report-panel').textContent());
+    for (const raw of await page.locator('#results .raw-response-body').allTextContents()) assertSplitResponseSafe({raw_response:raw},{pending:true});
+    await releaseSplit(owner);
+    const snapshot = await completed(id), source = snapshot.report;
+    assert.equal(source.responses.length,12);
+    for (const response of source.responses) assertSplitResponseSafe(response);
+    assert.ok(source.measurements.every(measurement=>measurement.upstream_error_code === 'synthetic_split_error'));
+    await page.locator('#refresh-queue').click();
+    await page.waitForFunction(()=>document.querySelector('#run-status').textContent.includes('已完成'));
+    assertNoCandidateKeys(await page.locator('#report-panel').textContent());
+    const checkVisibleRaw = async currentPage => {
+      const raws = await currentPage.locator('.raw-response-body').allTextContents();
+      assert.equal(raws.length,12);
+      for (const raw of raws) {assertNoCandidateKeys(logicalRawText(raw));assert.ok(logicalRawText(raw).content.includes('[REDACTED]'));}
+    };
+    await checkVisibleRaw(page);
+    await page.locator('#refresh-reports').click();
+    await page.locator('#report-history article').filter({has:page.getByRole('heading',{name:new RegExp(`^候选 ${owner} `)})}).getByRole('button',{name:'查看报告',exact:true}).click();
+    await page.waitForFunction(id=>document.querySelector('#run-status').textContent.includes(`历史报告 #${id} ·`),snapshot.report_id);
+    await checkVisibleRaw(page);
+    const jsonDownload = page.waitForEvent('download'); await page.locator('#export-json').click();
+    const exported = JSON.parse(fs.readFileSync(await (await jsonDownload).path(),'utf8'));
+    assertNoCandidateKeys(exported);
+    for (const response of exported.responses) assertSplitResponseSafe(response);
+    const htmlDownload = page.waitForEvent('download'); await page.locator('#export-technical-html').click();
+    const html = fs.readFileSync(await (await htmlDownload).path(),'utf8'); assertNoCandidateKeys(html);
+    const technicalPage = await browser.newPage();
+    try {await technicalPage.setContent(html);await checkVisibleRaw(technicalPage);assertNoCandidateKeys(await technicalPage.locator('body').textContent());}
+    finally {await technicalPage.close();}
+    const ordinaryDownload = page.waitForEvent('download'); await page.locator('#export-html').click();
+    const ordinary = fs.readFileSync(await (await ordinaryDownload).path(),'utf8');assertNoCandidateKeys(ordinary);
+    for (const forbidden of ['Synthetic safe content','Synthetic safe reasoning','渠道原始响应',upstreamUrl]) assert.ok(!ordinary.includes(forbidden),'Split-key ordinary export remains a summary');
+    checks.push(`${owner}_unicode_reassembly_live_events_history_exports_credentials_safe`);
+  }
+}
+
+async function rawResponseChecks(page) {
+  let legacyReport;
+  if (!(await page.locator('#report-history-panel').evaluate(element => element.open))) await page.locator('#report-history-panel > summary').click();
+  for (const {owner, protocol} of rawCases) {
+    phase = owner;
+    const channelId = (await request('/api/registry/channels', {body:{name:`Synthetic ${owner}`,
+      base_url:`${upstreamUrl}/${owner}/reference/v1`, api_key:`synthetic-reference-${owner}`, multiplier:1}})).id;
+    await page.locator('#refresh-reference').click();
+    await page.locator(`#reference-id option[value="${channelId}"]`).waitFor({state:'attached'});
+    const id = await submit(page, owner, channelId, protocol);
+    const snapshot = await completed(id), source = {...snapshot.report, id:snapshot.report_id};
+    await page.locator('#refresh-queue').click();
+    await page.waitForFunction(owner => document.querySelector('#report-channels').textContent.includes(`候选 ${owner}`) &&
+      document.querySelector('#run-status').textContent.includes('已完成'), owner);
+    const responses = source.responses.filter(item => item.side === 'candidate');
+    const measurements = source.measurements.filter(item => item.side === 'candidate');
+    assert.equal(responses.length, 6); assert.equal(measurements.length, 6);
+    if (owner !== 'raw-http') assert.ok(measurements.every(item => item.http_status === 200), 'Only real HTTP status is recorded');
+    assert.ok(measurements.every(item => !item.ok), 'Raw failure fixtures remain unsuccessful');
+    const visibleRaw = page.locator('#results .endpoint-evidence[data-side="candidate"] .raw-response-body');
+    for (let index = 0; index < responses.length; index++) {
+      assert.equal(await visibleRaw.nth(index).textContent(), responses[index].raw_response, 'Visible raw text matches the saved upstream evidence exactly');
+      assert.ok(await visibleRaw.nth(index).isVisible(), 'Error raw text is visible without opening technical details');
+    }
+    if (owner === 'raw-empty') {
+      assert.ok(responses.every(item => item.raw_response === '' && item.content === ''), 'Empty upstream bodies stay empty');
+      assert.equal(await visibleRaw.first().textContent(), '');
+      assert.equal(await page.locator('.answer-response pre').first().textContent(), '', 'Empty answers have no synthetic text');
+    } else {
+      assert.ok(responses.every(item => item.raw_response), 'Every nonempty body is retained');
+      assert.ok(responses[0].raw_response.includes(owner === 'raw-malformed' ? 'Synthetic malformed body' : owner === 'raw-http' ? 'Synthetic HTTP error' : 'Synthetic partial answer'));
+    }
+    if (owner === 'raw-http') {
+      assert.deepEqual([...new Set(measurements.map(item => item.http_status))].sort(), [401, 429, 503]);
+      assert.ok(responses.every(item => item.raw_response_truncated), 'Long upstream bodies disclose truncation');
+      assert.ok(measurements.every(item => item.upstream_error_truncated), 'Long structured error fields disclose their own truncation');
+      assert.equal(await page.locator('.upstream-error-truncated').count(), 6);
+      const truncation = await page.locator('.raw-truncated').first().textContent();
+      for (const fragment of ['超过保存预算', '中间已省略', '最多 16 KiB']) assert.ok(truncation.includes(fragment));
+      assert.ok(measurements.every(item => item.upstream_error_code === `synthetic_http_${item.http_status}`));
+    } else if (['raw-chat', 'raw-responses', 'raw-messages'].includes(owner)) {
+      const expectedCode = { 'raw-chat':'synthetic_chat_error', 'raw-responses':'synthetic_responses_error', 'raw-messages':'synthetic_messages_error'}[owner];
+      assert.ok(measurements.every(item => item.upstream_error_code === expectedCode), 'Real streaming error code survives partial answers');
+      assert.ok(responses.every(item => item.content === 'Synthetic partial answer'), 'Errors never become answer text');
+      assert.ok((await page.locator('.endpoint-status').first().textContent()).includes(expectedCode));
+    }
+    assert.equal(await page.evaluate(() => globalThis.__rawInjection), undefined, 'Upstream text cannot execute as page markup');
+    assert.equal(await page.locator('#results script').count(), 0);
+    assertNoCandidateKeys(await page.locator('#report-panel').textContent());
+    await page.locator('#refresh-reports').click();
+    const history = page.locator('#report-history article').filter({has:page.getByRole('heading', {name:new RegExp(`^候选 ${owner} `)})});
+    await history.getByRole('button', {name:'查看报告', exact:true}).click();
+    await page.waitForFunction(id => document.querySelector('#run-status').textContent.includes(`历史报告 #${id} ·`), snapshot.report_id);
+    assert.equal(await visibleRaw.first().textContent(), responses[0].raw_response, 'History reload preserves raw body');
+    const jsonDownload = page.waitForEvent('download'); await page.locator('#export-json').click();
+    const exported = JSON.parse(fs.readFileSync(await (await jsonDownload).path(), 'utf8'));
+    assert.equal(exported.responses[0].raw_response, source.responses[0].raw_response); assertNoCandidateKeys(exported);
+    const htmlDownload = page.waitForEvent('download'); await page.locator('#export-technical-html').click();
+    const html = fs.readFileSync(await (await htmlDownload).path(), 'utf8'); assertNoCandidateKeys(html);
+    const technicalPage = await browser.newPage();
+    try {
+      await technicalPage.setContent(html);
+      assert.equal(await technicalPage.locator('.raw-response-body').first().textContent(), responses[0].raw_response, 'Technical HTML preserves raw whitespace and escaping');
+      assert.ok(await technicalPage.locator('.raw-response-body').first().isVisible());
+      assert.equal(await technicalPage.evaluate(() => globalThis.__rawInjection), undefined);
+      assert.equal(await technicalPage.locator('script').count(), 0);
+      if (owner === 'raw-http') assert.equal(await technicalPage.locator('.upstream-error-truncated').count(), 6);
+      if (measurements[0].upstream_error_code) assert.ok((await technicalPage.locator('.endpoint-status').first().textContent()).includes(measurements[0].upstream_error_code));
+      for (const width of [390, 900, 1440]) {
+        await page.setViewportSize({width, height:1000});
+        await technicalPage.setViewportSize({width, height:1000});
+        assert.equal(await page.evaluate(() => document.documentElement.scrollWidth > innerWidth + 2), false, `${owner} fits ${width}px`);
+        assert.equal(await technicalPage.evaluate(() => document.documentElement.scrollWidth > innerWidth + 2), false, `Technical ${owner} fits ${width}px`);
+        if (owner === 'raw-http') {
+          await page.locator('#results .evidence-card').first().screenshot({path:path.join(data, `${owner}-${width}.png`), animations:'disabled'});
+          screenshotAudits.push({scene:owner, width, raw_visible:true, horizontal_overflow:false});
+        }
+      }
+    } finally { await technicalPage.close(); }
+    const ordinaryDownload = page.waitForEvent('download'); await page.locator('#export-html').click();
+    const ordinary = fs.readFileSync(await (await ordinaryDownload).path(), 'utf8');
+    for (const forbidden of ['渠道原始响应', 'Synthetic partial answer', 'Synthetic HTTP error', 'Synthetic malformed body', upstreamUrl]) assert.ok(!ordinary.includes(forbidden), 'Ordinary HTML remains a summary');
+    assertNoCandidateKeys(ordinary);
+    checks.push(`${owner}_visible_history_technical_exports_empty_safe`);
+    if (owner === 'raw-chat') legacyReport = source;
+  }
+  const legacyPattern = `**/admission/api/reports/${legacyReport.id}`;
+  await page.route(legacyPattern, async route => {
+    const saved = structuredClone(legacyReport);
+    for (const response of saved.responses) { delete response.raw_response; delete response.raw_response_truncated; }
+    for (const measurement of saved.measurements) {
+      delete measurement.http_status; delete measurement.upstream_error_code; delete measurement.upstream_error_message; delete measurement.upstream_error_truncated;
+      if (measurement.side === 'candidate') measurement.error = 'Synthetic legacy local diagnostic';
+    }
+    await route.fulfill({json:saved});
+  });
+  try {
+    await page.locator('#report-history article').filter({has:page.getByRole('heading', {name:/^候选 raw-chat /})}).getByRole('button', {name:'查看报告', exact:true}).click();
+    await page.waitForFunction(id => document.querySelector('#run-status').textContent.includes(`历史报告 #${id} ·`), legacyReport.id);
+    assert.equal(await page.locator('.raw-response-body').first().textContent(), '', 'Legacy reports never invent missing raw protocol text');
+    assert.ok((await page.locator('.local-diagnostic').first().textContent()).includes('Synthetic legacy local diagnostic'));
+    assert.ok(!(await page.locator('.endpoint-status').first().textContent()).includes('HTTP 状态'), 'Legacy reports never invent an HTTP status');
+    checks.push('legacy_missing_raw_stays_empty_diagnostic_preserved');
+  } finally { await page.unroute(legacyPattern); }
+  await page.setViewportSize({width:1440, height:1000});
 }
 
 async function run() {
@@ -488,23 +809,27 @@ async function run() {
   await until(async () => (await job(variableIds[0])).state === 'cancelled', 'Variable height fixture head is cancelled');
   assert.equal(requests.filter(item => item.owner === 'variable-height').length, 2, 'The remaining nineteen tasks never send requests');
   checks.push('queue_mixed_heights_five_at_every_scroll_position');
+  await rawResponseChecks(page);
+  await splitKeyChecks(page);
   assert.deepEqual(errors, []);
   await browser.close(); browser = null; await stopApp();
   for (const name of fs.readdirSync(data, {recursive:true})) {
     const file = path.join(data, name);
-    if (fs.statSync(file).isFile()) for (const key of candidateKeys) assert.ok(!fs.readFileSync(file).includes(Buffer.from(key)), 'Candidate key never reaches an evidence file or database');
+    if (fs.statSync(file).isFile()) for (const key of new Set([...candidateKeys,...splitCredentialKeys])) assert.ok(!fs.readFileSync(file).includes(Buffer.from(key)), 'Temporary credentials never reach an evidence file or database');
   }
   assert.ok(!fixtureError);
+  assert.equal(requests.length,expectedMockRequests,'Fixed Mock request count includes the three new split-key jobs');
+  assert.equal(checks.length,expectedChecks,'Every fixed browser acceptance scenario ran');
   return {status:'passed', checks, mockRequests:requests.length, maxActiveJobs, unknownSteps:recovered.progress.unknown,
-    screenshotAudits, real_upstream_tested:false, artifacts:data};
+    screenshotAudits, duration_ms:Math.round(performance.now()-runStartedAt), budget_ms:browserBudgetMs, real_upstream_tested:false, artifacts:data};
 }
 
 const watchdog = setTimeout(() => {
-  fixtureError = new Error('Admission queue browser exceeded its 180 second budget');
+  fixtureError = new Error('Admission queue browser exceeded its 240 second budget');
   if (app && app.exitCode === null && app.signalCode === null) app.kill('SIGKILL');
   if (browser) void browser.close();
   upstream.closeAllConnections();
-}, 180000);
+}, browserBudgetMs);
 
 run().then(result => {fs.writeFileSync(path.join(data, 'result.json'), JSON.stringify(result, null, 2)); console.log(JSON.stringify(result));})
   .catch(error => {
@@ -520,6 +845,7 @@ run().then(result => {fs.writeFileSync(path.join(data, 'result.json'), JSON.stri
       await stopApp();
     } catch (error) {console.error(JSON.stringify({status:'failed', phase:'owned_resource_cleanup', error_name:error.name})); process.exitCode = 1;}
     for (const responses of held.values()) for (const res of responses.keys()) res.destroy();
+    for (const responses of splitHeld.values()) for (const res of responses.keys()) res.destroy();
     upstream.closeAllConnections();
     if (upstream.listening) await new Promise(resolve => upstream.close(resolve));
   });

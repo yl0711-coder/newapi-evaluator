@@ -60,7 +60,8 @@ def admission(python: str, output: Path, *, sha: str | None = None) -> list[Suit
         SuiteSpec("admission-inspect", _python(python, "scripts/inspect_admission.py", "--protocol", "openai"), 60, "inspect"),
         SuiteSpec("workbench-python", _python(python, "scripts/test_all.py", "--output", _output_arg(output, "workbench-python")), 900, "python", (
             "tests.test_token_usage", "tests.test_token_usage_service", "tests.test_token_usage_remediation",
-            "tests.test_admission_queue", "tests.test_admission_reporting", "tests.test_unified_integrity",
+            "tests.test_admission_queue", "tests.test_admission_reporting", "tests.test_admission_raw_response",
+            "tests.test_unified_integrity",
             "tests.test_feishu_channels",
             "tests.test_daily_checks",
             "tests.test_channel_monitor",
