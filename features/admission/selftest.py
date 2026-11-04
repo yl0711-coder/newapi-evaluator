@@ -1,11 +1,14 @@
 import asyncio
 import json
+import sys
 import unittest
 from pathlib import Path
 from unittest.mock import AsyncMock, patch
 
 import httpx
 
+sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
+from features.token_usage.domain import MAX_REPORTED_TOKENS
 from main import (
     CompareRequest,
     EndpointConfig,
@@ -136,16 +139,42 @@ class StreamProtocolTests(unittest.TestCase):
 
     def test_openai_usage_is_preserved(self) -> None:
         event = parse_stream_line(
-            'data: {"choices":[],"usage":{"prompt_tokens":20,"completion_tokens":12,"total_tokens":32}}'
+            'data: {"choices":[],"usage":{"prompt_tokens":100,"prompt_tokens_details":{"cached_tokens":40},"completion_tokens":12,"total_tokens":112}}'
         )
         self.assertTrue(event["recognized"])
         self.assertEqual(event["output_tokens"], 12)
+        self.assertEqual(event["cache_metrics"]["cache_hit_input_tokens"], 40)
+        self.assertEqual(event["cache_metrics"]["cache_total_input_tokens"], 100)
+        self.assertEqual(event["cache_metrics"]["cache_hit_rate"], 0.4)
 
     def test_responses_usage_is_preserved(self) -> None:
         event = parse_stream_line(
-            'data: {"type":"response.completed","response":{"status":"completed","usage":{"output_tokens":18}}}'
+            'data: {"type":"response.completed","response":{"status":"completed","usage":{"input_tokens":80,"input_tokens_details":{"cached_tokens":20},"output_tokens":18}}}'
         )
         self.assertEqual(event["output_tokens"], 18)
+        self.assertEqual(event["input_tokens"], 80)
+        self.assertEqual(event["cache_metrics"]["cache_hit_rate"], 0.25)
+
+    def test_anthropic_usage_uses_uncached_plus_read_and_write_as_denominator(self) -> None:
+        event = parse_stream_line(
+            'data: {"type":"message_start","message":{"usage":{"input_tokens":30,"cache_read_input_tokens":60,"cache_creation_input_tokens":10}}}'
+        )
+        self.assertEqual(event["input_tokens"], 30)
+        self.assertEqual(event["cache_metrics"]["cache_total_input_tokens"], 100)
+        self.assertEqual(event["cache_metrics"]["cache_hit_rate"], 0.6)
+
+    def test_invalid_cache_usage_is_not_clamped_or_reported_as_zero(self) -> None:
+        event = parse_stream_line(
+            f'data: {{"choices":[],"usage":{{"prompt_tokens":100,"prompt_tokens_details":{{"cached_tokens":{MAX_REPORTED_TOKENS + 1}}},"completion_tokens":1}}}}'
+        )
+        self.assertEqual(event["cache_metrics"]["cache_status"], "invalid")
+        self.assertIsNone(event["cache_metrics"]["cache_hit_rate"])
+
+        event = parse_stream_line(
+            'data: {"type":"message_start","message":{"usage":{"input_tokens":30,"cache_read_input_tokens":60}}}'
+        )
+        self.assertEqual(event["cache_metrics"]["cache_status"], "invalid")
+        self.assertIsNone(event["cache_metrics"]["cache_hit_rate"])
 
     def test_chat_completion_url_is_normalized(self) -> None:
         self.assertEqual(
@@ -198,7 +227,7 @@ class MockStream(httpx.AsyncByteStream):
         yield b'data: {"choices":[{"delta":{"content":"O"}}]}\n\n'
         await asyncio.sleep(0.01)
         yield b'data: {"choices":[{"delta":{"content":"K"}}]}\n\n'
-        yield b'data: {"choices":[],"usage":{"completion_tokens":12}}\n\ndata: [DONE]\n\n'
+        yield b'data: {"choices":[],"usage":{"prompt_tokens":100,"prompt_tokens_details":{"cached_tokens":40},"completion_tokens":12,"total_tokens":112}}\n\ndata: [DONE]\n\n'
 
 
 class AnthropicStream(httpx.AsyncByteStream):
@@ -267,6 +296,8 @@ class StreamingMeasurementTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(finished[0]["status"], "completed")
         self.assertEqual(finished[0]["chars"], 3)
         self.assertEqual(finished[0]["output_tokens"], 12)
+        self.assertEqual(finished[0]["cache_hit_input_tokens"], 40)
+        self.assertEqual(finished[0]["cache_hit_rate"], 0.4)
         self.assertGreaterEqual(finished[0]["first_answer_ms"], finished[0]["ttft_ms"])
         self.assertGreater(finished[0]["tokens_per_second"], 0)
 
@@ -471,6 +502,11 @@ class FrontendSafetyTests(unittest.TestCase):
     def test_frontend_exposes_token_metrics(self) -> None:
         source = (Path(__file__).parent / "web" / "app.js").read_text(encoding="utf-8")
         for field in ("first_answer_ms", "output_tokens", "tokens_per_second"):
+            self.assertIn(field, source)
+
+    def test_frontend_exposes_cache_hit_metrics(self) -> None:
+        source = (Path(__file__).parent / "web" / "app.js").read_text(encoding="utf-8")
+        for field in ("cache_hit_rate", "cache_hit_input_tokens", "cache_status"):
             self.assertIn(field, source)
 
     def test_frontend_exposes_capped_server_report_history(self) -> None:

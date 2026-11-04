@@ -71,7 +71,7 @@ class AdmissionVerificationTests(unittest.TestCase):
             if 'scripts/test_web.js' in command:
                 return 3, 'UI contract tests passed:\n', False
             if 'scripts/test_all.py' in command:
-                return 0, ''.join(f'Ran {n} tests in 0.1s\n\nOK\n' for n in [34, 41, len(REQUIRED_MODULES)]) + '  OK check\n' * 22 + 'All engine and integration checks passed.', False
+                return 0, ''.join(f'Ran {n} tests in 0.1s\n\nOK\n' for n in [37, 41, len(REQUIRED_MODULES)]) + '  OK check\n' * 22 + 'All engine and integration checks passed.', False
             if 'scripts/e2e.py' in command:
                 return 0, 'Running x\nx passed: 1\n' * 5 + 'All five Mock CLI modes passed', False
             return 0, json.dumps({'status': 'passed', 'checks': 1, 'skipped': 0, 'requests_sent': 0,

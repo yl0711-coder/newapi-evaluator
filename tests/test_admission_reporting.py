@@ -143,6 +143,30 @@ class AdmissionReportingTests(unittest.TestCase):
         self.assertEqual(public["summary"]["overall"]["status"], "runtime_similar")
         self.assertNotIn("token_usage", public)
 
+    def test_cache_summary_is_weighted_and_does_not_turn_missing_usage_into_zero(self):
+        report = base_report()
+        report["measurements"] = [measurement(2, "q1", side) for side in reporting.SIDES]
+        report["measurements"][0].update(
+            cache_status="reported", cache_hit_input_tokens=40, cache_total_input_tokens=100,
+            cache_write_input_tokens=10, cache_hit_rate=0.4,
+        )
+        report["measurements"][1].update(
+            cache_status="reported", cache_hit_input_tokens=10, cache_total_input_tokens=100,
+            cache_write_input_tokens=0, cache_hit_rate=0.1,
+        )
+        result = reporting.finalize_report(report)
+        cache = result["summary"]["cache"]
+        self.assertEqual(cache["candidate"]["rate"], 0.4)
+        self.assertEqual(cache["reference"]["rate"], 0.1)
+        self.assertEqual(cache["difference"], 0.3)
+        self.assertEqual(cache["candidate"]["hit_input_tokens"], 40)
+
+        report["measurements"][0].update(cache_status="unavailable", cache_hit_input_tokens=None, cache_hit_rate=None)
+        report["measurements"][1].update(cache_status="not_reported", cache_hit_input_tokens=None, cache_hit_rate=None)
+        unavailable = reporting.finalize_report(report)["summary"]["cache"]
+        self.assertEqual(unavailable["status"], "unavailable")
+        self.assertIsNone(unavailable["candidate"]["rate"])
+
 
 if __name__ == "__main__":
     unittest.main()
