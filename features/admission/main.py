@@ -367,6 +367,9 @@ def _empty_cache_metrics() -> dict[str, Any]:
         "cache_write_input_tokens": None,
         "cache_total_input_tokens": None,
         "cache_hit_rate": None,
+        "cache_request_hit": None,
+        "cache_request_hit_rate": None,
+        "cache_write_rate": None,
         "cache_status": "not_reported",
         "cache_rate_basis": "",
     }
@@ -418,6 +421,9 @@ def _usage_cache_metrics(payload: dict[str, Any], requested_protocol: str | None
                 cache_write_input_tokens=write,
                 cache_total_input_tokens=total,
                 cache_hit_rate=round(hit / total, 6),
+                cache_request_hit=hit > 0,
+                cache_request_hit_rate=1.0 if hit > 0 else 0.0,
+                cache_write_rate=round(write / total, 6),
                 cache_status="reported",
                 cache_rate_basis="uncached_input_plus_cache_read_and_write",
             )
@@ -431,8 +437,12 @@ def _usage_cache_metrics(payload: dict[str, Any], requested_protocol: str | None
                 return result
             result.update(
                 cache_hit_input_tokens=hit,
+                cache_write_input_tokens=0,
                 cache_total_input_tokens=input_tokens,
                 cache_hit_rate=round(hit / input_tokens, 6),
+                cache_request_hit=hit > 0,
+                cache_request_hit_rate=1.0 if hit > 0 else 0.0,
+                cache_write_rate=0.0,
                 cache_status="reported",
                 cache_rate_basis="total_input_tokens_includes_cached_tokens",
             )

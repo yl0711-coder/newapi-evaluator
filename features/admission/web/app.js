@@ -88,7 +88,9 @@ function cacheSummaryText(value) {
   if (value.status !== 'reported') return value.label || '无法计算';
   const candidate = value.candidate?.rate === null || value.candidate?.rate === undefined ? '未提供' : cacheRate(value.candidate.rate);
   const reference = value.reference?.rate === null || value.reference?.rate === undefined ? '未提供' : cacheRate(value.reference.rate);
-  return `候选 ${candidate} · 参照 ${reference}`;
+  const request = (side) => side?.request_hit_rate == null ? '未提供' : cacheRate(side.request_hit_rate);
+  const write = (side) => side?.write_rate == null ? '未提供' : cacheRate(side.write_rate);
+  return `Token 命中：候选 ${candidate} · 参照 ${reference}；请求复用：候选 ${request(value.candidate)} · 参照 ${request(value.reference)}；写入占比：候选 ${write(value.candidate)} · 参照 ${write(value.reference)}`;
 }
 
 function cacheStatusLabel(value) {
@@ -96,7 +98,7 @@ function cacheStatusLabel(value) {
 }
 
 function cacheMetrics(value) {
-  return [['缓存命中率',cacheRate(value.cache_hit_rate)],['缓存命中 Token',value.cache_hit_input_tokens ?? '未提供'],['缓存写入 Token',value.cache_write_input_tokens ?? '未提供'],['缓存输入总量',value.cache_total_input_tokens ?? '未提供'],['缓存数据状态',cacheStatusLabel(value.cache_status)],['命中率口径',value.cache_rate_basis || '未提供']];
+  return [['Token 缓存命中率',cacheRate(value.cache_hit_rate)],['请求是否命中缓存',value.cache_request_hit == null ? '未提供' : (value.cache_request_hit ? '是' : '否')],['缓存命中 Token',value.cache_hit_input_tokens ?? '未提供'],['缓存写入 Token',value.cache_write_input_tokens ?? '未提供'],['缓存输入总量',value.cache_total_input_tokens ?? '未提供'],['缓存数据状态',cacheStatusLabel(value.cache_status)],['命中率口径',value.cache_rate_basis || '未提供']];
 }
 
 function metric(label, value) {

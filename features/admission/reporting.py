@@ -212,6 +212,13 @@ def _cache_side_summary(measurements: list[dict[str, Any]]) -> dict[str, Any]:
     total_tokens = round(sum(_number(item.get("cache_total_input_tokens")) or 0 for item in reported))
     write_tokens = round(sum(_number(item.get("cache_write_input_tokens")) or 0 for item in reported))
     rate = round(hit_tokens / total_tokens, 6) if total_tokens else None
+    request_hit_count = sum(
+        1 for item in reported
+        if item.get("cache_request_hit") is True
+        or ("cache_request_hit" not in item and (_number(item.get("cache_hit_input_tokens")) or 0) > 0)
+    )
+    request_hit_rate = round(request_hit_count / len(reported), 6) if reported else None
+    write_rate = round(write_tokens / total_tokens, 6) if total_tokens else None
     if reported:
         status = "reported"
     elif statuses["invalid"]:
@@ -223,11 +230,14 @@ def _cache_side_summary(measurements: list[dict[str, Any]]) -> dict[str, Any]:
     return {
         "status": status,
         "rate": rate,
+        "request_hit_rate": request_hit_rate,
+        "write_rate": write_rate,
         "hit_input_tokens": hit_tokens if reported else None,
         "write_input_tokens": write_tokens if reported else None,
         "total_input_tokens": total_tokens if reported else None,
         "reported_requests": len(reported),
         "observed_requests": len(measurements),
+        "request_hit_requests": request_hit_count if reported else None,
     }
 
 

@@ -160,12 +160,31 @@ class AdmissionReportingTests(unittest.TestCase):
         self.assertEqual(cache["reference"]["rate"], 0.1)
         self.assertEqual(cache["difference"], 0.3)
         self.assertEqual(cache["candidate"]["hit_input_tokens"], 40)
+        self.assertEqual(cache["candidate"]["request_hit_requests"], 1)
+        self.assertEqual(cache["candidate"]["request_hit_rate"], 1.0)
+        self.assertEqual(cache["candidate"]["write_rate"], 0.1)
 
         report["measurements"][0].update(cache_status="unavailable", cache_hit_input_tokens=None, cache_hit_rate=None)
         report["measurements"][1].update(cache_status="not_reported", cache_hit_input_tokens=None, cache_hit_rate=None)
         unavailable = reporting.finalize_report(report)["summary"]["cache"]
         self.assertEqual(unavailable["status"], "unavailable")
         self.assertIsNone(unavailable["candidate"]["rate"])
+
+    def test_cache_summary_distinguishes_zero_hit_from_missing_and_counts_writes(self):
+        report = base_report()
+        report["measurements"] = [measurement(2, "q1", "candidate"), measurement(2, "q1", "reference")]
+        report["measurements"][0].update(
+            cache_status="reported", cache_hit_input_tokens=0, cache_write_input_tokens=50,
+            cache_total_input_tokens=100, cache_hit_rate=0, cache_request_hit=False,
+        )
+        report["measurements"][1].update(
+            cache_status="not_reported", cache_hit_input_tokens=None, cache_total_input_tokens=None,
+        )
+        cache = reporting.finalize_report(report)["summary"]["cache"]
+        self.assertEqual(cache["candidate"]["request_hit_rate"], 0.0)
+        self.assertEqual(cache["candidate"]["request_hit_requests"], 0)
+        self.assertEqual(cache["candidate"]["write_rate"], 0.5)
+        self.assertIsNone(cache["reference"]["request_hit_rate"])
 
 
 if __name__ == "__main__":
