@@ -157,6 +157,9 @@ Promise.race([fixtureFailure,(async () => {
   await page.waitForFunction(id=>{const text=document.querySelector('#run-status').textContent;return text.includes(`任务 #${id} ·`) && text.includes('已完成');},admissionJob,{timeout:40000});
   assert.equal(await page.locator('#summary-cards .summary-card').count(),9);
   assert.ok((await page.locator('#summary-cards .summary-card').filter({hasText:'缓存命中率'}).textContent()).includes('候选 40.0% · 参照 40.0%'));
+  const cacheSummary = await page.locator('#summary-cards .summary-card').filter({hasText:'缓存命中率'}).textContent();
+  assert.ok(cacheSummary.includes('请求复用：候选 100.0% · 参照 100.0%'));
+  assert.ok(cacheSummary.includes('写入占比：候选 未提供 · 参照 未提供'));
   assert.equal(await page.locator('#pair-summary tr').count(),6);
   assert.equal(await page.locator('#results .evidence-card').count(),12);
   assert.ok(!(await page.locator('#headline').textContent()).includes('测试进行中'));
@@ -180,6 +183,8 @@ Promise.race([fixtureFailure,(async () => {
   const ordinaryDownload = await ordinaryPromise; const ordinary = fs.readFileSync(await ordinaryDownload.path(),'utf8');
   assert.ok(!ordinary.includes('Test answer 391')); assert.ok(!ordinary.includes(upstreamUrl));
   assert.ok(ordinary.includes('缓存命中率')); assert.ok(ordinary.includes('候选 40.0% · 参照 40.0%'));
+  assert.ok(ordinary.includes('请求复用：候选 100.0% · 参照 100.0%'));
+  assert.ok(ordinary.includes('写入占比：候选 未提供 · 参照 未提供'));
   await page.screenshot({path:path.join(data,'admission-desktop.png'),fullPage:true});
   await page.goto(base+'/reasoning/'); await page.locator('#channel_id').selectOption(String(channelId)); await page.locator('#model').fill('demo-model');
   await page.locator('#start_btn').click(); await page.locator('#results').waitFor({state:'visible'}); assert.equal(requests.length,31);

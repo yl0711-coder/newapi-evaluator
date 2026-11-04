@@ -437,12 +437,10 @@ def _usage_cache_metrics(payload: dict[str, Any], requested_protocol: str | None
                 return result
             result.update(
                 cache_hit_input_tokens=hit,
-                cache_write_input_tokens=0,
                 cache_total_input_tokens=input_tokens,
                 cache_hit_rate=round(hit / input_tokens, 6),
                 cache_request_hit=hit > 0,
                 cache_request_hit_rate=1.0 if hit > 0 else 0.0,
-                cache_write_rate=0.0,
                 cache_status="reported",
                 cache_rate_basis="total_input_tokens_includes_cached_tokens",
             )
@@ -698,7 +696,7 @@ def parse_stream_line(line: str, protocol: str | None = None) -> dict[str, Any] 
     if event_type.startswith("response."):
         return _stream_event(response_format="responses", input_tokens=input_tokens,
                              cache_metrics=cache_metrics, **metadata)
-    if output_tokens is not None:
+    if output_tokens is not None or cache_metrics is not None:
         return _stream_event(response_format="usage", output_tokens=output_tokens, input_tokens=input_tokens,
                              cache_metrics=cache_metrics, **metadata)
     return _stream_event(recognized=False, raw=value)

@@ -147,7 +147,7 @@ class StreamProtocolTests(unittest.TestCase):
         self.assertEqual(event["cache_metrics"]["cache_total_input_tokens"], 100)
         self.assertEqual(event["cache_metrics"]["cache_hit_rate"], 0.4)
         self.assertTrue(event["cache_metrics"]["cache_request_hit"])
-        self.assertEqual(event["cache_metrics"]["cache_write_rate"], 0.0)
+        self.assertIsNone(event["cache_metrics"]["cache_write_rate"])
 
     def test_responses_usage_is_preserved(self) -> None:
         event = parse_stream_line(
@@ -159,11 +159,16 @@ class StreamProtocolTests(unittest.TestCase):
 
     def test_zero_cache_read_is_reported_as_a_miss(self) -> None:
         event = parse_stream_line(
-            'data: {"choices":[],"usage":{"prompt_tokens":100,"prompt_tokens_details":{"cached_tokens":0},"completion_tokens":1}}'
+            'data: {"choices":[],"usage":{"prompt_tokens":100,"prompt_tokens_details":{"cached_tokens":0}}}'
         )
         self.assertEqual(event["cache_metrics"]["cache_status"], "reported")
         self.assertFalse(event["cache_metrics"]["cache_request_hit"])
         self.assertEqual(event["cache_metrics"]["cache_request_hit_rate"], 0.0)
+
+    def test_anthropic_write_without_read_is_not_reuse(self) -> None:
+        event = parse_stream_line('data: {"type":"message_start","message":{"usage":{"input_tokens":1,"cache_read_input_tokens":0,"cache_creation_input_tokens":99}}}')
+        self.assertFalse(event["cache_metrics"]["cache_request_hit"])
+        self.assertEqual(event["cache_metrics"]["cache_write_rate"], 0.99)
 
     def test_anthropic_usage_uses_uncached_plus_read_and_write_as_denominator(self) -> None:
         event = parse_stream_line(

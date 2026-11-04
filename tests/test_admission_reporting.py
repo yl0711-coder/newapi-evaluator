@@ -186,6 +186,26 @@ class AdmissionReportingTests(unittest.TestCase):
         self.assertEqual(cache["candidate"]["write_rate"], 0.5)
         self.assertIsNone(cache["reference"]["request_hit_rate"])
 
+    def test_reuse_and_token_rates_have_distinct_denominators(self):
+        report = base_report()
+        rows = []
+        for index, (hit, total, write) in enumerate(((90, 100, 10), (0, 900, 800))):
+            row = measurement(2, str(index), "candidate")
+            row.update(cache_status="reported", cache_hit_input_tokens=hit,
+                       cache_total_input_tokens=total, cache_write_input_tokens=write)
+            rows.append(row)
+        rows.append(measurement(2, "missing", "candidate"))
+        report["measurements"] = rows
+        value = reporting.build_cache_summary(report)["candidate"]
+        self.assertEqual(value["rate"], 0.09)
+        self.assertEqual(value["request_hit_rate"], 0.5)
+        self.assertEqual(value["write_rate"], 0.81)
+        self.assertEqual((value["reported_requests"], value["observed_requests"]), (2, 3))
+        rows[0]["cache_write_input_tokens"] = None
+        value = reporting.build_cache_summary(report)["candidate"]
+        self.assertIsNone(value["write_rate"])
+        self.assertIsNone(value["write_input_tokens"])
+
 
 if __name__ == "__main__":
     unittest.main()
