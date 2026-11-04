@@ -15,6 +15,8 @@ from fastapi.responses import FileResponse, JSONResponse, StreamingResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, Field, model_validator
 
+from features.token_usage.domain import normalize_usage
+
 
 ROOT = Path(__file__).resolve().parent
 QUESTIONS_PATH = ROOT / "questions.json"
@@ -356,6 +358,92 @@ def _usage_output_tokens(payload: dict[str, Any]) -> int | None:
     return None
 
 
+def _empty_cache_metrics() -> dict[str, Any]:
+    return {
+        "input_tokens": None,
+        "cache_hit_input_tokens": None,
+        "cache_write_input_tokens": None,
+        "cache_total_input_tokens": None,
+        "cache_hit_rate": None,
+        "cache_status": "not_reported",
+        "cache_rate_basis": "",
+    }
+
+
+def _usage_protocol(payload: dict[str, Any], requested: str | None) -> str:
+    if requested in {"openai", "chat", "chat_completions", "responses", "anthropic", "messages"}:
+        return {"chat": "openai", "chat_completions": "openai", "messages": "anthropic"}.get(requested, requested)
+    event_type = str(payload.get("type") or "")
+    if event_type.startswith("response.") or isinstance(payload.get("response"), dict):
+        return "responses"
+    if event_type in {"message_start", "message_stop", "message_delta", "content_block_start", "content_block_delta", "content_block_stop"}:
+        return "anthropic"
+    usage = payload.get("usage") if isinstance(payload.get("usage"), dict) else {}
+    if any(key in usage for key in ("cache_creation_input_tokens", "cache_read_input_tokens")):
+        return "anthropic"
+    if "input_tokens_details" in usage:
+        return "responses"
+    return "openai"
+
+
+def _usage_cache_metrics(payload: dict[str, Any], requested_protocol: str | None = None) -> dict[str, Any] | None:
+    response = payload.get("response") if isinstance(payload.get("response"), dict) else {}
+    message = payload.get("message") if isinstance(payload.get("message"), dict) else {}
+    usage_candidates = [payload.get("usage"), response.get("usage"), message.get("usage")]
+    protocol = _usage_protocol(payload, requested_protocol)
+    for usage in usage_candidates:
+        if not isinstance(usage, dict):
+            continue
+        normalized = normalize_usage(usage, protocol)
+        if normalized is None:
+            continue
+        input_tokens = normalized["input_tokens"]
+        result = _empty_cache_metrics()
+        result["input_tokens"] = input_tokens
+        if normalized["invalid"]:
+            result["cache_status"] = "invalid"
+            return result
+        if protocol == "anthropic" and (normalized["cache_read_input_tokens"] is not None
+                                         or normalized["cache_creation_input_tokens"] is not None):
+            hit = normalized["cache_read_input_tokens"] or 0
+            write = normalized["cache_creation_input_tokens"] or 0
+            total = normalized["normalized_input_tokens"]
+            if total is None or total <= 0:
+                result["cache_status"] = "invalid"
+                return result
+            result.update(
+                cache_hit_input_tokens=hit,
+                cache_write_input_tokens=write,
+                cache_total_input_tokens=total,
+                cache_hit_rate=round(hit / total, 6),
+                cache_status="reported",
+                cache_rate_basis="uncached_input_plus_cache_read_and_write",
+            )
+            return result
+        details_key = "input_tokens_details" if protocol == "responses" else "prompt_tokens_details"
+        details = usage.get(details_key)
+        if isinstance(details, dict) and "cached_tokens" in details:
+            hit = normalized["cached_tokens"]
+            if hit is None or input_tokens is None or input_tokens <= 0:
+                result["cache_status"] = "invalid"
+                return result
+            result.update(
+                cache_hit_input_tokens=hit,
+                cache_total_input_tokens=input_tokens,
+                cache_hit_rate=round(hit / input_tokens, 6),
+                cache_status="reported",
+                cache_rate_basis="total_input_tokens_includes_cached_tokens",
+            )
+            return result
+        if input_tokens is not None:
+            result.update(cache_total_input_tokens=input_tokens,
+                          cache_status="unavailable",
+                          cache_rate_basis="total_input_tokens_includes_cached_tokens"
+                          if protocol in {"openai", "responses"} else "total_input_tokens")
+            return result
+    return None
+
+
 def _stream_event(
     *,
     content: str = "",
@@ -376,6 +464,7 @@ def _stream_event(
     block_key: tuple[int, int] | None = None,
     reasoning_tokens: int | None = None,
     input_tokens: int | None = None,
+    cache_metrics: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     return {
         "content": content,
@@ -396,6 +485,7 @@ def _stream_event(
         "block_key": block_key,
         "reasoning_tokens": reasoning_tokens,
         "input_tokens": input_tokens,
+        "cache_metrics": cache_metrics,
     }
 
 
@@ -411,7 +501,7 @@ def _response_metadata(payload: dict[str, Any]) -> dict[str, str]:
     }
 
 
-def parse_stream_line(line: str) -> dict[str, Any] | None:
+def parse_stream_line(line: str, protocol: str | None = None) -> dict[str, Any] | None:
     value = line.strip().lstrip("\ufeff")
     if not value or value.startswith(":") or value.startswith("event:"):
         return None
@@ -429,6 +519,8 @@ def parse_stream_line(line: str) -> dict[str, Any] | None:
         return _stream_event(recognized=False, raw=value)
     metadata = _response_metadata(payload)
     output_tokens = _usage_output_tokens(payload)
+    cache_metrics = _usage_cache_metrics(payload, protocol)
+    input_tokens = cache_metrics.get("input_tokens") if cache_metrics else None
     choices = payload.get("choices") or []
     if choices:
         choice = choices[0]
@@ -450,6 +542,8 @@ def parse_stream_line(line: str) -> dict[str, Any] | None:
             finish_reason=str(choice.get("finish_reason") or ""),
             response_format=response_format,
             output_tokens=output_tokens,
+            input_tokens=input_tokens,
+            cache_metrics=cache_metrics,
             **metadata,
         )
 
@@ -471,6 +565,8 @@ def parse_stream_line(line: str) -> dict[str, Any] | None:
             block_key=block_key,
             response_format="responses",
             output_tokens=output_tokens,
+            input_tokens=input_tokens,
+            cache_metrics=cache_metrics,
             **metadata,
         )
     if event_type in {"response.output_text.done", "response.refusal.done"}:
@@ -478,12 +574,15 @@ def parse_stream_line(line: str) -> dict[str, Any] | None:
         if not isinstance(content, str):
             return _stream_event(response_format="responses", protocol_error="protocol_error")
         return _stream_event(response_format="responses", block_content=content, block_key=block_key,
+                             input_tokens=input_tokens, cache_metrics=cache_metrics,
                              refused=event_type == "response.refusal.done", **metadata)
     if event_type in {"response.reasoning_text.delta", "response.reasoning_summary_text.delta"}:
         return _stream_event(
             reasoning=_text_value(payload.get("delta")),
             response_format="responses",
             output_tokens=output_tokens,
+            input_tokens=input_tokens,
+            cache_metrics=cache_metrics,
             **metadata,
         )
     if event_type == "content_block_delta":
@@ -493,6 +592,8 @@ def parse_stream_line(line: str) -> dict[str, Any] | None:
             reasoning=_text_value(delta.get("thinking")),
             response_format="anthropic",
             output_tokens=output_tokens,
+            input_tokens=input_tokens,
+            cache_metrics=cache_metrics,
             **metadata,
         )
     if event_type == "message_delta":
@@ -501,6 +602,8 @@ def parse_stream_line(line: str) -> dict[str, Any] | None:
             finish_reason=str(delta.get("stop_reason") or ""),
             response_format="anthropic",
             output_tokens=output_tokens,
+            input_tokens=input_tokens,
+            cache_metrics=cache_metrics,
             **metadata,
         )
     if event_type in {"message_start", "message_stop", "content_block_start", "content_block_stop"}:
@@ -511,6 +614,8 @@ def parse_stream_line(line: str) -> dict[str, Any] | None:
             finish_reason="stop" if event_type == "message_stop" else "",
             response_format="anthropic",
             output_tokens=output_tokens,
+            input_tokens=input_tokens,
+            cache_metrics=cache_metrics,
             **metadata,
         )
     if event_type in {"response.completed", "response.incomplete", "response.failed"}:
@@ -551,21 +656,24 @@ def parse_stream_line(line: str) -> dict[str, Any] | None:
                             "upstream_error" if response.get("error") or status == "failed" else ""),
             final_content="".join(content) if isinstance(response.get("output"), list) else None,
             refused=refused,
-            input_tokens=token_count(usage.get("input_tokens")),
+            input_tokens=input_tokens,
             reasoning_tokens=token_count(details.get("reasoning_tokens")),
+            cache_metrics=cache_metrics,
             **metadata,
         )
     if event_type.startswith("response."):
-        return _stream_event(response_format="responses", **metadata)
+        return _stream_event(response_format="responses", input_tokens=input_tokens,
+                             cache_metrics=cache_metrics, **metadata)
     if output_tokens is not None:
-        return _stream_event(response_format="usage", output_tokens=output_tokens, **metadata)
+        return _stream_event(response_format="usage", output_tokens=output_tokens, input_tokens=input_tokens,
+                             cache_metrics=cache_metrics, **metadata)
     return _stream_event(recognized=False, raw=value)
 
 
 async def stream_events(response: httpx.Response, protocol: str) -> AsyncIterator[dict[str, Any]]:
     if protocol != "responses":
         async for line in response.aiter_lines():
-            parsed = parse_stream_line(line)
+            parsed = parse_stream_line(line, protocol)
             if parsed is not None:
                 yield parsed
         return
@@ -579,7 +687,7 @@ async def stream_events(response: httpx.Response, protocol: str) -> AsyncIterato
                     data, size = [], 0
                     continue
                 try:
-                    parsed = parse_stream_line("\n".join(data))
+                    parsed = parse_stream_line("\n".join(data), protocol)
                 except (AttributeError, TypeError, KeyError, IndexError):
                     parsed = None
                 if parsed is None or parsed["format"] != "responses":
@@ -652,6 +760,7 @@ async def measure_side(
                          "request_started_ms": started_ms, "request_protocol": config.protocol,
                          "max_output_tokens": payload["max_output_tokens"],
                          "reasoning_effort": payload.get("reasoning", {}).get("effort"),
+                         **_empty_cache_metrics(),
                          "error_category": "total_timeout", "error": "Responses 请求超过总时限。"})
 
 
@@ -683,6 +792,7 @@ async def _measure_side(
     response_status = protocol_error = ""
     refused = False
     reasoning_tokens = input_tokens = None
+    cache_metrics = _empty_cache_metrics()
     text_blocks: dict[tuple[int, int], str] = {}
     text_recovered = False
     payload = build_payload(config, question)
@@ -736,6 +846,11 @@ async def _measure_side(
                     reasoning_tokens = parsed["reasoning_tokens"]
                 if parsed["input_tokens"] is not None:
                     input_tokens = parsed["input_tokens"]
+                incoming_cache_metrics = parsed.get("cache_metrics")
+                if incoming_cache_metrics is not None:
+                    if (cache_metrics["cache_status"] not in {"reported", "invalid"}
+                            or incoming_cache_metrics["cache_status"] in {"reported", "invalid"}):
+                        cache_metrics = incoming_cache_metrics
                 content_delta = parsed["content"]
                 reasoning_delta = parsed["reasoning"]
                 if config.protocol == "responses":
@@ -886,11 +1001,12 @@ async def _measure_side(
                 "chars_per_second": chars_per_second,
                 "output_tokens": reported_output_tokens,
                 **request_metrics,
-                **({"input_tokens": input_tokens, "reasoning_tokens": reasoning_tokens,
+                **({"reasoning_tokens": reasoning_tokens,
                     "response_status": response_status,
                     "text_recovered_from_completion": text_recovered,
                     "protocol_completed": response_status == "completed" and not protocol_error}
                    if config.protocol == "responses" else {}),
+                **cache_metrics,
                 "tokens_per_second": tokens_per_second,
                 "speed_data_valid": speed_data_valid,
                 "speed_invalid_reason": speed_invalid_reason,
@@ -920,6 +1036,7 @@ async def _measure_side(
                 "answer_equivalent": None,
                 "request_started_ms": request_started_ms,
                 **request_metrics,
+                **cache_metrics,
                 "error_category": _exception_category(exc, output_chunk_count > 0),
                 "error": _redact(str(exc), config.api_key),
             }

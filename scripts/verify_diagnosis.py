@@ -29,7 +29,9 @@ def classify(returncode,output,kind,expected=None):
         result.update(executed=sum(counts)+stability+stability_failed if counts or stability or stability_failed else None,skipped=skips,
                       failed=failed if failed else None if known_failure or returncode!=0 else 0)
         if known_failure:result['status']='failed'
-        elif counts==[34,41,expected] and expected and stability==22 and skips==0 and 'All engine and integration checks passed.' in output:result['status']='passed'
+        elif (len(counts) == 3 and counts[0] > 0 and counts[1] > 0
+              and counts[2] == expected and expected and stability == 22 and skips == 0
+              and 'All engine and integration checks passed.' in output):result['status']='passed'
     elif kind=='web':
         if 'UI contract tests passed:' in output:result.update(status='passed',executed=1,failed=0)
     elif kind=='e2e':

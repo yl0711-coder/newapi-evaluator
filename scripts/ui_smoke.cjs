@@ -61,7 +61,7 @@ const upstream = http.createServer(async (req, res) => {
   if (body.stream) {
     res.writeHead(200, {'Content-Type':'text/event-stream'});
     res.write('data: ' + JSON.stringify({model:body.model,choices:[{delta:{content:'Test answer '},finish_reason:null}]}) + '\n\n');
-    res.end('data: ' + JSON.stringify({model:body.model,choices:[{delta:{content:'391'},finish_reason:'stop'}],usage:{prompt_tokens:10,completion_tokens:6}}) + '\n\ndata: [DONE]\n\n');
+    res.end('data: ' + JSON.stringify({model:body.model,choices:[{delta:{content:'391'},finish_reason:'stop'}],usage:{prompt_tokens:10,prompt_tokens_details:{cached_tokens:4},completion_tokens:6}}) + '\n\ndata: [DONE]\n\n');
   } else {
     res.writeHead(200, {'Content-Type':'application/json'});
     res.end(JSON.stringify({choices:[{message:{content:'391',reasoning_content:'Visible reasoning for this fixture.'},finish_reason:'stop'}],usage:{prompt_tokens:10,completion_tokens:8}}));
@@ -145,7 +145,8 @@ Promise.race([fixtureFailure,(async () => {
   await page.locator('#reference-id').selectOption(String(channelId));
   const admissionJob = await submitAdmission();
   await page.waitForFunction(id=>{const text=document.querySelector('#run-status').textContent;return text.includes(`任务 #${id} ·`) && text.includes('已完成');},admissionJob,{timeout:40000});
-  assert.equal(await page.locator('#summary-cards .summary-card').count(),8);
+  assert.equal(await page.locator('#summary-cards .summary-card').count(),9);
+  assert.ok((await page.locator('#summary-cards .summary-card').filter({hasText:'缓存命中率'}).textContent()).includes('候选 40.0% · 参照 40.0%'));
   assert.equal(await page.locator('#pair-summary tr').count(),6);
   assert.equal(await page.locator('#results .evidence-card').count(),12);
   assert.ok(!(await page.locator('#headline').textContent()).includes('测试进行中'));
@@ -164,9 +165,11 @@ Promise.race([fixtureFailure,(async () => {
   const downloadPromise = page.waitForEvent('download'); await page.locator('#export-json').click();
   const download = await downloadPromise; const report = fs.readFileSync(await download.path(),'utf8');
   assert.ok(!report.includes('ui-ephemeral-candidate-key')); assert.ok(!report.includes('ui-saved-reference-key'));
+  assert.ok(report.includes('cache_hit_rate')); assert.ok(report.includes('0.4'));
   const ordinaryPromise = page.waitForEvent('download'); await page.locator('#export-html').click();
   const ordinaryDownload = await ordinaryPromise; const ordinary = fs.readFileSync(await ordinaryDownload.path(),'utf8');
   assert.ok(!ordinary.includes('Test answer 391')); assert.ok(!ordinary.includes(upstreamUrl));
+  assert.ok(ordinary.includes('缓存命中率')); assert.ok(ordinary.includes('候选 40.0% · 参照 40.0%'));
   await page.screenshot({path:path.join(data,'admission-desktop.png'),fullPage:true});
   await page.goto(base+'/reasoning/'); await page.locator('#channel_id').selectOption(String(channelId)); await page.locator('#model').fill('demo-model');
   await page.locator('#start_btn').click(); await page.locator('#results').waitFor({state:'visible'}); assert.equal(requests.length,31);

@@ -198,6 +198,67 @@ def _identity(endpoint: dict[str, Any], measurements: list[dict[str, Any]]) -> d
     return {"status": status, "label": label, "requested_model": requested, "actual_models": actual}
 
 
+def _cache_side_summary(measurements: list[dict[str, Any]]) -> dict[str, Any]:
+    statuses = Counter(str(item.get("cache_status") or "not_reported") for item in measurements)
+    reported = [
+        item for item in measurements
+        if item.get("cache_status") == "reported"
+        and _number(item.get("cache_hit_input_tokens")) is not None
+        and _number(item.get("cache_total_input_tokens")) is not None
+        and _number(item.get("cache_total_input_tokens")) > 0
+    ]
+    hit_tokens = round(sum(_number(item.get("cache_hit_input_tokens")) or 0 for item in reported))
+    total_tokens = round(sum(_number(item.get("cache_total_input_tokens")) or 0 for item in reported))
+    write_tokens = round(sum(_number(item.get("cache_write_input_tokens")) or 0 for item in reported))
+    rate = round(hit_tokens / total_tokens, 6) if total_tokens else None
+    if reported:
+        status = "reported"
+    elif statuses["invalid"]:
+        status = "invalid"
+    elif statuses["unavailable"]:
+        status = "unavailable"
+    else:
+        status = "not_reported"
+    return {
+        "status": status,
+        "rate": rate,
+        "hit_input_tokens": hit_tokens if reported else None,
+        "write_input_tokens": write_tokens if reported else None,
+        "total_input_tokens": total_tokens if reported else None,
+        "reported_requests": len(reported),
+        "observed_requests": len(measurements),
+    }
+
+
+def build_cache_summary(report: dict[str, Any]) -> dict[str, Any]:
+    measurements = [
+        item for item in report.get("measurements", [])
+        if item.get("round_role") == "evaluated"
+    ]
+    sides = {
+        side: _cache_side_summary([item for item in measurements if item.get("side") == side])
+        for side in SIDES
+    }
+    rates = [sides[side]["rate"] for side in SIDES if sides[side]["rate"] is not None]
+    difference = None
+    if sides["candidate"]["rate"] is not None and sides["reference"]["rate"] is not None:
+        difference = round(sides["candidate"]["rate"] - sides["reference"]["rate"], 6)
+    if rates:
+        status = "reported"
+        label = "缓存命中率已由上游 usage 报告"
+    elif any(sides[side]["status"] == "invalid" for side in SIDES):
+        status = "invalid"
+        label = "缓存 usage 字段无效，无法计算命中率"
+    elif any(sides[side]["status"] == "unavailable" for side in SIDES):
+        status = "unavailable"
+        label = "上游提供输入 Token，但未提供缓存命中字段"
+    else:
+        status = "not_reported"
+        label = "上游未提供缓存 usage 字段"
+    return {"status": status, "label": label, "candidate": sides["candidate"],
+            "reference": sides["reference"], "difference": difference}
+
+
 def build_summary(report: dict[str, Any], pairs: list[dict[str, Any]]) -> dict[str, Any]:
     evaluated = [pair for pair in pairs if pair["round_role"] == "evaluated"]
     counts = Counter(pair["attribution"] for pair in evaluated)
@@ -282,6 +343,7 @@ def build_summary(report: dict[str, Any], pairs: list[dict[str, Any]]) -> dict[s
         side: _identity(report.get(side, {}), [item for item in measured if item.get("side") == side])
         for side in SIDES
     }
+    cache = build_cache_summary(report)
     return {
         "overall": overall,
         "ability": {"status": "manual", "label": "查看逐题回答后人工判断"},
@@ -307,6 +369,7 @@ def build_summary(report: dict[str, Any], pairs: list[dict[str, Any]]) -> dict[s
             "confidence": "中" if valid and complete else "低",
         },
         "model_identity": identities,
+        "cache": cache,
         **({"token_usage": token_usage} if token_usage is not None else {}),
         "explanations": explanations[:5],
     }
