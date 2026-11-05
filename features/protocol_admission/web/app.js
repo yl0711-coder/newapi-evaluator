@@ -17,7 +17,9 @@ function connection() {
 }
 function plan() {
   if (!selected.size) throw new Error('请选择至少一个模型。');
-  return {...connection(), all_channels:$('channel').value === '__all__', models:[...selected].map(model => ({model}))};
+  return {...connection(), all_channels:$('channel').value === '__all__', models:[...selected].map(model => ({model})), suite:$('suite').value,
+    thinking_mode:$('thinking-mode').value,
+    reference_channel_id:$('suite').value === 'fidelity' && $('channel').value === '__all__' ? Number($('reference-channel').value) || null : null};
 }
 function invalidate() {
   preview = null; $('start').disabled = true; $('preview-list').replaceChildren();
@@ -69,6 +71,18 @@ async function history() {
 async function show(id) {
   const report = await api('runs/' + id);
   $('report').hidden = false;
+  $('fidelity-results').hidden = !report.fidelity_summary;
+  $('protocol-matrix').hidden = Boolean(report.fidelity_summary);
+  $('protocol-hint').hidden = Boolean(report.fidelity_summary);
+  $('fidelity-summary').replaceChildren();
+  if (report.fidelity_summary) {
+    const s = report.fidelity_summary, pct = v => v === null ? '未提供 / 无有效样本' : (v * 100).toFixed(1) + '%';
+    $('fidelity-summary').append(node('p', `Thinking 续轮：计划 ${s.replay_planned}，实际发送 ${s.replay_attempted}，通过 ${s.replay_passed}；400 ${s.replay_400_count} 次，比例 ${pct(s.replay_400_rate)}。`));
+    for (const c of s.comparisons) $('fidelity-summary').append(node('p', `${c.channel_id ? '渠道 #' + c.channel_id : '当前渠道'} · ${c.model} · ${c.check === 'f_echo_short' ? '短文' : '长文'}计量：${c.ratio === null ? '待确认（无参照、正文不一致或缺少用量）' : c.ratio.toFixed(3) + ' 倍参照 · ' + (c.status === 'anomaly' ? '计量口径异常' : '在 8% 筛查容差内')}。`));
+    for (const c of s.cache) $('fidelity-summary').append(node('p', `${c.channel_id ? '渠道 #' + c.channel_id : '当前渠道'} · ${c.model} 缓存：完整用量样本 ${c.complete_usage_samples}/${c.planned}；Token 命中率 ${pct(c.token_hit_rate)}，请求复用率 ${pct(c.request_reuse_rate)}，写入比 ${pct(c.write_ratio)}。`));
+  }
+  $('fidelity-evidence').textContent = report.fidelity_summary ? JSON.stringify({summary:report.fidelity_summary,
+    probes:report.probes.map(p => ({check:p.check, model:p.model, channel_id:p.channel_id, status:p.status, error_class:p.error_class, evidence:p.fidelity}))}, null, 2) : '';
   $('conclusion').replaceChildren(node('p', `${states[report.state] || report.state} · ${report.config.mode === 'mock' ? '本地 Mock 演示' : '真实上游检测'}`),
     ...report.warnings.map(value => node('p', value, 'error')));
   $('capabilities').replaceChildren(...report.capabilities.map(model => {
@@ -106,6 +120,7 @@ $('mode').addEventListener('change', () => {
   resetConnection();
 });
 for (const id of ['base-url', 'api-key']) $(id).addEventListener('input', resetConnection);
+for (const id of ['suite', 'thinking-mode', 'reference-channel']) $(id).addEventListener('change', () => { generation++; invalidate(); });
 $('model-filter').addEventListener('input', renderModels);
 $('confirm-live').addEventListener('change', invalidate);
 $('add-model').addEventListener('click', () => {
@@ -121,6 +136,7 @@ $('fetch-models').addEventListener('click', async () => {
     return;
   }
   const body = {...connection(), api_key:$('api-key').value, mode:$('mode').value, confirm_live:$('confirm-live').checked};
+  delete body.all_channels;
   busy(true); $('fetch-status').textContent = '正在获取模型列表…';
   try {
     const data = await api('models', {method:'POST', body:JSON.stringify(body)});
@@ -139,7 +155,7 @@ $('preview').addEventListener('click', async () => {
     const value = await api('preview', {method:'POST', body:JSON.stringify(current)});
     if (ticket !== generation) return;
     preview = value;
-    $('preview-list').replaceChildren(node('p', `${selected.size} 个模型，共 ${value.request_count} 次请求，每项 1 次。检测三种协议的普通/流式调用，以及 Responses/Claude 工具和 Alpha Search。最长 ${value.maximum_seconds} 秒。`));
+    $('preview-list').replaceChildren(node('p', `${selected.size} 个模型，${current.suite === 'fidelity' ? '最多' : '共'} ${value.request_count} 次请求，每项最多 1 次。${current.suite === 'fidelity' ? '请求保真专项：仅 Claude Messages；依赖不满足的续轮不发送，参照不是官方认证。' : '检测三种协议的普通/流式调用，以及 Responses/Claude 工具和 Alpha Search。'}最长 ${value.maximum_seconds} 秒。`));
   } catch (e) { invalidate(); error(e); }
   finally { busy(false); }
 });
@@ -163,6 +179,7 @@ $('stop').addEventListener('click', async () => {
   metadata = await api('meta'); channels = (await Workbench.api('/api/registry/channels')).channels.filter(channel => channel.enabled);
   await loadSharedModels().catch(error);
   for (const channel of channels) $('channel').append(new Option(Workbench.label(channel), channel.id));
+  for (const channel of channels) $('reference-channel').append(new Option(Workbench.label(channel), channel.id));
   const query = new URLSearchParams(location.search);
   if (channels.some(channel => String(channel.id) === query.get('channel'))) {
     $('channel').value = query.get('channel'); $('temporary').hidden = true; await resetConnection();

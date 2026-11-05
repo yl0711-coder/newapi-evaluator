@@ -36,6 +36,12 @@ class Probe:
 
 
 def probes(plan, channel_id=None):
+    if plan.suite == "fidelity":
+        from .fidelity import CHECKS as fidelity_checks
+        return [Probe(f"c{channel_id or 0}-m{i}-{check}", check, model.model,
+                      model.upstream_model or model.model, "anthropic", "/messages", False,
+                      "fidelity", label, channel_id)
+                for i, model in enumerate(plan.models) for check, label in fidelity_checks.items()]
     return [Probe(f"c{channel_id or 0}-m{i}-{check}", check, model.model, model.upstream_model or model.model, *CHECKS[check], channel_id)
             for i, model in enumerate(plan.models) for check in CHECKS]
 

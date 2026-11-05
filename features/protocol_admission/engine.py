@@ -279,6 +279,11 @@ class StreamState:
 
 
 def http_error(status, body):
+    if status == 400:
+        from .fidelity import thinking_error
+        classified = thinking_error(body)
+        if classified:
+            return classified
     if b"channel does not support /v1/alpha/search" in body.lower():
         return "local_protocol_unsupported"
     try:
@@ -302,7 +307,7 @@ def http_error(status, body):
     return "upstream_error" if status >= 500 else "http_error"
 
 
-async def execute(probe, base, key, plan, session_id, transport=None):
+async def execute(probe, base, key, plan, session_id, transport=None, *, body_override=None, capture=None):
     started = time.monotonic()
     result = {"probe_id": probe.id, "check": probe.check, "model": probe.model, "upstream_model": probe.upstream_model,
               "protocol": probe.protocol, "method": "POST", "path": "/v1" + probe.path, "stream": probe.stream, "label": probe.label,
@@ -324,7 +329,8 @@ async def execute(probe, base, key, plan, session_id, transport=None):
             nonlocal stage
             timeout = httpx.Timeout(plan.idle_timeout, connect=plan.first_byte_timeout, pool=plan.first_byte_timeout, write=plan.first_byte_timeout)
             async with httpx.AsyncClient(transport=transport or guarded_transport(), trust_env=False, follow_redirects=False, timeout=timeout) as client:
-                request = client.build_request("POST", endpoint(base, probe.path), headers=headers, json=request_body(probe, session_id))
+                request = client.build_request("POST", endpoint(base, probe.path), headers=headers,
+                                              json=body_override if body_override is not None else request_body(probe, session_id))
                 response = await asyncio.wait_for(client.send(request, stream=True), plan.first_byte_timeout)
                 try:
                     result["header_ms"] = round((time.monotonic() - started) * 1000, 2)
@@ -353,7 +359,13 @@ async def execute(probe, base, key, plan, session_id, transport=None):
                     if result["transport_status"] == "failed":
                         result["error_class"] = http_error(response.status_code, bytes(chunks))
                     else:
-                        result.update(stream.analyze() if probe.stream else analyze_json(json.loads(chunks), probe))
+                        if probe.stream:
+                            result.update(stream.analyze())
+                        else:
+                            decoded = json.loads(chunks)
+                            result.update(analyze_json(decoded, probe))
+                            if capture is not None and isinstance(decoded, dict):
+                                capture.update(decoded)
                 finally:
                     await response.aclose()
         await asyncio.wait_for(attempt(), plan.total_timeout)

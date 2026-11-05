@@ -29,6 +29,9 @@ class DiscoveryInput(ConnectionInput):
 
 
 class PlanInput(ConnectionInput):
+    suite: Literal["protocol", "fidelity"] = "protocol"
+    thinking_mode: Literal["adaptive", "enabled"] = "adaptive"
+    reference_channel_id: int | None = Field(default=None, ge=1)
     all_channels: bool = False
     models: list[ModelTarget] = Field(min_length=1, max_length=5)
     total_timeout: float = Field(default=30, ge=1, le=120, allow_inf_nan=False)
@@ -37,6 +40,8 @@ class PlanInput(ConnectionInput):
 
     @model_validator(mode="after")
     def unique_targets(self):
+        if self.reference_channel_id and (self.suite != "fidelity" or not self.all_channels):
+            raise ValueError("参照渠道仅用于全渠道请求保真对照")
         if len({m.model for m in self.models}) != len(self.models):
             raise ValueError("模型不能重复")
         return self
