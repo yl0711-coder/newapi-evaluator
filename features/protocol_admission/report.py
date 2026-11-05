@@ -1,6 +1,7 @@
 import html
 import json
 from .catalog import PROTOCOLS
+from .fidelity import ERRORS as FIDELITY_ERRORS, summarize
 
 ERRORS = {
     "search_no_results": "搜索工具报告未找到结果，本次能力待确认",
@@ -20,6 +21,8 @@ ERRORS = {
     "cancelled": "已停止", "not_run": "未执行", "interrupted": "服务中断，本次结果未完成", "internal_error": "探测执行异常",
     "channel_changed": "渠道在检测期间变化，本项未执行",
 }
+
+ERRORS.update(FIDELITY_ERRORS)
 
 STATUS_LABELS = {"supported": "支持", "unsupported": "不支持", "failed": "未通过",
                  "unconfirmed": "待确认", "not_tested": "未检测", "running": "检测中"}
@@ -77,21 +80,37 @@ def evaluate(report):
                        "supported_protocols": [key for key, value in protocols.items() if value["status"] == "supported"]})
     report["capabilities"] = models
     report["warnings"] = (["本地 Mock 演示结果，不能证明真实上游支持这些模型或协议"] if report["config"]["mode"] == "mock" else [])
+    if report["config"].get("suite") == "fidelity":
+        report["fidelity_summary"] = summarize(report)
+        report["warnings"].append(report["fidelity_summary"]["limits"])
     return report
 
 
 def html_report(report):
     e = lambda value: html.escape(str(value))
+    fidelity = report.get("fidelity_summary")
+    summary = ""
+    if fidelity:
+        summary = (f"<h2>请求保真结果</h2><p>Thinking 续轮计划 {e(fidelity['replay_planned'])}，实际发送 {e(fidelity['replay_attempted'])}，"
+                   f"通过 {e(fidelity['replay_passed'])}，400 {e(fidelity['replay_400_count'])} 次。</p>")
+        for c in fidelity["comparisons"]:
+            value = "待确认（无有效对照）" if c["ratio"] is None else f"{c['ratio']:.3f} 倍参照：" + ("计量口径异常" if c["status"] == "anomaly" else "在筛查容差内")
+            summary += f"<p>渠道 {e(c['channel_id'])} · {e(c['model'])} · {e(c['check'])}：{e(value)}</p>"
+        pct = lambda value: "未提供 / 无有效样本" if value is None else f"{value:.1%}"
+        for c in fidelity["cache"]:
+            summary += (f"<p>渠道 {e(c['channel_id'])} · {e(c['model'])} 缓存：完整用量样本 {e(c['complete_usage_samples'])}/{e(c['planned'])}；"
+                        f"Token 命中率 {e(pct(c['token_hit_rate']))}，请求复用率 {e(pct(c['request_reuse_rate']))}，写入比 {e(pct(c['write_ratio']))}。</p>")
     rows = "".join("<tr><td>" + e(m["upstream_model"]) + "</td>" +
                    "".join("<td>" + e(m["protocols"][key]["label"]) + "</td>" for key in PROTOCOLS) + "</tr>"
                    for m in report["capabilities"])
+    matrix = ( '<p>支持表示本次至少一种普通调用方式通过；流式、工具和搜索分别查看明细。仅覆盖已检测模型。</p><table><tr><th>模型</th>'
+              + "".join(f"<th>{e(v['name'])}</th>" for v in PROTOCOLS.values()) + '</tr>' + rows + '</table>') if not fidelity else ""
     details = "".join(f"<tr><td>{e(p['model'])}</td><td>{e(p['label'])}</td><td>{e(p['capability']['label'])}</td><td>{e(p.get('http_status'))}</td><td>{e(ERRORS.get(p.get('error_class'), p.get('error_class', '')))}</td></tr>" for p in report["probes"])
     return ('<!doctype html><html lang="zh-CN"><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">'
             '<title>模型与协议检测报告</title><style>body{font:16px system-ui;max-width:1100px;margin:32px auto;padding:16px}table{border-collapse:collapse;width:100%}td,th{padding:10px;border:1px solid #ccc}pre{white-space:pre-wrap;overflow-wrap:anywhere}</style><h1>模型与协议检测报告</h1>'
             + f"<p>运行 {e(report['id'])} · {e(report['state'])} · {e(report['config']['mode'])}</p>"
             + "".join(f"<p>{e(w)}</p>" for w in report["warnings"])
-            + '<p>支持表示本次至少一种普通调用方式通过；流式、工具和搜索分别查看明细。仅覆盖已检测模型。</p><table><tr><th>模型</th>'
-            + "".join(f"<th>{e(v['name'])}</th>" for v in PROTOCOLS.values()) + '</tr>' + rows
-            + '</table><h2>检测明细</h2><table><tr><th>模型</th><th>检测项目</th><th>状态</th><th>HTTP</th><th>说明</th></tr>' + details
+            + summary
+            + matrix + '<h2>检测明细</h2><table><tr><th>模型</th><th>检测项目</th><th>状态</th><th>HTTP</th><th>说明</th></tr>' + details
             + '</table><details><summary>完整脱敏证据（与 JSON 下载一致）</summary><pre>'
             + e(json.dumps(report, ensure_ascii=False, indent=2)) + '</pre></details></html>')

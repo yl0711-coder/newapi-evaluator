@@ -57,7 +57,9 @@ def create_app(directory=None, registry=None, transport_factory=None):
 
     @app.get("/api/meta")
     async def meta():
-        return {"protocols": PROTOCOLS, "errors": ERRORS, "checks_per_model": len(CHECKS), "max_models": 5}
+        from .fidelity import CHECKS as fidelity_checks
+        return {"protocols": PROTOCOLS, "errors": ERRORS, "checks_per_model": len(CHECKS), "max_models": 5,
+                "fidelity_checks_per_model": len(fidelity_checks)}
 
     @app.get("/api/models")
     async def cached_models(channel_id: int, request: Request):

@@ -44,6 +44,8 @@ class Manager:
         selected_channels = []
         if getattr(plan, "all_channels", False):
             selected_channels = [c for c in self.registry.list() if c["enabled"]]
+            if plan.reference_channel_id and plan.reference_channel_id not in {c["id"] for c in selected_channels}:
+                raise ValueError("参照渠道必须在本次启用渠道中")
             if not selected_channels:
                 raise ValueError("没有启用的公共渠道")
             checks = [asdict(p) for c in selected_channels for p in probes(plan, c["id"])]
@@ -158,6 +160,7 @@ class Manager:
     async def run(self, report, plan, base, key, run_probes, channel_targets):
         current = None
         changed_channels = set()
+        fidelity_memory = {}
         try:
             async def sequence():
                 nonlocal current
@@ -179,12 +182,15 @@ class Manager:
                     current = index
                     report["probes"][index].update(status="running", error_class="", attempts=1)
                     self.store.save(evaluate(report))
-                    transport = httpx.MockTransport(mock_response) if plan.mode == "mock" else self.transport_factory() if self.transport_factory else None
+                    from .fidelity import mock_response as fidelity_mock, run_probe
+                    responder = fidelity_mock if plan.suite == "fidelity" else mock_response
+                    transport = httpx.MockTransport(responder) if plan.mode == "mock" else self.transport_factory() if self.transport_factory else None
                     probe_base, probe_key = base, key
                     if probe.channel_id:
                         target = channel_targets[probe.channel_id]
                         probe_base, probe_key = target["base_url"], target["api_key"]
-                    value = await execute(probe, probe_base or "https://mock.invalid/v1", probe_key or "synthetic-mock", plan, report["search_session_id"], transport)
+                    args = (probe, probe_base or "https://mock.invalid/v1", probe_key or "synthetic-mock", plan, report["search_session_id"], transport)
+                    value = await run_probe(*args, fidelity_memory) if plan.suite == "fidelity" else await execute(*args)
                     value["channel_id"] = probe.channel_id
                     report["probes"][index] = value
                     self.store.save(evaluate(report))
@@ -209,6 +215,7 @@ class Manager:
             finally:
                 self.active_id = None
                 channel_targets.clear()
+                fidelity_memory.clear()
 
     def report(self, identifier):
         report = evaluate(self.store.get(identifier))

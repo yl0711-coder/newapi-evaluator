@@ -12,6 +12,7 @@ from urllib.parse import urlsplit
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT))
 from features.protocol_admission.catalog import PROTOCOLS, CHECKS, fingerprint
+from features.protocol_admission.fidelity import CHECKS as FIDELITY_CHECKS
 
 
 def inspect(directory=None):
@@ -26,7 +27,8 @@ def inspect(directory=None):
                                  "version": row[2], "enabled": bool(row[3])})
     value = {"channels": channels, "protocols": PROTOCOLS,
              "checks": {key: {"protocol": value[0], "path": "/v1" + value[1], "stream": value[2]} for key, value in CHECKS.items()},
-             "checks_per_model": len(CHECKS), "max_models": 5}
+             "checks_per_model": len(CHECKS), "max_models": 5,
+             "fidelity_checks": FIDELITY_CHECKS, "fidelity_checks_per_model": len(FIDELITY_CHECKS)}
     return {**value, "fingerprint": fingerprint(value), "extracted_at": int(time.time()), "requests_sent": 0, "secrets_read": False}
 
 
