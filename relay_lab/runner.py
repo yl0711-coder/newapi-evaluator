@@ -201,9 +201,14 @@ class Lab:
             try:
                 await asyncio.wait((group, cancelled), return_when=asyncio.FIRST_COMPLETED)
                 if self.stop.is_set():
+                    # The cohort is fixed and must not be refilled. Cancel the
+                    # transport work promptly, then collect each request's
+                    # cancellation result so partial metrics are retained.
                     for task in tasks:
                         task.cancel()
-                await group
+                    await asyncio.gather(*tasks, return_exceptions=True)
+                else:
+                    await group
             finally:
                 cancelled.cancel()
                 for task in tasks:
