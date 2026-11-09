@@ -701,6 +701,8 @@ class RawResponsePersistenceTests(unittest.IsolatedAsyncioTestCase):
             self.assertEqual(row["cache_hit_rate"], .4)
             self.assertTrue(row["cache_request_hit"])
             self.assertIsNone(row["cache_write_rate"])
+        for side in ("candidate", "reference"):
+            self.assertEqual(final["report"]["summary"]["cache"][side]["rate"], .4)
         finished = [e for e in self.manager.store.events(job["id"], limit=500)["events"] if e["type"] == "side_finished"]
         self.assertEqual(len(finished), len(final["report"]["measurements"]))
         self.assertTrue(all(e["cache_hit_rate"] == .4 for e in finished))
@@ -710,6 +712,8 @@ class RawResponsePersistenceTests(unittest.IsolatedAsyncioTestCase):
             self.assertEqual(historical["responses"], final["report"]["responses"])
             self.assertEqual(historical["measurements"], final["report"]["measurements"])
             exported = json.loads(json.dumps(historical))
+            for side in ("candidate", "reference"):
+                self.assertEqual(exported["summary"]["cache"][side]["rate"], .4)
             self.assertEqual(exported["summary"]["cache"], final["report"]["summary"]["cache"])
             self.assert_safe(historical)
             storage.close()
