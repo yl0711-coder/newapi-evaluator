@@ -105,6 +105,19 @@ class RawResponseTests(unittest.IsolatedAsyncioTestCase):
         self.assertTrue(stream.closed)
         return next(event for event in events if event["type"] == "side_finished"), events
 
+    async def test_input_only_cache_usage_preserves_raw_response_and_answer(self):
+        body = (sse({"choices": [{"delta": {"content": "synthetic answer"}, "finish_reason": "stop"}]})
+                + sse({"choices": [], "usage": {"prompt_tokens": 100,
+                      "prompt_tokens_details": {"cached_tokens": 40}}}) + b"data: [DONE]\n\n")
+        result, events = await self.measure(body[:31], body[31:])
+        self.assertTrue(result["ok"])
+        self.assertEqual(raw_text(events), (body.decode(), False))
+        self.assertEqual("".join(event.get("content", "") for event in events), "synthetic answer")
+        self.assertEqual(result["cache_hit_rate"], 0.4)
+        self.assertTrue(result["cache_request_hit"])
+        self.assertIsNone(result["cache_write_input_tokens"])
+        self.assertIsNone(result["cache_write_rate"])
+
     async def test_http_failures_keep_actual_body_status_and_code_out_of_answers(self):
         for status in (401, 429, 502):
             with self.subTest(status=status):

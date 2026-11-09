@@ -124,7 +124,16 @@ async function freePort(){const server=net.createServer();await new Promise(r=>s
   await page.reload();await page.getByText('先获取或输入模型，再预览并开始检测。',{exact:true}).waitFor();
   await page.getByText('最近 30 次检测',{exact:true}).click();await page.locator('#history button').first().click();
   await page.locator('#fidelity-results').waitFor();assert.deepEqual(errors,[]);
+  await page.locator('#suite').selectOption('fidelity');await page.locator('#channel').selectOption('__all__');
+  await page.locator('#manual-model').fill('synthetic-upstream');await page.locator('#add-model').click();
+  const referenceId=(await(await fetch(base+'/api/registry/channels')).json()).channels[0].id;
+  await page.locator('#reference-channel').selectOption(String(referenceId));
+  const previewRequest=page.waitForRequest(request=>request.url().endsWith('/api/preview')&&request.method()==='POST');
+  await page.locator('#preview').click();await page.locator('#start:not([disabled])').waitFor();
+  const allChannelsPlan=(await previewRequest).postDataJSON();
+  assert.equal(allChannelsPlan.all_channels,true);assert.equal(allChannelsPlan.suite,'fidelity');
+  assert.equal(allChannelsPlan.reference_channel_id,referenceId);assert.equal(requests.length,20);
   app.kill('SIGTERM');await appExit;await startApp('channels');await page.goto(base+'/channels/');await page.locator('#list article.record').waitFor();assert.equal(await page.getByRole('link',{name:'模型与协议检测',exact:true}).count(),0);assert.equal((await fetch(base+'/admission/protocol/')).status,404);assert.deepEqual(errors,[]);
   await page.goto(base+'/');await page.getByText('当前仅启动公共渠道管理。',{exact:true}).waitFor();assert.equal(await page.locator('#features a').count(),0);assert.equal(await page.getByRole('link',{name:'模型与协议检测',exact:true}).count(),0);
-  console.log(JSON.stringify({status:'passed',checks:37,mockRequests:requests.length,real_upstream_tested:false,evidence:data}));
+  console.log(JSON.stringify({status:'passed',checks:38,mockRequests:requests.length,real_upstream_tested:false,evidence:data}));
 })().catch(error=>{console.error(error.stack);process.exitCode=1;}).finally(async()=>{if(browser)await browser.close();for(const res of held)res.destroy();if(app&&app.exitCode===null){app.kill('SIGTERM');await appExit;}upstream.closeAllConnections();await new Promise(r=>upstream.close(r));});
