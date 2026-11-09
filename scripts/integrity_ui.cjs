@@ -89,9 +89,37 @@ async function until(fn,message,timeout=30000){const end=performance.now()+timeo
   await page.locator('#canary-channel').selectOption(String(channel.id));
   check(await page.locator('#canary-baseline option').count()===2,'matching active baseline selectable');
   await page.locator('#review-channel option').nth(1).waitFor({state:'attached'});
-  async function importRef(method){await page.locator('#reference-file').setInputFiles({name:`synthetic-${method}.json`,mimeType:'application/json',buffer:Buffer.from(JSON.stringify(packages[method]))});await page.locator('#reference-sha').fill(hashes[method]);await page.locator('#reference-authorized').check();check(await page.locator('#reference-form').evaluate(f=>f.reportValidity()),'reference form valid');const imported=page.waitForResponse(r=>r.url()===base+'/api/integrity/references'&&r.request().method()==='POST');await page.locator('#reference-form button').click();const response=await imported;check(response.ok(),`reference rejected: ${response.status()} ${await response.text()}`);await until(async()=> (await page.locator('#reference-status').innerText()).includes(hashes[method].slice(0,12)),`${method} reference import`);}
-  async function submit(){await page.locator('#review-channel').selectOption(String(channel.id));await page.locator('#review-model').selectOption('gpt-6-astra');await page.locator('#review-confirm').check();const accepted=page.waitForResponse(r=>r.url()===base+'/api/integrity/reviews'&&r.request().method()==='POST');await page.locator('#review-submit').click();const res=await accepted;check(res.status()===202,'active review queued asynchronously');return(await res.json()).task_id;}
-  await importRef('kbf');const kbf=await submit();await until(()=>kbfCalls===1,'first KBF send observed');
+  async function importRef(method){
+    await page.locator('#reference-file').setInputFiles({name:`synthetic-${method}.json`,mimeType:'application/json',buffer:Buffer.from(JSON.stringify(packages[method]))});
+    await page.locator('#reference-sha').fill(hashes[method]);await page.locator('#reference-authorized').check();
+    check(await page.locator('#reference-form').evaluate(f=>f.reportValidity()),'reference form valid');
+    const imported=page.waitForResponse(r=>r.url()===base+'/api/integrity/references'&&r.request().method()==='POST');
+    await page.locator('#reference-form button').click();const response=await imported;
+    check(response.ok(),`reference rejected: ${response.status()}`);
+    const reference=await response.json();
+    assert.equal(reference.strategy_id,method);assert.equal(reference.reference_hash,hashes[method]);
+    await page.waitForFunction(({method,hash})=>document.querySelector('#review-strategy').value===method
+      && document.querySelector('#review-reference').value===hash
+      && document.querySelector('#review-conditions').value!=='',{method,hash:hashes[method]});
+    assert.deepEqual(JSON.parse(await page.locator('#review-conditions').inputValue()),reference.conditions);
+    for(const [id,key] of [['review-requests','max_requests'],['review-input','max_input_tokens'],['review-output','max_output_tokens'],['review-seconds','total_timeout_seconds']])
+      assert.equal(Number(await page.locator('#'+id).inputValue()),reference.conditions.budget[key]);
+    check((await page.locator('#reference-status').innerText()).includes(hashes[method].slice(0,12)),`${method} reference import ready`);
+  }
+  async function submit(method){
+    await page.locator('#review-channel').selectOption(String(channel.id));await page.locator('#review-model').selectOption('gpt-6-astra');await page.locator('#review-confirm').check();
+    const accepted=page.waitForResponse(r=>r.url()===base+'/api/integrity/reviews'&&r.request().method()==='POST');
+    await page.locator('#review-submit').click();const res=await accepted;
+    check(res.status()===202,'active review queued asynchronously');
+    const sent=res.request().postDataJSON();
+    assert.equal(sent.strategy_id,method);assert.equal(sent.reference_hash,hashes[method]);
+    assert.equal(sent.registry_channel_id,channel.id);assert.equal(sent.model,'gpt-6-astra');assert.equal(sent.protocol,'responses');
+    const created=await res.json(),task=await request('/api/integrity/reviews/'+created.task_id);
+    assert.equal(task.task_id,created.task_id);assert.equal(task.strategy_id,method);assert.equal(task.reference_hash,hashes[method]);
+    assert.deepEqual(task.comparison_conditions,sent.conditions);
+    return created.task_id;
+  }
+  await importRef('kbf');const kbf=await submit('kbf');await until(()=>kbfCalls===1,'first KBF send observed');
   await page.locator(`[data-task-id="${kbf}"]`).getByRole('button',{name:'取消任务'}).click();
   await until(async()=> (await request('/api/integrity/reviews/'+kbf)).status==='cancelled','review cancellation');
   const resumeResponse=page.waitForResponse(r=>r.url()===base+'/api/integrity/reviews/'+kbf+'/resume'&&r.request().method()==='POST');
@@ -103,7 +131,8 @@ async function until(fn,message,timeout=30000){const end=performance.now()+timeo
   check(reviewed.fees.unknown_requests>=1&&reviewed.fees.stopping_limit===null,'unknown fees visible without money cap');
   const download=page.waitForEvent('download');await page.locator(`[data-task-id="${kbf}"] a.export`).click();const exported=await download;await exported.saveAs(path.join(data,'synthetic-review-export.json'));
   check(!fs.readFileSync(path.join(data,'synthetic-review-export.json'),'utf8').includes('synthetic-integrity-ui-credential'),'export excludes credential');
-  await importRef('hlwy');const hlwy=await submit();await until(async()=> (await request('/api/integrity/reviews/'+hlwy)).status==='completed','HLwY consumer completion');
+  await importRef('hlwy');const hlwy=await submit('hlwy');assert.notEqual(hlwy,kbf,'HLwY creates a distinct task');
+  await until(async()=> (await request('/api/integrity/reviews/'+hlwy)).status==='completed','HLwY consumer completion');
   check((await request('/api/integrity/reviews/'+hlwy)).report.target_valid===4,'HLwY actual HTTP projections');
   const evidence={schema:'integrity-official-account-evidence/v1',account_alias:'synthetic-browser-account',expected_model:'gpt-6-astra',authorization:{authorized:true,basis:'self_authored',source:'synthetic_regression_fixture'},provenance:{source:'official_account',trusted:true,complete:true},events_coverage_complete:false,events:[],catalog:[]};
   await page.locator('#evidence-file').setInputFiles({name:'synthetic-account.json',mimeType:'application/json',buffer:Buffer.from(JSON.stringify(evidence))});await page.locator('#evidence-authorized').check();await page.locator('#evidence-form button').click();

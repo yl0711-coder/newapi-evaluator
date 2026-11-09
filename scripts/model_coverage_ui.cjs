@@ -112,10 +112,14 @@ const upstream = http.createServer(async (req,res) => {
   await page.waitForFunction(()=>document.getElementById('enroll-preview').textContent.includes('每批新增 0 个请求'));
   await page.locator('#enroll-confirm').check(); await page.locator('#enroll-submit').click(); await page.locator('#enroll-dialog').waitFor({state:'hidden'});
   assert.equal((await request('/stability/api/channels')).channels.length,2);
+  const rowsBeforeAdd=await page.locator('.coverage-table tbody tr').count();
+  assert.equal(await page.locator('.coverage-table [data-model="synthetic-new-model"]').count(),0);
   await page.locator('#catalog-add').click();
   await page.locator('#catalog-model').fill('synthetic-new-model'); await page.locator('#catalog-label').fill('Synthetic new model');
   await page.locator('#catalog-submit').click(); await page.locator('#catalog-dialog').waitFor({state:'hidden'});
-  await page.waitForFunction(()=>document.querySelectorAll('.coverage-table tbody tr').length===13);
+  await page.waitForFunction(expected=>document.querySelectorAll('.coverage-table tbody tr').length===expected
+    && document.querySelector('.coverage-table [data-model="synthetic-new-model"]')!==null,rowsBeforeAdd+1);
+  assert.equal(await page.locator('.coverage-table [data-model="synthetic-new-model"]').count(),1);
   const mapped=page.locator('[data-model="claude-opus-5"]');
   await mapped.getByRole('button',{name:'映射',exact:true}).click();
   await page.locator('#mapping-model').fill('synthetic-claude-alias'); await page.locator('#mapping-submit').click();
