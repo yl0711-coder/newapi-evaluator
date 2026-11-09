@@ -1,7 +1,7 @@
 {
   "version": 1,
   "created_at": "2026-09-27T06:21:51Z",
-  "updated_at": "2026-11-09T02:34:06Z",
+  "updated_at": "2026-11-09T03:22:44Z",
   "files": {
     ".dockerignore": {
       "role": "index",
@@ -59,9 +59,9 @@
     },
     "aoci.code.txt": {
       "role": "index",
-      "sha256": "c8dec43cdee235687b6bf4096801aa1158bc9efe20422bad84fb91baa7b2dadc",
-      "size": 152315,
-      "normalized_sha256": "c8dec43cdee235687b6bf4096801aa1158bc9efe20422bad84fb91baa7b2dadc"
+      "sha256": "0141a1ba0db7dfe9a031fe53b5a5d65e854c0372ec84027154ae8c3589a2f420",
+      "size": 152295,
+      "normalized_sha256": "0141a1ba0db7dfe9a031fe53b5a5d65e854c0372ec84027154ae8c3589a2f420"
     },
     "aoci.meta.txt": {
       "role": "index",
@@ -1744,9 +1744,9 @@
     },
     "scripts/integrity_ui.cjs": {
       "role": "index",
-      "sha256": "702126059761731917cd6490ce44b760c8aa536964e1d69bb5d21f5975a0f835",
-      "size": 15713,
-      "normalized_sha256": "702126059761731917cd6490ce44b760c8aa536964e1d69bb5d21f5975a0f835"
+      "sha256": "7a7c264dff7aa3448244e09248b96018fce3f743748bf1cf0597811355a28820",
+      "size": 17187,
+      "normalized_sha256": "7a7c264dff7aa3448244e09248b96018fce3f743748bf1cf0597811355a28820"
     },
     "scripts/migrate_inventory.py": {
       "role": "index",
@@ -1756,9 +1756,9 @@
     },
     "scripts/model_coverage_ui.cjs": {
       "role": "index",
-      "sha256": "c38e33360be1a56b495598225960ceca32d7f0963c92a33b86a25ff93a62d9f6",
-      "size": 12513,
-      "normalized_sha256": "c38e33360be1a56b495598225960ceca32d7f0963c92a33b86a25ff93a62d9f6"
+      "sha256": "364ab7f440bad8cc3c8c386b62f11ce713eda064de204355f3a3028bbdeecc3c",
+      "size": 12910,
+      "normalized_sha256": "364ab7f440bad8cc3c8c386b62f11ce713eda064de204355f3a3028bbdeecc3c"
     },
     "scripts/monitor_control_plane_ui.cjs": {
       "role": "index",
