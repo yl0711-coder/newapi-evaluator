@@ -5,6 +5,7 @@ import socket
 import threading
 import time
 import unittest
+from types import SimpleNamespace
 from unittest.mock import patch
 
 import httpx
@@ -348,10 +349,30 @@ class MonitorExecutionTests(unittest.IsolatedAsyncioTestCase):
                     self.assertEqual(response.status_code, 400)
                     self.assertFalse(response.json()["error"]["retryable"])
         self.assertEqual(MonitorStore(self.registry).recent_jobs(), [])
-        first = await self.call("POST", "/internal/v1/probe-jobs", self.job())
-        second = await self.call("POST", "/internal/v1/probe-jobs", self.job())
+        body = self.job()
+        first = await self.call("POST", "/internal/v1/probe-jobs", body)
+        second = await self.call("POST", "/internal/v1/probe-jobs", body)
         self.assertEqual((first.status_code, second.status_code), (201, 200))
         self.assertEqual(first.json()["job_id"], second.json()["job_id"])
+
+    async def test_same_key_with_cross_second_job_window_conflicts(self):
+        base = int(time.time())
+        # Freeze only fixture construction; signing and ASGI keep the real clock.
+        with patch.object(fixtures, "time", SimpleNamespace(time=lambda: base + .9)):
+            first_body = self.job()
+        with patch.object(fixtures, "time", SimpleNamespace(time=lambda: base + 1.1)):
+            second_body = self.job()
+        self.assertEqual(first_body["idempotency_key"], second_body["idempotency_key"])
+        self.assertEqual(sorted(key for key in first_body if first_body[key] != second_body[key]),
+                         ["expires_at", "not_before"])
+        first = await self.call("POST", "/internal/v1/probe-jobs", first_body)
+        second = await self.call("POST", "/internal/v1/probe-jobs", second_body)
+        self.assertEqual((first.status_code, second.status_code), (201, 409))
+        self.assertEqual(second.json()["error"]["code"], "idempotency_conflict")
+        self.assertFalse(second.json()["error"]["retryable"])
+        jobs = MonitorStore(self.registry).recent_jobs()
+        self.assertEqual(len(jobs), 1)
+        self.assertEqual(jobs[0]["job_id"], first.json()["job_id"])
 
     async def test_inventory_fields_are_validated_before_collection_operations(self):
         fields = ["channel_identity", "display_name", "supplier_failure_domain_id", "enabled_status", "channel_type",
