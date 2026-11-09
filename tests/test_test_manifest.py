@@ -12,6 +12,14 @@ OUTPUT = Path("/EXTERNAL_TEST_EVIDENCE")
 
 
 class TestManifestTests(unittest.TestCase):
+    def test_release_cross_feature_modules_are_required_in_both_plans(self):
+        required = {"tests.test_request_fidelity", "tests.test_admission_raw_response",
+                    "tests.test_admission_reporting", "tests.test_channel_monitor"}
+        for plan in (admission, integrity):
+            with self.subTest(plan=plan.__name__):
+                suite = next(s for s in plan(sys.executable, OUTPUT) if s.suite_id == "workbench-python")
+                self.assertTrue(required <= set(suite.expected_modules))
+
     def test_plans_have_unique_bounded_suites(self):
         plans = [
             admission(sys.executable, OUTPUT),

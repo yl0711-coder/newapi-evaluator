@@ -118,6 +118,71 @@ class RawResponseTests(unittest.IsolatedAsyncioTestCase):
         self.assertIsNone(result["cache_write_input_tokens"])
         self.assertIsNone(result["cache_write_rate"])
 
+    async def test_three_protocol_cache_and_raw_survive_display_budget(self):
+        for protocol in ("openai", "responses", "anthropic"):
+            for oversized in (False, True):
+                with self.subTest(protocol=protocol, oversized=oversized):
+                    padding = b": " + b"x" * (engine.RAW_RESPONSE_MAX_BYTES * 2) + b"\n\n" if oversized else b""
+                    if protocol == "openai":
+                        body = padding + sse({"choices": [{"delta": {"content": "READY"}, "finish_reason": "stop"}]})
+                        body += sse({"usage": {"prompt_tokens": 100, "prompt_tokens_details": {"cached_tokens": 40}}}) + b"data: [DONE]\n\n"
+                    elif protocol == "responses":
+                        terminal = {"type": "response.completed", "response": {"status": "completed",
+                                    "output": [{"type": "message", "content": [{"type": "output_text", "text": "READY"}]}],
+                                    "usage": {"input_tokens": 100, "input_tokens_details": {"cached_tokens": 40}, "output_tokens": 2}}}
+                        multiline = "\n".join("data: " + line for line in json.dumps(terminal, indent=2).splitlines()) + "\n\n"
+                        body = padding + sse({"type": "response.output_text.delta", "delta": "READY"}) + multiline.encode()
+                    else:
+                        body = padding + sse({"type": "message_start", "message": {"usage": {
+                            "input_tokens": 50, "cache_read_input_tokens": 40, "cache_creation_input_tokens": 10}}})
+                        body += sse({"type": "content_block_delta", "delta": {"text": "READY"}})
+                        body += sse({"type": "message_delta", "delta": {"stop_reason": "end_turn"}, "usage": {"output_tokens": 2}})
+                        body += sse({"type": "message_stop"})
+                    result, events = await self.measure(body[:23], body[23:], protocol=protocol)
+                    captured, truncated = raw_text(events)
+                    self.assertTrue(result["ok"])
+                    self.assertEqual("".join(e.get("content", "") for e in events), "READY")
+                    self.assertEqual((result["cache_hit_input_tokens"], result["cache_total_input_tokens"], result["cache_hit_rate"]), (40, 100, .4))
+                    self.assertTrue(result["cache_request_hit"])
+                    self.assertEqual(result["cache_write_rate"], .1 if protocol == "anthropic" else None)
+                    self.assertEqual(truncated, oversized)
+                    self.assertLessEqual(len(captured.encode()), engine.RAW_RESPONSE_MAX_BYTES)
+                    if not oversized:
+                        self.assertEqual(captured, body.decode())
+
+    async def test_repeated_cache_usage_replaces_counts_and_missing_does_not_erase(self):
+        def usage(hit):
+            return sse({"usage": {"prompt_tokens": 100, "prompt_tokens_details": {"cached_tokens": hit}}})
+        for sequence, expected_status, expected_hit in (
+            ((40, 20), "reported", 20), ((101, 20), "reported", 20), ((40, 101), "invalid", None),
+        ):
+            with self.subTest(sequence=sequence):
+                body = b"".join(usage(hit) for hit in sequence)
+                body += sse({"usage": {"prompt_tokens": 100}})
+                body += sse({"choices": [{"delta": {"content": "READY"}, "finish_reason": "stop"}]}) + b"data: [DONE]\n\n"
+                result, events = await self.measure(body)
+                self.assertTrue(result["ok"])
+                self.assertEqual(result["cache_status"], expected_status)
+                self.assertEqual(result["cache_hit_input_tokens"], expected_hit)
+                self.assertEqual(raw_text(events), (body.decode(), False))
+
+    async def test_usage_before_stream_error_stays_evidence_not_success(self):
+        usage = sse({"usage": {"prompt_tokens": 100, "prompt_tokens_details": {"cached_tokens": 40}}})
+        error = sse({"error": {"code": "synthetic_failure", "message": "synthetic upstream failure"}})
+        for ending in (error, httpx.ReadError("synthetic interrupted")):
+            with self.subTest(ending=type(ending).__name__):
+                result, events = await self.measure(usage, ending)
+                self.assertFalse(result["ok"])
+                self.assertEqual(result["cache_hit_rate"], .4)
+                self.assertIsNone(result["cache_write_rate"])
+                self.assertFalse(any(e["type"] == "chunk" for e in events))
+                self.assertEqual(raw_text(events)[0], (usage + (ending if isinstance(ending, bytes) else b"")).decode())
+        result, events = await self.measure(usage + error, status=429)
+        self.assertFalse(result["ok"])
+        self.assertEqual(result["http_status"], 429)
+        self.assertIsNone(result["cache_hit_rate"])
+        self.assertEqual(raw_text(events)[0], (usage + error).decode())
+
     async def test_http_failures_keep_actual_body_status_and_code_out_of_answers(self):
         for status in (401, 429, 502):
             with self.subTest(status=status):
@@ -610,6 +675,7 @@ class RawResponsePersistenceTests(unittest.IsolatedAsyncioTestCase):
         self.assertNotIn(self.other, serialized)
 
     async def test_live_snapshot_history_and_events_keep_same_safe_raw(self):
+        self.raw = sse({"usage": {"prompt_tokens": 100, "prompt_tokens_details": {"cached_tokens": 40}}}) + self.raw
         job = await self.manager.enqueue(self.body)
         await asyncio.wait_for(self.started.wait(), 2)
         async with asyncio.timeout(2):
@@ -630,10 +696,21 @@ class RawResponsePersistenceTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(final["state"], "succeeded")
         self.assertTrue(all(row["raw_response"] == expected and row["content"] == "" for row in final["report"]["responses"]))
         self.assertTrue(all(row["upstream_error_code"] == "synthetic_persisted" for row in final["report"]["measurements"]))
+        for row in final["report"]["measurements"]:
+            self.assertFalse(row["ok"])
+            self.assertEqual(row["cache_hit_rate"], .4)
+            self.assertTrue(row["cache_request_hit"])
+            self.assertIsNone(row["cache_write_rate"])
+        finished = [e for e in self.manager.store.events(job["id"], limit=500)["events"] if e["type"] == "side_finished"]
+        self.assertEqual(len(finished), len(final["report"]["measurements"]))
+        self.assertTrue(all(e["cache_hit_rate"] == .4 for e in finished))
         with patch.object(storage, "DB_PATH", self.manager.store.path):
             storage.close()
             historical = storage.get_report(final["report_id"])
             self.assertEqual(historical["responses"], final["report"]["responses"])
+            self.assertEqual(historical["measurements"], final["report"]["measurements"])
+            exported = json.loads(json.dumps(historical))
+            self.assertEqual(exported["summary"]["cache"], final["report"]["summary"]["cache"])
             self.assert_safe(historical)
             storage.close()
         for path in self.manager.store.path.parent.glob("reports.db*"):
@@ -641,6 +718,7 @@ class RawResponsePersistenceTests(unittest.IsolatedAsyncioTestCase):
                 self.assertNotIn(secret.encode(), path.read_bytes())
 
     async def test_cancel_flushes_received_raw_tail_and_keeps_unknown_steps(self):
+        self.raw = sse({"usage": {"prompt_tokens": 100, "prompt_tokens_details": {"cached_tokens": 40}}}) + self.raw
         job = await self.manager.enqueue(self.body)
         await asyncio.wait_for(self.started.wait(), 2)
         final = await self.manager.cancel(job["id"])
@@ -650,6 +728,18 @@ class RawResponsePersistenceTests(unittest.IsolatedAsyncioTestCase):
         self.assertTrue(all(row["raw_response"] == expected for row in final["report"]["responses"]))
         self.assert_safe(final)
         self.assert_safe(self.manager.store.events(job["id"]))
+        for row in final["report"]["measurements"]:
+            self.assertEqual(row["status"], "unknown")
+            self.assertIsNone(row.get("cache_hit_rate"))
+        for side in ("candidate", "reference"):
+            self.assertIsNone(final["report"]["summary"]["cache"][side]["rate"])
+        with patch.object(storage, "DB_PATH", self.manager.store.path):
+            storage.close()
+            historical = storage.get_report(final["report_id"])
+            self.assertEqual(historical["responses"], final["report"]["responses"])
+            self.assertEqual(historical["measurements"], final["report"]["measurements"])
+            self.assert_safe(historical)
+            storage.close()
 
     async def test_recovered_single_side_receives_both_credential_redaction(self):
         run = engine.CompareRequest(candidate={"base_url": "https://candidate.example/v1", "api_key": self.own,
