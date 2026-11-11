@@ -443,7 +443,7 @@ class IntegrationTests(unittest.IsolatedAsyncioTestCase):
                 for side in ("candidate", "reference")
             ],
             "responses": [
-                {"round":2,"round_role":"evaluated","pair_id":"pair-1","question_id":"q1","side":side,"content":"raw answer","reasoning":"raw reasoning"}
+                {"round":2,"round_role":"evaluated","pair_id":"pair-1","question_id":"q1","side":side,"content":"raw answer","reasoning":"raw reasoning","raw_response":"synthetic raw evidence"}
                 for side in ("candidate", "reference")
             ],
         }
@@ -456,6 +456,9 @@ class IntegrationTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(ordinary.status_code, 200, ordinary.text)
         self.assertNotIn("raw answer", ordinary.text)
         self.assertNotIn("raw reasoning", ordinary.text)
+        self.assertNotIn("synthetic raw evidence", ordinary.text)
+        detail = (await self.client.get(f"/admission/api/reports/{saved['id']}")).json()
+        self.assertEqual(detail["responses"][0]["raw_response"], "synthetic raw evidence")
         self.assertNotIn("candidate.example", ordinary.text)
 
     async def test_scheduled_report_waits_for_configured_delay(self):
@@ -685,6 +688,29 @@ class IntegrationTests(unittest.IsolatedAsyncioTestCase):
 
 
 class StorageAndNetworkTests(unittest.IsolatedAsyncioTestCase):
+    async def test_raw_evidence_redacts_split_secret_and_flushes_tail(self):
+        redactor = EventRedactor(["synthetic-secret"])
+        events = []
+        for value in ("prefix synthetic-", "secret suffix"):
+            events += redactor.filter({"type": "chunk", "question_id": "q", "side": "candidate",
+                                      "content": "", "reasoning": "", "raw": True, "raw_response": value})
+        events += redactor.filter({"type": "side_finished", "question_id": "q", "side": "candidate"})
+        self.assertEqual("".join(event.get("raw_response", "") for event in events), "prefix [REDACTED] suffix")
+        self.assertEqual("".join(event.get("content", "") for event in events), "")
+
+    async def test_raw_evidence_redacts_json_escaped_secret(self):
+        secret = 'synthetic"key'
+        raw = json.dumps({"unknown": secret}) + "\n"
+        for split in range(len(raw) + 1):
+            redactor = EventRedactor([secret])
+            events = []
+            for value in (raw[:split], raw[split:]):
+                events += redactor.filter({"type": "chunk", "question_id": "q", "side": "candidate", "raw_response": value})
+            events += redactor.filter({"type": "side_finished", "question_id": "q", "side": "candidate"})
+            result = "".join(event.get("raw_response", "") for event in events)
+            self.assertNotIn(json.dumps(secret)[1:-1], result)
+            self.assertIn("[REDACTED]", result)
+
     async def test_short_secret_does_not_corrupt_event_schema(self):
         redactor = EventRedactor(["type"])
         events = redactor.filter({"type":"chunk","question_id":"q1","side":"candidate","content":"type answer","reasoning":""})

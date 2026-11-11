@@ -23,6 +23,10 @@ async def wire(status=200, chunks=(), delays=(), content_type='text/event-stream
         task=asyncio.current_task();tasks.add(task)
         try:
             head=await reader.readuntil(b'\r\n\r\n');received.append(head)
+            headers = dict(line.split(b':', 1) for line in head.split(b'\r\n')[1:] if b':' in line)
+            content_length = next((int(value.strip()) for key, value in headers.items()
+                                   if key.lower() == b'content-length'), 0)
+            await reader.readexactly(content_length)
             if on_request:on_request()
             writer.write(f'HTTP/1.1 {status} Fixture\r\nContent-Type: {content_type}\r\nConnection: close\r\n\r\n'.encode());await writer.drain()
             for index,chunk in enumerate(chunks):

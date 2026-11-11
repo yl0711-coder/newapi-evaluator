@@ -388,6 +388,59 @@ class StreamingMeasurementTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(finished["chars"], 0)
         self.assertIsNone(finished["ttft_ms"])
 
+    async def test_raw_evidence_survives_disconnect_without_becoming_answer(self) -> None:
+        class InterruptedStream(httpx.AsyncByteStream):
+            async def __aiter__(self):
+                yield b'{"type":"ping"}\n{"unknown":"synthetic evidence"}\n'
+                raise httpx.ReadError("synthetic disconnect")
+        events = await self.measure_events(InterruptedStream())
+        chunks = [event for event in events if event["type"] == "chunk"]
+        result = next(event for event in events if event["type"] == "side_finished")
+        self.assertFalse(result["ok"])
+        self.assertFalse(result["transport_completed"])
+        self.assertEqual("".join(event["content"] for event in chunks), "")
+        self.assertIn("synthetic evidence", "".join(event["raw_response"] for event in events if event["type"] == "raw_response"))
+
+
+    async def test_heartbeat_and_complete_message_contract(self) -> None:
+        final = {"type": "message", "content": [{"type": "text", "text": "FINAL"},
+                 {"type": "thinking", "thinking": "THINK"}], "stop_reason": "end_turn",
+                 "usage": {"output_tokens": 9}}
+        cases = [
+            ([{"type": "ping"}], "empty", "", ""),
+            ([{**final, "stop_reason": "max_tokens"}, {"type": "message_delta", "delta": {"stop_reason": "end_turn"}}],
+             "protocol_error", "FINAL", "THINK"),
+            ([final, {"type": "content_block_delta", "delta": {"text": "FINAL"}}],
+             "protocol_error", "FINAL", "THINK"),
+            ([{"type": "ping"}, final], "completed", "FINAL", "THINK"),
+            ([{"type": "content_block_delta", "delta": {"text": "FI"}}, {"type": "ping"}, final],
+             "completed", "FINAL", "THINK"),
+            ([{"type": "content_block_delta", "delta": {"text": "FINAL"}}, final, final],
+             "completed", "FINAL", "THINK"),
+            ([{"type": "content_block_delta", "delta": {"text": "partial"}}, {"type": "ping"}],
+             "incomplete_stream", "partial", ""),
+            ([{**final, "stop_reason": "max_tokens"}, {"type": "message_stop"}],
+             "truncated", "FINAL", "THINK"),
+            ([{"type": "content_block_delta", "delta": {"text": "different"}}, final],
+             "protocol_error", "different", "THINK"),
+            ([{"type": "ping"}, {"type": "content_block_delta", "delta": {"text": "FINAL"}},
+              {"type": "ping"}, {"type": "message_stop"}], "completed", "FINAL", ""),
+        ]
+        for records, status, answer, reasoning in cases:
+            with self.subTest(status=status, records=records):
+                events = await self.measure_events(StaticStream(*(json.dumps(record).encode() + b"\n" for record in records)))
+                chunks = [event for event in events if event["type"] == "chunk"]
+                result = next(event for event in events if event["type"] == "side_finished")
+                self.assertEqual(result["status"], status)
+                self.assertEqual("".join(event["content"] for event in chunks), answer)
+                self.assertEqual("".join(event["reasoning"] for event in chunks), reasoning)
+                self.assertEqual(result["chars"], len(answer) + len(reasoning))
+                if not answer:
+                    self.assertIsNone(result["ttft_ms"])
+                if final in records:
+                    self.assertIsNone(result["tokens_per_second"])
+
+
     async def test_root_url_uses_the_v1_chat_completions_endpoint_without_a_probe(self) -> None:
         requested_urls: list[str] = []
 

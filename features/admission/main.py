@@ -381,7 +381,7 @@ def _usage_protocol(payload: dict[str, Any], requested: str | None) -> str:
     event_type = str(payload.get("type") or "")
     if event_type.startswith("response.") or isinstance(payload.get("response"), dict):
         return "responses"
-    if event_type in {"message_start", "message_stop", "message_delta", "content_block_start", "content_block_delta", "content_block_stop"}:
+    if event_type in {"message", "message_start", "message_stop", "message_delta", "content_block_start", "content_block_delta", "content_block_stop"}:
         return "anthropic"
     usage = payload.get("usage") if isinstance(payload.get("usage"), dict) else {}
     if any(key in usage for key in ("cache_creation_input_tokens", "cache_read_input_tokens")):
@@ -469,6 +469,8 @@ def _stream_event(
     response_status: str = "",
     protocol_error: str = "",
     refused: bool = False,
+    heartbeat: bool = False,
+    final_reasoning: str | None = None,
     final_content: str | None = None,
     block_content: str | None = None,
     block_key: tuple[int, int] | None = None,
@@ -492,6 +494,8 @@ def _stream_event(
         "response_status": response_status,
         "protocol_error": protocol_error,
         "refused": refused,
+        "heartbeat": heartbeat,
+        "final_reasoning": final_reasoning,
         "final_content": final_content,
         "block_content": block_content,
         "block_key": block_key,
@@ -581,6 +585,23 @@ def parse_stream_line(line: str, protocol: str | None = None) -> dict[str, Any] 
         )
 
     event_type = str(payload.get("type") or "")
+    if event_type == "ping":
+        return _stream_event(heartbeat=True)
+    if event_type == "message":
+        blocks = payload.get("content")
+        if not isinstance(blocks, list) or any(not isinstance(block, dict) for block in blocks):
+            return _stream_event(response_format="anthropic", protocol_error="protocol_error")
+        if any(not isinstance(block.get(field), str)
+               for block in blocks for kind, field in (("text", "text"), ("thinking", "thinking"))
+               if block.get("type") == kind):
+            return _stream_event(response_format="anthropic", protocol_error="protocol_error")
+        return _stream_event(
+            response_format="anthropic",
+            final_content="".join(block["text"] for block in blocks if block.get("type") == "text"),
+            final_reasoning="".join(block["thinking"] for block in blocks if block.get("type") == "thinking"),
+            finish_reason=str(payload.get("stop_reason") or ""),
+            output_tokens=output_tokens, input_tokens=input_tokens, cache_metrics=cache_metrics, **metadata,
+        )
     if event_type in {"response.output_text.delta", "response.refusal.delta", "response.reasoning_text.delta",
                       "response.reasoning_summary_text.delta"} and not isinstance(payload.get("delta"), str):
         return _stream_event(response_format="responses", protocol_error="protocol_error")
@@ -1229,6 +1250,7 @@ async def _measure_side(
     answer_parts: list[str] = []
     reasoning_parts: list[str] = []
     unrecognized = False
+    heartbeat_count = 0
     output_chunk_count = 0
     finish_reason = ""
     reported_output_tokens: int | None = None
@@ -1243,6 +1265,7 @@ async def _measure_side(
     cache_metrics = _empty_cache_metrics()
     text_blocks: dict[tuple[int, int], str] = {}
     text_recovered = False
+    anthropic_snapshot = None
     payload = build_payload(config, question)
     request_metrics = ({"request_protocol": config.protocol,
                         "max_output_tokens": payload["max_output_tokens"],
@@ -1280,6 +1303,9 @@ async def _measure_side(
                         evidence["upstream_error_truncated"] |= evidence[field] != safe
                 raise RuntimeError(f"HTTP {response.status_code}")
             async for parsed in stream_events(response, config.protocol, on_raw=capture.feed):
+                if parsed["heartbeat"]:
+                    heartbeat_count += 1
+                    continue
                 now = perf_counter()
                 if not parsed["recognized"]:
                     unrecognized = unrecognized or bool(parsed["raw"])
@@ -1298,7 +1324,11 @@ async def _measure_side(
                     system_fingerprints.add(parsed["system_fingerprint"])
                 if parsed["output_tokens"] is not None:
                     reported_output_tokens = parsed["output_tokens"]
-                if parsed["finish_reason"]:
+                if (parsed["format"] == "anthropic" and anthropic_snapshot is not None
+                        and parsed["finish_reason"] not in {"", "stop", anthropic_snapshot[2]}):
+                    protocol_error = "protocol_error"
+                    continue
+                if parsed["finish_reason"] and not (parsed["format"] == "anthropic" and parsed["finish_reason"] == "stop" and finish_reason):
                     finish_reason = parsed["finish_reason"]
                 if config.protocol == "responses" and response_status and (parsed["content"] or parsed["reasoning"] or parsed["block_content"] is not None):
                     protocol_error = "protocol_error"
@@ -1339,6 +1369,26 @@ async def _measure_side(
                             text_recovered = text_recovered or bool(content_delta)
                         else:
                             protocol_error = "protocol_error"
+                if parsed["format"] == "anthropic" and anthropic_snapshot is not None and (content_delta or reasoning_delta):
+                    protocol_error = "protocol_error"
+                    content_delta = reasoning_delta = ""
+                if parsed["format"] == "anthropic" and parsed["final_content"] is not None:
+                    snapshot = (parsed["final_content"], parsed["final_reasoning"], parsed["finish_reason"])
+                    if anthropic_snapshot is not None and snapshot != anthropic_snapshot:
+                        protocol_error = "protocol_error"
+                        continue
+                    anthropic_snapshot = snapshot
+                    deltas = []
+                    for parts, complete in ((answer_parts, parsed["final_content"]),
+                                            (reasoning_parts, parsed["final_reasoning"])):
+                        previous = "".join(parts)
+                        if complete.startswith(previous):
+                            deltas.append(complete[len(previous):])
+                        else:
+                            protocol_error = "protocol_error"
+                            deltas.append("")
+                    content_delta, reasoning_delta = deltas
+                    text_recovered = text_recovered or bool(content_delta or reasoning_delta)
                 if not content_delta and not reasoning_delta:
                     continue
                 if first_chunk_at is None:
@@ -1388,7 +1438,7 @@ async def _measure_side(
             and generation_seconds > 0
         ):
             tokens_per_second = round((reported_output_tokens - 1) / generation_seconds, 1)
-        if config.protocol == "responses" and text_recovered:
+        if text_recovered:
             tokens_per_second = None
             speed_data_valid = False
             speed_invalid_reason = "正文由结束事件补全，无法计算流式 Token/s"
@@ -1425,6 +1475,10 @@ async def _measure_side(
             ok, status, error = False, "incomplete_response", "上游标记回答未完成。"
         elif config.protocol == "responses" and not answer.strip():
             ok, status, error = False, "empty", "上游未返回答案正文。"
+        elif "anthropic" in response_formats and recognized_chars and not finish_reason:
+            ok, status, error = False, "incomplete_stream", "未收到完整的 Anthropic 结束事件。"
+        elif "anthropic" in response_formats and not answer.strip():
+            ok, status, error = False, "empty", "上游未返回答案正文。"
         elif unrecognized:
             ok = False
             status = "unrecognized"
@@ -1432,7 +1486,7 @@ async def _measure_side(
         elif recognized_chars == 0:
             ok = False
             status = "empty"
-            error = "上游已结束响应，但没有返回可读取的文本。"
+            error = "仅收到保活事件，未收到最终回答。" if heartbeat_count else "上游已结束响应，但没有返回可读取的文本。"
         else:
             ok = True
             status = "completed"
