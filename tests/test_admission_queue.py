@@ -222,12 +222,21 @@ class AdmissionQueueTests(unittest.IsolatedAsyncioTestCase):
         await self.manager.start()
         self.block_first_pair = True
         first = await self.manager.enqueue(self.body())
+        # Only the blocked job should expire; the successor exercises normal execution.
+        self.manager.budget_seconds = None
         second = await self.manager.enqueue(self.body("second"))
+        await asyncio.wait_for(self.started.wait(), 2)
+        self.assertEqual(self.manager.public(second["id"])["state"], "queued")
         final = await self.wait_terminal(first["id"])
         self.assertEqual(final["state"], "failed")
         self.assertEqual(final["error"], "准入任务超过运行预算")
         self.assertTrue({0, 1}.issubset(self.closed))
-        self.assertEqual((await self.wait_terminal(second["id"]))["state"], "succeeded")
+        successor = await self.wait_terminal(second["id"])
+        self.assertEqual(successor["state"], "succeeded", successor["error"])
+        self.assertEqual(successor["progress"]["confirmed"], 12)
+        self.assertEqual(successor["progress"]["unknown"], 0)
+        self.assertEqual(len(self.sent), 14)
+        self.assertEqual(set(self.closed), set(range(14)))
 
     async def test_atomic_serial_claim_from_two_sqlite_connections(self):
         await self.manager.stop()
