@@ -427,6 +427,8 @@ class RawResponseTests(unittest.IsolatedAsyncioTestCase):
         for protocol in ("openai", "anthropic"):
             with self.subTest(protocol=protocol):
                 body = b"id: synthetic-event\nretry: 1000\n" + sse(text_delta(protocol, "content", "synthetic answer"))
+                if protocol == "anthropic":
+                    body += sse({"type": "message_stop"})
                 result, events = await self.measure(body, protocol=protocol)
                 self.assertTrue(result["ok"])
                 self.assertEqual(raw_text(events), (body.decode(), False))
