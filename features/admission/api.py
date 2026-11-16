@@ -48,6 +48,7 @@ class CompareInput(BaseModel):
     candidate: CandidateInput
     reference: AdmissionSelection
     rounds: int = Field(default=2, ge=1, le=5)
+    injection_probe: bool = False
 
 
 class ReportEndpointInput(BaseModel):
@@ -100,7 +101,7 @@ class AdmissionReportInput(BaseModel):
     warmup_rounds: int = Field(default=0, ge=0, le=1)
     candidate: ReportEndpointInput
     reference: ReportEndpointInput
-    questions: list[ReportQuestionInput] = Field(min_length=1, max_length=6)
+    questions: list[ReportQuestionInput] = Field(min_length=1, max_length=9)
     measurements: list[dict[str, Any]] = Field(default_factory=list, max_length=60)
     responses: list[ReportResponseInput] = Field(default_factory=list, max_length=60)
     summary: dict[str, Any] = Field(default_factory=dict)

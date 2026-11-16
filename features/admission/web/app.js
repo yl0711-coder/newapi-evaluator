@@ -381,7 +381,7 @@ async function pollQueue() {
 
 $('compare-form').addEventListener('submit',async event=>{
   event.preventDefault(); syncModelPolicy();
-  const payload={candidate:{name:$('candidate-name').value.trim(),base_url:$('candidate-url').value.trim(),api_key:$('candidate-key').value.trim(),model:$('candidate-model').value.trim(),protocol:$('candidate-protocol').value},reference:{channel_id:Number($('reference-id').value),model:$('reference-model').value.trim(),protocol:$('reference-protocol').value},rounds:Number($('rounds').value)};
+  const payload={candidate:{name:$('candidate-name').value.trim(),base_url:$('candidate-url').value.trim(),api_key:$('candidate-key').value.trim(),model:$('candidate-model').value.trim(),protocol:$('candidate-protocol').value},reference:{channel_id:Number($('reference-id').value),model:$('reference-model').value.trim(),protocol:$('reference-protocol').value},rounds:Number($('rounds').value),injection_probe:$('injection-probe')?.checked===true};
   if(payload.candidate.model!==payload.reference.model){$('error').textContent='成对测试要求候选端与参照端使用相同的请求模型名。';return;}
   $('candidate-key').value=''; $('start').disabled=true; $('error').textContent='';
   $('run-status').textContent='正在创建准入任务。';

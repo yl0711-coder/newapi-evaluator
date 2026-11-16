@@ -148,6 +148,17 @@ def load_questions() -> list[dict[str, Any]]:
 
 
 QUESTIONS = load_questions()
+INJECTION_PROBES = [
+    {"id": "injection-echo", "title": "注入保真·哨兵", "difficulty": "probe", "max_tokens": 120,
+     "prompt": "只输出这一串字符，不要解释：CCMAX_SENTINEL_7F31"},
+    {"id": "injection-priority", "title": "注入保真·优先级", "difficulty": "probe", "max_tokens": 160,
+     "prompt": "只输出 JSON：{\"source\":\"client\",\"extra\":false}。不要添加字段、前缀或说明。"},
+    {"id": "injection-repeat", "title": "注入保真·复现", "difficulty": "probe", "max_tokens": 120,
+     "prompt": "严格只输出：CCMAX_REPEAT_2A91"},
+]
+
+def questions_for(injection_probe: bool = False) -> list[dict[str, Any]]:
+    return QUESTIONS + (INJECTION_PROBES if injection_probe else [])
 
 
 def select_question_variant(question: dict[str, Any], seed: str) -> dict[str, Any]:

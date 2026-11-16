@@ -356,6 +356,11 @@ def build_summary(report: dict[str, Any], pairs: list[dict[str, Any]]) -> dict[s
         for side in SIDES
     }
     cache = build_cache_summary(report)
+    probe_questions = [q for q in report.get("questions", []) if str(q.get("id", "")).startswith("injection-")]
+    injection_probe = None
+    if probe_questions:
+        probe_pairs = [p for p in evaluated if str(p.get("question_id", "")).startswith("injection-")]
+        injection_probe = {"enabled": True, "probe_count": len(probe_questions), "classification": "indeterminate", "evidence_pairs": len(probe_pairs)}
     return {
         "overall": overall,
         "ability": {"status": "manual", "label": "查看逐题回答后人工判断"},
@@ -384,6 +389,7 @@ def build_summary(report: dict[str, Any], pairs: list[dict[str, Any]]) -> dict[s
         "cache": cache,
         **({"token_usage": token_usage} if token_usage is not None else {}),
         "explanations": explanations[:5],
+        **({"injection_probe": injection_probe} if injection_probe else {}),
     }
 
 

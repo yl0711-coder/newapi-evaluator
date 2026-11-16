@@ -10,8 +10,9 @@ def snapshot(configuration, *, token_enabled):
         model=configuration[side]["model"], protocol=configuration[side]["protocol"],
         api_key="contract-placeholder") for side in ("candidate", "reference")}
     requests = []
+    questions = engine.questions_for(configuration.get("injection_probe", False))
     for number in range(1, configuration["rounds"] + 1):
-        for question in engine.QUESTIONS:
+        for question in questions:
             selected = engine.select_question_variant(question, f"{configuration['run_id']}:{number}")
             for side, endpoint in endpoints.items():
                 requests.append({"round": number, "question_id": question["id"], "side": side,
@@ -27,7 +28,7 @@ def snapshot(configuration, *, token_enabled):
             parameters = transport.ASTRA_PARAMETERS if value["model"] == "gpt-6-astra" else transport.PARAMETERS
             token_requests.append({"side": side, "url": transport.endpoint_url(value["base_url"], value["protocol"]),
                 "headers": transport.headers(value), "body": transport.payload(value, {"prompt": transport.FIXED_INPUT, **parameters})})
-    return {"version": 1, "questions": engine.QUESTIONS, "requests": requests, "token_requests": token_requests}
+    return {"version": 1, "questions": questions, "injection_probe": bool(configuration.get("injection_probe", False)), "requests": requests, "token_requests": token_requests}
 
 
 def fingerprint(value):

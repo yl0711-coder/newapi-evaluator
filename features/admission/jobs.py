@@ -134,6 +134,7 @@ class AdmissionManager:
         run_id = identity[:32]
         configuration = {
             "run_id": run_id, "rounds": body.rounds,
+            "injection_probe": body.injection_probe,
             "candidate": {"base_url": candidate["base_url"], "name": body.candidate.name or "未记录渠道名称", "model": body.candidate.model, "protocol": body.candidate.protocol},
             "reference": {**body.reference.model_dump(), "name": channel["name"] or "未记录渠道名称", "scope": channel["scope"],
                            "multiplier": channel["multiplier"], "status": channel["status"], "base_url": channel["base_url"]},
@@ -152,7 +153,7 @@ class AdmissionManager:
             **{side: {key: value for key, value in configuration[side].items() if key != "name"}
                for side in ("candidate", "reference")}}
         digest = hashlib.sha256(json.dumps(identity_configuration, sort_keys=True, ensure_ascii=False).encode()).hexdigest()
-        budget = self.budget_seconds or min(86400, 300 * (len(engine.QUESTIONS) * body.rounds + 2))
+        budget = self.budget_seconds or min(86400, 300 * (len(engine.questions_for(body.injection_probe)) * body.rounds + 2))
         task = self.store.queue.enqueue(storage.JOB_TYPE, {"run_id": run_id, "configuration_digest": digest},
                                         idempotency_key="admission:" + identity, budget_seconds=budget)
         try:
@@ -165,11 +166,11 @@ class AdmissionManager:
                 "reference": {"base_url": channel["base_url"], "name": channel["name"], "channel_id": channel["id"],
                               "scope": channel["scope"], "multiplier": channel["multiplier"], "status": channel["status"],
                               "model": body.reference.model, "protocol": body.reference.protocol},
-                "questions": [{key: q[key] for key in ("id", "title", "difficulty", "prompt")} for q in engine.QUESTIONS],
+                "questions": [{key: q[key] for key in ("id", "title", "difficulty", "prompt")} for q in engine.questions_for(body.injection_probe)],
                 "responses": [], "measurements": [],
             }
             steps = [f"{number}:{question['id']}:{side}" for number in range(1, body.rounds + 1)
-                     for question in engine.QUESTIONS for side in ("candidate", "reference")]
+                     for question in engine.questions_for(body.injection_probe) for side in ("candidate", "reference")]
             if self.token_check is not None:
                 steps += [f"token:{side}:{pair_index}" for pair_index in (0, 1) for side in ("candidate", "reference")]
             self.store.create(task["id"], scrub(configuration, secrets), scrub(report, secrets), steps)
@@ -283,9 +284,10 @@ class AdmissionManager:
             reference = self._reference(configuration)
             run = engine.CompareRequest(candidate=engine.EndpointConfig(**candidate), reference=engine.EndpointConfig(**reference), rounds=configuration["rounds"])
             redactor = EventRedactor([key, reference["api_key"]])
-            total = len(engine.QUESTIONS) * run.rounds
+            questions = engine.questions_for(configuration.get("injection_probe", False))
+            total = len(questions) * run.rounds
             event = {"type": "run_started", "run_id": configuration["run_id"], "job_id": task_id,
-                     "question_count": len(engine.QUESTIONS), "rounds": run.rounds, "warmup_rounds": report["warmup_rounds"],
+                     "question_count": len(questions), "rounds": run.rounds, "warmup_rounds": report["warmup_rounds"],
                      "protocols": {"candidate": candidate["protocol"], "reference": reference["protocol"]}, "total_question_runs": total}
             self.store.checkpoint(task_id, report, event)
             seconds = self.store.start_budget(task_id)
@@ -316,8 +318,9 @@ class AdmissionManager:
                                     transport=self.transport or guarded_transport()) as client:
             if self.token_check is not None and "token:complete" not in self.store.get(task_id)["step_results"]:
                 await self._run_token_check(task_id, run, client, report, redactor)
+            questions = engine.questions_for(job["configuration"].get("injection_probe", False))
             for number in range(1, run.rounds + 1):
-                for index, question in enumerate(engine.QUESTIONS, 1):
+                for index, question in enumerate(questions, 1):
                     if self.store.queue.request_cancelled(task_id):
                         raise asyncio.CancelledError
                     selected = engine.select_question_variant(question, f"{report['run_id']}:{number}")
@@ -347,10 +350,10 @@ class AdmissionManager:
                         for safe in redactor.filter(event):
                             safe = scrub({**safe, **metadata}, redactor.secrets)
                             self._record(task_id, report, safe, step_id=f"{number}:{question['id']}:{event['side']}" if safe["type"] == "side_finished" else None)
-                    completed = (number - 1) * len(engine.QUESTIONS) + index
+                    completed = (number - 1) * len(questions) + index
                     self._record(task_id, report, {"type": "question_finished", "question_id": question["id"], "completed_question_runs": completed,
-                                                  "total_question_runs": len(engine.QUESTIONS) * run.rounds, **metadata})
-                    if completed < len(engine.QUESTIONS) * run.rounds:
+                                                  "total_question_runs": len(questions) * run.rounds, **metadata})
+                    if completed < len(questions) * run.rounds:
                         await engine.wait_between_questions()
 
     async def _single_side(self, side, run, question, client, before_send):
