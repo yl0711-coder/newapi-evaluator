@@ -376,9 +376,16 @@ def _empty_cache_metrics() -> dict[str, Any]:
 
 
 def _usage_protocol(payload: dict[str, Any], requested: str | None) -> str:
+    # A gateway such as Sub2API can emit native Anthropic message events while
+    # forwarding a non-Claude model or while the caller selected another
+    # compatibility route.  The usage shape is authoritative for cache
+    # accounting; do not let the requested route discard those fields.
+    event_type = str(payload.get("type") or "")
+    if event_type in {"message", "message_start", "message_stop", "message_delta",
+                      "content_block_start", "content_block_delta", "content_block_stop"}:
+        return "anthropic"
     if requested in {"openai", "chat", "chat_completions", "responses", "anthropic", "messages"}:
         return {"chat": "openai", "chat_completions": "openai", "messages": "anthropic"}.get(requested, requested)
-    event_type = str(payload.get("type") or "")
     if event_type.startswith("response.") or isinstance(payload.get("response"), dict):
         return "responses"
     if event_type in {"message", "message_start", "message_stop", "message_delta", "content_block_start", "content_block_delta", "content_block_stop"}:

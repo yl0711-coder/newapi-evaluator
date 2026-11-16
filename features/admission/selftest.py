@@ -345,6 +345,36 @@ class StreamingMeasurementTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(finished["output_tokens"], 7)
         self.assertEqual(finished["response_format"], "anthropic")
 
+    async def test_message_snapshot_after_heartbeat_is_model_agnostic(self) -> None:
+        """Sub2API may emit Anthropic-shaped events while forwarding another model."""
+        final = {
+            "type": "message",
+            "content": [{"type": "text", "text": "gateway answer"}],
+            "stop_reason": "end_turn",
+            "usage": {
+                "input_tokens": 11,
+                "output_tokens": 7,
+                "cache_read_input_tokens": 5,
+                "cache_creation_input_tokens": 2,
+            },
+        }
+        events = await self.measure_events(
+            StaticStream(
+                json.dumps({"type": "ping"}).encode() + b"\n",
+                json.dumps(final).encode() + b"\n",
+            )
+        )
+        finished = next(event for event in events if event["type"] == "side_finished")
+        chunks = [event for event in events if event["type"] == "chunk"]
+        self.assertTrue(finished["ok"])
+        self.assertEqual(finished["status"], "completed")
+        self.assertEqual("".join(event["content"] for event in chunks), "gateway answer")
+        self.assertEqual(finished["input_tokens"], 11)
+        self.assertEqual(finished["output_tokens"], 7)
+        self.assertEqual(finished["cache_hit_input_tokens"], 5)
+        self.assertEqual(finished["cache_write_input_tokens"], 2)
+        self.assertEqual(finished["finish_reason"], "end_turn")
+
     async def test_buffered_response_does_not_claim_token_speed(self) -> None:
         finished = await self.measure(
             StaticStream(
