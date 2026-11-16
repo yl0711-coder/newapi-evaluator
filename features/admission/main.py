@@ -29,6 +29,7 @@ INTER_QUESTION_DELAY_SECONDS = 3
 GPT6_MODEL = "gpt-6-astra"
 GPT6_OUTPUT_LIMIT = 4096
 GPT6_REASONING_EFFORT = "low"
+ANTHROPIC_OUTPUT_FLOOR = 4096
 RESPONSES_TOTAL_TIMEOUT_SECONDS = 240
 RAW_RESPONSE_MAX_BYTES = 16_384
 AdmissionProtocol = Literal["openai", "responses", "anthropic"]
@@ -318,7 +319,11 @@ def build_payload(config: EndpointConfig, question: dict[str, Any]) -> dict[str,
             "system": SYSTEM_PROMPT,
             "messages": [{"role": "user", "content": question["prompt"]}],
             "stream": True,
-            "max_tokens": question["max_tokens"],
+            # Thinking-capable gateways can spend the whole small-question
+            # budget before emitting visible text. Keep the question budget
+            # for OpenAI-style probes, but give Messages enough room for both
+            # thinking and the requested final answer.
+            "max_tokens": max(ANTHROPIC_OUTPUT_FLOOR, question["max_tokens"]),
         }
     return {
         "model": config.model.strip(),

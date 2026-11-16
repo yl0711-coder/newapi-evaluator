@@ -10,6 +10,7 @@ import httpx
 sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
 from features.token_usage.domain import MAX_REPORTED_TOKENS
 from main import (
+    ANTHROPIC_OUTPUT_FLOOR,
     CompareRequest,
     EndpointConfig,
     PRESETS,
@@ -324,6 +325,7 @@ class StreamingMeasurementTests(unittest.IsolatedAsyncioTestCase):
             self.assertEqual(request.headers["anthropic-version"], "2023-06-01")
             self.assertNotIn("authorization", request.headers)
             self.assertNotIn("stream_options", payload)
+            self.assertEqual(payload["max_tokens"], ANTHROPIC_OUTPUT_FLOOR)
             self.assertEqual(payload["messages"], [{"role": "user", "content": QUESTIONS[0]["prompt"]}])
             return httpx.Response(200, headers={"content-type": "text/event-stream"}, stream=AnthropicStream())
 
