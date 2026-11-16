@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+import math
 import weakref
 import zlib
 
@@ -13,7 +14,7 @@ from features.integrity.transport import _nonstream, _tool_call, _reasoning_usag
 from features.stability.app.egress import EgressDenied, validate_url
 from features.stability.app.transport import endpoint_url, headers as _protocol_headers, _reported_usage
 from shared.network import SocketEgressDenied, guarded_transport, socket_egress_denied
-from .domain import ASTRA_PARAMETERS, FIXED_INPUT, PARAMETERS, classify_pair, empty_result, normalize_usage, observation, protocol
+from .domain import ASTRA_PARAMETERS, FIXED_INPUT, PARAMETERS, classify_pair, empty_result, normalize_usage, observation, protocol, tokens
 
 _capacities = weakref.WeakKeyDictionary()
 MAX_RESPONSE_BYTES = 1_048_576
@@ -173,20 +174,28 @@ async def _attempt(client, endpoint, before_send):
     first_text_at = None
     throughput_supported = True
     output_tokens = reasoning_tokens = None
+    output_usage_invalid = False
     trace = []
     sent = False
     kind = endpoint["protocol"]
 
     def record(data):
-        nonlocal output_tokens, reasoning_tokens
+        nonlocal output_tokens, reasoning_tokens, output_usage_invalid
         data = data.get("response") or data
+        usage = data.get("usage") or (data.get("message") or {}).get("usage")
+        if isinstance(usage, dict):
+            reported = [usage[name] for name in ("completion_tokens", "output_tokens") if name in usage]
+            for name in ("completion_tokens_details", "output_tokens_details"):
+                details = usage.get(name)
+                if isinstance(details, dict) and "reasoning_tokens" in details:
+                    reported.append(details["reasoning_tokens"])
+            output_usage_invalid = output_usage_invalid or any(tokens(value) is None for value in reported)
         _, output = _reported_usage(data)
         if output is not None:
-            output_tokens = output
+            output_tokens = tokens(output)
         reasoning = _reasoning_usage(data)
         if reasoning is not None:
-            reasoning_tokens = reasoning
-        usage = data.get("usage") or (data.get("message") or {}).get("usage")
+            reasoning_tokens = tokens(reasoning)
         row = normalize_usage(usage, kind)
         if row is not None:
             if len(trace) >= 64:
@@ -306,12 +315,24 @@ async def _attempt(client, endpoint, before_send):
         result = observation(trace, status="invalid_response")
     finished = perf_counter()
     duration = finished - first_text_at if first_text_at is not None else 0
-    throughput = (output_tokens / duration if result["status"] == "completed" and output_tokens is not None and throughput_supported
-                  and reasoning_tokens == 0 and duration > 0 else None)
+    # Output speed is auxiliary: malformed output usage must not erase a valid
+    # input-token comparison, produce non-finite JSON, or kill the consumer.
+    throughput = None
+    throughput_invalid = False
+    if (not output_usage_invalid and result["status"] == "completed" and output_tokens is not None
+            and throughput_supported and reasoning_tokens == 0 and duration > 0):
+        try:
+            throughput = output_tokens / duration
+            if not math.isfinite(throughput):
+                throughput, throughput_invalid = None, True
+        except ArithmeticError:
+            throughput_invalid = True
     return {**result, "latency_ms": round((finished - started) * 1000, 3),
             "ttft_ms": round((first_text_at - started) * 1000, 3) if first_text_at is not None else None,
-            "tokens_per_second": throughput, "output_tokens_reported": output_tokens,
-            "reasoning_tokens_reported": reasoning_tokens}
+            "tokens_per_second": throughput, "output_tokens_reported": None if output_usage_invalid else output_tokens,
+            "reasoning_tokens_reported": None if output_usage_invalid else reasoning_tokens,
+            **({"output_usage_invalid": True} if output_usage_invalid else {}),
+            **({"throughput_invalid": True} if throughput_invalid else {})}
 
 
 async def run_paired_check(candidate: dict, reference: dict, *, previous=None, on_result=None,

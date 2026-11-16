@@ -2,14 +2,38 @@ import asyncio
 import hashlib
 import json
 import tempfile
+import time
 import unittest
 from pathlib import Path
 
 from relay_lab.checkpoint import Checkpoint
 from relay_lab.config import DATA_ROOT, load
 from relay_lab.model import Result
+from relay_lab.metrics import stage_summary
 from relay_lab.runner import Lab
 from relay_lab.mock import MockServer
+
+
+class ControlledTimingLab(Lab):
+    """Only stage measurements are synthetic; topology and aggregation stay real."""
+    loaded_latency = 15
+
+    async def stage(self, adapter, mock, label, concurrency, **request):
+        available = sum(a.capacity for a in mock.accounts if a.disabled_until <= time.monotonic())
+        rows = [Result(f'{label}-{i}', label, concurrency,
+                       latency_ms=10 if concurrency == 1 else self.loaded_latency,
+                       success=i % concurrency < available, complete=i % concurrency < available,
+                       status=200 if i % concurrency < available else 429)
+                for i in range(max(concurrency, self.cfg['samples']))]
+        stage = stage_summary(label, concurrency, rows, 1, self.cfg['min_samples'], self.cfg['collapse_streak'])
+        stage['max_observed_inflight'] = min(concurrency, available)
+        self.stages.append(stage)
+        for row in rows:
+            self.artifacts.append(row)
+        return stage, rows
+
+    async def recovery(self, adapter, label, **request):
+        return {'stage': label, 'recovered': True, 'recovery_time': .001, 'probes': 1}
 
 
 class ModeRecoveryTests(unittest.IsolatedAsyncioTestCase):
@@ -21,40 +45,103 @@ class ModeRecoveryTests(unittest.IsolatedAsyncioTestCase):
                                   'mock': {'chunk_delay': .001, 'accounts': [{'capacity': 2, 'latency': .008, 'cooldown': .015}]},
                                   'long_task': {'steps': 5, 'fail_step': 3, 'stream_chunks': 12, 'stream_chunk_delay': .002}})
 
+    def measured_stable_concurrency(self, stages, raw):
+        # Independent expectation from request artifacts, not limits()/analysis.
+        measured = []
+        for stage in stages:
+            rows = [r for r in raw if r['stage'] == stage['stage'] and r['phase'] == 'load']
+            good = sorted(r['latency_ms'] for r in rows if r['success'])
+            rank = (len(good) - 1) * 95 / 100
+            lower = int(rank)
+            p95 = (good[lower] + (good[min(lower + 1, len(good) - 1)] - good[lower]) * (rank - lower)) if good else None
+            success = sum(r['success'] for r in rows) / len(rows)
+            complete = sum(r['complete'] for r in rows) / len(rows)
+            self.assertEqual(stage['samples'], len(rows))
+            self.assertEqual(stage['success_rate'], success)
+            self.assertEqual(stage['completeness_rate'], complete)
+            if p95 is None:
+                self.assertIsNone(stage['p95_latency_ms'])
+            else:
+                self.assertAlmostEqual(stage['p95_latency_ms'], p95, delta=1e-9)
+            self.assertFalse(stage['collapsed'])
+            measured.append((stage['concurrency'], success, complete, p95))
+        baseline = measured[0][3]
+        return max((c for c, success, complete, p95 in measured
+                    if success >= .99 and complete >= .99 and baseline is not None
+                    and p95 is not None and p95 <= 2 * baseline), default=0)
+
     async def test_account_limits_and_raw_artifacts(self):
-        # Keep event-loop and socket scheduling noise small relative to the
-        # deterministic mock latency. Otherwise a busy shared CI runner can
-        # make the capacity-2 stage exceed the 2x latency threshold even
-        # though the mock account has not reached its configured limit.
+        # Physical capacity and latency-qualified capacity are different contracts.
         self.cfg['mock']['accounts'][0]['latency'] = .03
         value = await Lab(self.cfg, self.root / 'account').run('account-test')
-        self.assertEqual(value['analysis']['max_stable_concurrency'], 2)
+        rows = [json.loads(x) for x in (self.root / 'account/results.jsonl').read_text().splitlines()]
+        self.assertEqual(value['analysis']['max_stable_concurrency'], self.measured_stable_concurrency(value['stages'], rows))
+        self.assertEqual(max(s['max_observed_inflight'] for s in value['stages']), 2)
+        self.assertEqual(value['stages'][1]['success_rate'], 1)
+        self.assertEqual(value['stages'][1]['completeness_rate'], 1)
+        self.assertGreater(value['stages'][2]['rate_429'], 0)
         self.assertEqual(value['analysis']['rate_limit_point'], 4)
         self.assertTrue(value['analysis']['admission_gate_passed'])
         self.assertTrue(value['analysis']['low_confidence'])
         self.assertGreater(value['network_policy']['socket_audit']['loopback_connections'], 0)
         self.assertEqual(value['network_policy']['socket_audit']['blocked_external_attempts'], 0)
-        rows = [json.loads(x) for x in (self.root / 'account/results.jsonl').read_text().splitlines()]
         self.assertEqual(value['result_count'], len(rows))
         self.assertTrue((self.root / 'account/report.md').is_file())
         self.assertTrue(all(r['request_id'] for r in rows))
 
     async def test_pool_scaling_and_capacity_drop(self):
         self.cfg.update(pool_sizes=[1, 2, 4], pool_stages=[1, 2, 4, 6])
-        # Keep scheduler overhead small relative to the deterministic Mock latency
-        # so the 2x slow-point rule measures pool capacity on fast and slow runners.
         self.cfg['mock']['accounts'][0]['latency'] = .03
         value = await Lab(self.cfg, self.root / 'pool').run('pool-test')
         cases = {(s['account_count'], s['scenario']): s for s in value['analysis']['pool_scenarios']}
-        self.assertEqual(cases[1, 'healthy']['observed_capacity'], 2)
-        self.assertEqual(cases[2, 'healthy']['observed_capacity'], 4)
-        self.assertEqual(cases[2, 'half_failed']['observed_capacity'], 2)
+        raw = [json.loads(x) for x in (self.root / 'pool/results.jsonl').read_text().splitlines()]
+        self.assertEqual(value['result_count'], len(raw))
+        self.assertGreater(value['network_policy']['socket_audit']['loopback_connections'], 0)
+        self.assertEqual(value['network_policy']['socket_audit']['blocked_external_attempts'], 0)
+        for (size, scenario), case in cases.items():
+            stages = [s for s in value['stages'] if s['stage'].startswith(f'pool-{size}-{scenario}-c')]
+            stable = self.measured_stable_concurrency(stages, raw)
+            peak = max((s['max_observed_inflight'] for s in stages if s['concurrency'] == stable), default=0)
+            self.assertEqual(case['max_stable_concurrency'], stable)
+            self.assertEqual(case['observed_capacity'], peak)
+            self.assertEqual(case['capacity_utilization'], peak / (2 * size))
+            single = cases[1, 'healthy']['observed_capacity']
+            self.assertEqual(case['scaling_efficiency'], peak / (single * size) if single else None)
+        for size, scenario, physical in [(1, 'healthy', 2), (2, 'healthy', 4), (2, 'half_failed', 2)]:
+            stages = [s for s in value['stages'] if s['stage'].startswith(f'pool-{size}-{scenario}-c')]
+            self.assertEqual(max(s['max_observed_inflight'] for s in stages), physical)
+            self.assertTrue(any(s['rate_429'] > 0 for s in stages))
+            self.assertEqual(stages[0]['success_rate'], 1)
+            self.assertEqual(stages[0]['completeness_rate'], 1)
         self.assertEqual(cases[4, 'half_failed']['healthy_account_count'], 2)
         self.assertEqual(cases[4, 'half_failed']['failed_account_count'], 2)
-        self.assertEqual(cases[2, 'healthy']['capacity_utilization'], 1)
-        self.assertEqual(cases[2, 'healthy']['scaling_efficiency'], 1)
         self.assertEqual(cases[1, 'one_failed']['observed_capacity'], 0)
         self.assertIsNotNone(cases[1, 'one_failed']['recovery_time'])
+
+    async def test_account_latency_boundary_qualifies_capacity_without_wall_clock_noise(self):
+        for latency, expected in [(15, 2), (20, 2), (20.0001, 1)]:
+            with self.subTest(latency=latency):
+                lab = ControlledTimingLab(self.cfg, self.root / f'account-controlled-{latency}')
+                lab.loaded_latency = latency
+                value = await lab.run('account-test')
+                self.assertEqual(value['analysis']['max_stable_concurrency'], expected)
+                self.assertEqual(value['analysis']['rate_limit_point'], 4)
+                self.assertEqual(value['analysis']['slow_point'], 2 if latency > 20 else None)
+
+    async def test_pool_capacity_aggregation_uses_latency_qualified_observations(self):
+        self.cfg.update(pool_sizes=[1, 2, 4], pool_stages=[1, 2, 4, 6])
+        for latency in (15, 25):
+            with self.subTest(latency=latency):
+                lab = ControlledTimingLab(self.cfg, self.root / f'pool-controlled-{latency}')
+                lab.loaded_latency = latency
+                value = await lab.run('pool-test')
+                cases = {(s['account_count'], s['scenario']): s for s in value['analysis']['pool_scenarios']}
+                self.assertEqual(cases[1, 'healthy']['observed_capacity'], 2 if latency == 15 else 1)
+                self.assertEqual(cases[2, 'healthy']['observed_capacity'], 4 if latency == 15 else 1)
+                self.assertEqual(cases[2, 'half_failed']['observed_capacity'], 2 if latency == 15 else 1)
+                self.assertEqual(cases[2, 'healthy']['capacity_utilization'], 1 if latency == 15 else .25)
+                self.assertEqual(cases[2, 'healthy']['scaling_efficiency'], 1 if latency == 15 else .5)
+                self.assertEqual(cases[1, 'one_failed']['observed_capacity'], 0)
 
     async def test_gateway_slow_collapse_and_recovery(self):
         self.cfg.update(gateway_stages=[1, 2, 3, 5, 8, 13], timeout=1)

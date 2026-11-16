@@ -31,6 +31,7 @@ def key_digest(salt, key):
 class Store:
     def __init__(self, directory, *, clock=time.time):
         self._lock_fd = None
+        self._executing = set()
         self.directory = Path(directory).expanduser().resolve()
         self.directory.mkdir(parents=True, exist_ok=True, mode=0o700)
         descriptor = os.open(self.directory / ".admission.lock", os.O_RDWR | os.O_CREAT | getattr(os, "O_NOFOLLOW", 0), 0o600)
@@ -145,6 +146,28 @@ class Store:
             rows = conn.execute("SELECT data FROM runs ORDER BY rowid DESC LIMIT 1000").fetchall()
         return [json.loads(row["data"]) for row in rows]
 
+    @contextmanager
+    def execution(self, run_id):
+        """Pin the worker's whole execution, including stopped GET/media unwind.
+
+        This is process-local; the existing exclusive directory lock and recover()
+        handle restart, so no new persistent state or request permit is introduced.
+        """
+        self.get(run_id)
+        self._executing.add(run_id)
+        try:
+            yield
+        finally:
+            self._executing.discard(run_id)
+
+    def _protected(self, conn):
+        return self._executing | {row[0] for row in conn.execute("SELECT DISTINCT run_id FROM reservations")}
+
+    @staticmethod
+    def _cleanup_allowed(run, protected):
+        return (run["status"] not in ACTIVE and run["id"] not in protected
+                and not any(item["status"] == "sending" for item in run["items"]))
+
     def update(self, run_id, changes=None, *, item_id=None, item_changes=None):
         with self.connect() as conn:
             conn.execute("BEGIN IMMEDIATE")
@@ -257,11 +280,12 @@ class Store:
         return media_id
 
     def cleanup_media(self, run_id):
-        run = self.get(run_id)
-        if run["status"] in ACTIVE:
-            raise Conflict("运行中的验收不能清理本地样片")
+        self.get(run_id)
         with self.connect() as conn:
             conn.execute("BEGIN IMMEDIATE")
+            run = json.loads(conn.execute("SELECT data FROM runs WHERE id=?", (run_id,)).fetchone()[0])
+            if not self._cleanup_allowed(run, self._protected(conn)):
+                raise Conflict("当前验收仍在执行或收尾，不能清理本地样片")
             for row in conn.execute("SELECT id,kind FROM media WHERE run_id=?", (run_id,)).fetchall():
                 if LOCAL_ID.fullmatch(row["id"]):
                     (self.media_directory / (row["id"] + (".png" if row["kind"] == "image" else ".mp4"))).unlink(missing_ok=True)
@@ -287,10 +311,15 @@ class Store:
         return path, "image/png" if row["kind"] == "image" else "video/mp4"
 
     def prune(self):
-        terminal = [run for run in self.runs() if run["status"] not in ACTIVE]
-        for run in terminal[MAX_REPORTS:]:
-            # Only this store's generated media names can be removed.
-            with self.connect() as conn:
+        with self.connect() as conn:
+            # Eligibility and deletion share a transaction: a resumed task must
+            # not be deleted using a stale terminal snapshot.
+            conn.execute("BEGIN IMMEDIATE")
+            protected = self._protected(conn)
+            runs = [json.loads(row[0]) for row in conn.execute("SELECT data FROM runs ORDER BY rowid DESC LIMIT 1000")]
+            terminal = [run for run in runs if self._cleanup_allowed(run, protected)]
+            for run in terminal[MAX_REPORTS:]:
+                # Only this store's generated media names can be removed.
                 rows = conn.execute("SELECT id,kind FROM media WHERE run_id=?", (run["id"],)).fetchall()
                 for row in rows:
                     if LOCAL_ID.fullmatch(row["id"]):

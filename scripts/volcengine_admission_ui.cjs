@@ -11,10 +11,17 @@ const artifactRoot = process.env.EVAL_TEST_ARTIFACT_ROOT;
 if (!artifactRoot || !path.isAbsolute(artifactRoot)) throw new Error('External artifact root required');
 const safeRoot = fs.realpathSync(artifactRoot);
 if (safeRoot === root || safeRoot.startsWith(root + path.sep) || root.startsWith(safeRoot + path.sep)) throw new Error('Artifact root overlaps source');
-if (process.platform === 'darwin') {
-  const assignedRoot = fs.realpathSync('/Users/lmurder/Desktop/api中转站/中转站极限测试数据');
-  if (safeRoot !== assignedRoot && !safeRoot.startsWith(assignedRoot + path.sep)) throw new Error('Artifact root must stay within the assigned test data root');
+// Explicit per-device artifact roots are allowed; real paths must remain outside
+// source and the configured business directory, including symlink aliases.
+let business = path.resolve(process.env.PLATFORM_DATA_DIR || path.join(root, 'data'));
+const suffix = [];
+while (!fs.existsSync(business)) {
+  const parent = path.dirname(business);
+  if (parent === business) throw new Error('Artifact root business parent missing');
+  suffix.unshift(path.basename(business)); business = parent;
 }
+business = path.join(fs.realpathSync(business), ...suffix);
+if (safeRoot === business || safeRoot.startsWith(business + path.sep)) throw new Error('Artifact root overlaps business data');
 if (process.argv.includes('--check-artifact-root')) { console.log(JSON.stringify({status: 'passed', artifactRoot: safeRoot})); process.exit(0); }
 const {chromium} = require(process.env.PLAYWRIGHT_MODULE || 'playwright');
 const data = fs.mkdtempSync(path.join(safeRoot, 'volcengine-admission-ui-'));

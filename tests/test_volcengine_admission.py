@@ -170,6 +170,40 @@ class CatalogTests(unittest.TestCase):
         self.assertFalse(valid_mp4(MOCK_VIDEO[:-4]))
 
 
+class ArtifactBoundaryTests(unittest.TestCase):
+    def test_explicit_external_root_is_device_independent_and_creates_no_data(self):
+        configured = os.environ.get('EVAL_TEST_ARTIFACT_ROOT')
+        self.assertTrue(configured)
+        source = Path(__file__).resolve().parents[1]
+        with tempfile.TemporaryDirectory(prefix='volc-path-', dir=configured) as folder:
+            root = Path(folder).resolve()
+            env = {k: os.environ[k] for k in ('PATH', 'LANG', 'SYSTEMROOT') if k in os.environ}
+            result = subprocess.run(['node', str(source / 'scripts/volcengine_admission_ui.cjs'), '--check-artifact-root'],
+                                    env={**env, 'EVAL_TEST_ARTIFACT_ROOT': str(root)}, capture_output=True, timeout=10)
+            self.assertEqual(result.returncode, 0, result.stderr)
+            self.assertEqual(json.loads(result.stdout)['artifactRoot'], str(root))
+            self.assertEqual(list(root.iterdir()), [])
+
+    def test_source_business_and_symlink_roots_are_rejected_without_new_files(self):
+        configured = os.environ.get('EVAL_TEST_ARTIFACT_ROOT')
+        self.assertTrue(configured)
+        source = Path(__file__).resolve().parents[1]
+        with tempfile.TemporaryDirectory(prefix='volc-path-negative-', dir=configured) as folder:
+            base = Path(folder).resolve()
+            business = base / 'business'; business.mkdir()
+            source_link = base / 'source-link'; source_link.symlink_to(source, target_is_directory=True)
+            business_link = base / 'business-link'; business_link.symlink_to(business, target_is_directory=True)
+            env = {k: os.environ[k] for k in ('PATH', 'LANG', 'SYSTEMROOT') if k in os.environ}
+            for forbidden in (source, source / 'features', source_link, business, business_link):
+                with self.subTest(root=str(forbidden)):
+                    result = subprocess.run(['node', str(source / 'scripts/volcengine_admission_ui.cjs'), '--check-artifact-root'],
+                                            env={**env, 'EVAL_TEST_ARTIFACT_ROOT': str(forbidden), 'PLATFORM_DATA_DIR': str(business)},
+                                            capture_output=True, timeout=10)
+                    self.assertNotEqual(result.returncode, 0)
+                    self.assertIn(b'Artifact root', result.stderr)
+            self.assertEqual(list(business.iterdir()), [])
+
+
 class AsyncTests(unittest.IsolatedAsyncioTestCase):
     async def asyncSetUp(self):
         root = os.environ.get("EVAL_TEST_ARTIFACT_ROOT") or os.environ.get("TMPDIR")
@@ -306,6 +340,55 @@ class AsyncTests(unittest.IsolatedAsyncioTestCase):
         final = await self.finish(resumed)
         self.assertEqual([item["status"] for item in final["items"]], ["passed", "not_sent"])
         self.assertTrue(final["resume_only"])
+        self.assertEqual(self.provider.generated, 1)
+
+    async def test_stopped_inflight_post_survives_retention_then_worker_continues(self):
+        self.provider.block_post = asyncio.Event()
+        run = await self.service.create(self.request(self.preview(ids=(VIDEO,))))
+        await asyncio.wait_for(self.provider.post_entered.wait(), 2)
+        worker = self.service.worker
+        try:
+            await self.service.stop(run['id'])
+            await self.add_stopped_reports('post')
+            kept = self.service.store.get(run['id'])
+            self.assertEqual(kept['items'][0]['status'], 'sending')
+            with self.assertRaises(Conflict):
+                self.service.store.cleanup_media(run['id'])
+            self.assertEqual(self.provider.generated, 1)
+        finally:
+            self.provider.block_post.set()
+            await asyncio.wait_for(asyncio.gather(worker, return_exceptions=True), 3)
+        self.assertIsNone(worker.exception())
+        self.assertNotIn(run['id'], {r['id'] for r in self.service.store.runs()})
+        next_body = self.request(self.preview(ids=(VIDEO,))).model_copy(update={'idempotency_key': 'synthetic-retention-next'})
+        next_run = await self.service.create(next_body)
+        result = await self.finish(next_run)
+        self.assertEqual(result['counts'], {'passed': 1})
+        self.assertEqual(self.provider.generated, 2)
+
+    async def add_stopped_reports(self, prefix):
+        for number in range(31):
+            body = self.request(self.preview(ids=(VIDEO,))).model_copy(update={'idempotency_key': f'synthetic-retention-{prefix}-{number}'})
+            waiting = await self.service.create(body)
+            await self.service.stop(waiting['id'])
+
+    async def test_stopped_inflight_get_is_protected_but_settled_polling_is_prunable(self):
+        self.provider.status = 'running'
+        self.provider.block_get = asyncio.Event()
+        run = await self.service.create(self.request(self.preview(ids=(VIDEO,))))
+        await asyncio.wait_for(self.provider.get_entered.wait(), 2)
+        worker = self.service.worker
+        try:
+            await self.service.stop(run['id'])
+            await self.add_stopped_reports('get')
+            self.assertEqual(self.service.store.get(run['id'])['items'][0]['task_id'], 'synthetic-task-1')
+            with self.assertRaises(Conflict):
+                self.service.store.cleanup_media(run['id'])
+        finally:
+            self.provider.block_get.set()
+            await asyncio.wait_for(asyncio.gather(worker, return_exceptions=True), 3)
+        self.assertIsNone(worker.exception())
+        self.assertNotIn(run['id'], {row['id'] for row in self.service.store.runs()})
         self.assertEqual(self.provider.generated, 1)
 
     async def test_restart_keeps_known_task_id_but_consumes_unsent_permits(self):

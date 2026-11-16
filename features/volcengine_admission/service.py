@@ -121,17 +121,20 @@ class AdmissionService:
                 return
             self.current_run_id = run["id"]
             try:
-                await self._execute(run["id"])
-            except asyncio.CancelledError:
-                self._interrupt(run["id"])
-                raise
-            except Exception:
-                # Do not persist exception text: transport bodies/credentials can appear there.
-                self._interrupt(run["id"], error="local_execution_failed")
+                with self.store.execution(run["id"]):
+                    try:
+                        await self._execute(run["id"])
+                    except asyncio.CancelledError:
+                        self._interrupt(run["id"])
+                        raise
+                    except Exception:
+                        # Do not persist exception text: transport bodies/credentials can appear there.
+                        self._interrupt(run["id"], error="local_execution_failed")
+                    finally:
+                        self.credentials.pop(run["id"], None)
+                        self.wake.pop(run["id"], None)
+                        self.store.release(run["id"])
             finally:
-                self.credentials.pop(run["id"], None)
-                self.wake.pop(run["id"], None)
-                self.store.release(run["id"])
                 self.current_run_id = None
                 self.store.prune()
 

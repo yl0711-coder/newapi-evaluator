@@ -147,6 +147,20 @@ class ServiceTests(unittest.IsolatedAsyncioTestCase):
         self.clock_patch.stop()
         self.temp.cleanup()
 
+    async def test_completed_usage_is_not_revalidated_against_a_new_reference(self):
+        self.enable(notify=False)
+        batch = await self.batch()
+        before = self.svc.report(batch['id'])
+        calls = len(self.upstream.calls)
+        self.assertTrue(all(row['usage']['status'] == 'completed' for row in before['channels']))
+        self.change(self.reference, api_key='synthetic-reference-revised')
+        for profile in self.profiles:
+            self.tokens.save_binding(profile['model'], profile['protocol'], self.reference, confirm_trusted=True)
+        await self.svc.execute()
+        self.assertEqual(self.svc.report(batch['id']), before)
+        self.assertEqual(len(self.upstream.calls), calls)
+        self.assertTrue(all(not item['usage_reason'] for item in self.svc.store.items(batch['id'])))
+
     async def test_two_families_actual_parsing_score_report_and_zero_early_delivery(self):
         preview = self.enable()
         self.assertEqual((preview["initial_requests_per_batch"], preview["max_requests_per_batch"]), (10, 14))
