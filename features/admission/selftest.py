@@ -15,6 +15,7 @@ from main import (
     EndpointConfig,
     PRESETS,
     QUESTIONS,
+    questions_for,
     app,
     build_headers,
     build_payload,
@@ -24,6 +25,7 @@ from main import (
     measure_side,
     parse_stream_line,
 )
+from features.admission import reporting
 from feishu import BitableWriter, FeishuSettings, build_fields, channel_group_value, group_for_model
 
 
@@ -45,6 +47,58 @@ class QuestionBankTests(unittest.TestCase):
             self.assertEqual(payload["stream_options"], {"include_usage": True})
             self.assertEqual(payload["model"], "demo")
             self.assertGreater(payload["max_tokens"], 0)
+
+    def test_identity_probe_set_has_three_distinct_probes(self) -> None:
+        probes = [q for q in questions_for(True) if q["id"].startswith("injection-identity-")]
+        self.assertEqual(len(probes), 3)
+        self.assertEqual(len({q["id"] for q in probes}), 3)
+
+
+class InjectionClassificationTests(unittest.TestCase):
+    _identity = [q for q in questions_for(True) if q["id"].startswith("injection-identity-")]
+    _expected = {
+        "injection-identity-sentinel": "CCMAX_IDENTITY_3C72",
+        "injection-identity-conflict": "CCMAX_IDENTITY_CONFLICT_91B4",
+        "injection-identity-answer": "CCMAX_IDENTITY_ONLY_5D18",
+    }
+
+    def _report(self, candidate_text, reference_text, *, candidate_total=500, reference_total=500):
+        measurements, responses = [], []
+        for round_number in (1, 2):
+            for question in self._identity:
+                question_id = question["id"]
+                for side, text in (("candidate", candidate_text(question_id)), ("reference", reference_text(question_id))):
+                    measurements.append({"round": round_number, "question_id": question_id, "side": side,
+                                         "round_role": "evaluated", "ok": True, "status": "completed",
+                                         "total_ms": candidate_total if side == "candidate" else reference_total,
+                                         "first_answer_ms": 100, "pair_id": f"r{round_number}:{question_id}"})
+                    responses.append({"round": round_number, "question_id": question_id, "side": side,
+                                      "round_role": "evaluated", "content": text, "reasoning": ""})
+        return reporting.finalize_report({"status": "completed", "rounds": 2, "warmup_rounds": 0,
+                                          "questions": self._identity, "measurements": measurements, "responses": responses})
+
+    def test_repeated_identity_conformance_reports_zero_injection_evidence(self) -> None:
+        report = self._report(lambda question_id: self._expected[question_id],
+                              lambda question_id: self._expected[question_id])
+        self.assertEqual(report["summary"]["injection_probe"]["classification"], "zero_injection_evidence")
+
+    def test_candidate_only_identity_deviation_on_two_probes_reports_micro(self) -> None:
+        deviating = {"injection-identity-sentinel", "injection-identity-conflict"}
+        report = self._report(lambda question_id: "I am Claude." if question_id in deviating else self._expected[question_id],
+                              lambda question_id: self._expected[question_id])
+        summary = report["summary"]["injection_probe"]
+        self.assertEqual(summary["classification"], "micro_injection_evidence")
+        self.assertEqual(set(summary["qualifying_probe_ids"]), deviating)
+
+    def test_single_probe_deviation_is_indeterminate(self) -> None:
+        report = self._report(lambda question_id: "I am Claude." if question_id == "injection-identity-sentinel" else self._expected[question_id],
+                              lambda question_id: self._expected[question_id])
+        self.assertEqual(report["summary"]["injection_probe"]["classification"], "indeterminate")
+
+    def test_token_or_time_difference_alone_is_not_injection_evidence(self) -> None:
+        report = self._report(lambda question_id: self._expected[question_id],
+                              lambda question_id: self._expected[question_id], candidate_total=900, reference_total=100)
+        self.assertEqual(report["summary"]["injection_probe"]["classification"], "zero_injection_evidence")
 
     def test_anthropic_request_uses_native_messages_protocol(self) -> None:
         endpoint = EndpointConfig(

@@ -143,6 +143,7 @@ function summaryCard(label,value) {
 
 function renderOverview() {
   const summary = report.summary || {}, evidence = summary.evidence || {}, counts = summary.counts || {};
+  const injection = summary.injection_probe;
   const token = report.token_usage || summary.token_usage;
   $('report-channels').textContent=`候选：${endpointText(report.candidate)}\n参照：${endpointText(report.reference)}`;
   $('overview-title').textContent=evidence.coverage_complete ? '本轮对照结论' : '已完成部分与当前证据';
@@ -161,9 +162,12 @@ function renderOverview() {
     summaryCard('候选端独有异常',String(counts.candidate_only || 0)),
     summaryCard('双端共同异常',String(counts.shared || 0)),
     summaryCard('测试轮次',`${evidence.test_rounds || report.rounds || 0} 轮（${evidence.warmup_rounds || 0} 轮预热）`),
-    summaryCard('证据充分度',evidence.confidence || '低')
+    summaryCard('证据充分度',evidence.confidence || '低'),
+    ...(injection ? [summaryCard('注入保真专项', injection.classification === 'micro_injection_evidence' ? '发现微注入证据' : injection.classification === 'zero_injection_evidence' ? '未发现注入证据' : '证据不足')] : [])
   );
-  $('explanations').replaceChildren(...(summary.explanations || []).map(text => Workbench.node('li',text)));
+  const notes = [...(summary.explanations || [])];
+  if (injection) notes.push(`注入保真专项：${injection.reason || injection.classification}`);
+  $('explanations').replaceChildren(...notes.map(text => Workbench.node('li',text)));
   const identity = summary.model_identity || {};
   $('identity-summary').replaceChildren(...Object.keys(names).map(side => {
     const item = identity[side] || {}, card = Workbench.node('div','','identity-card');

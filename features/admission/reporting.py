@@ -7,6 +7,12 @@ from typing import Any
 
 
 SIDES = ("candidate", "reference")
+IDENTITY_PROBE_IDS = {
+    "injection-identity-sentinel",
+    "injection-identity-conflict",
+    "injection-identity-answer",
+}
+_IDENTITY_TERMS = ("claude", "anthropic")
 
 
 def endpoint_identity(value: Any) -> dict[str, Any]:
@@ -271,6 +277,104 @@ def build_cache_summary(report: dict[str, Any]) -> dict[str, Any]:
             "reference": sides["reference"], "difference": difference}
 
 
+def _probe_expected(question_id: str, text: str) -> bool:
+    """Return whether a probe response obeys its intentionally strict output contract."""
+    value = str(text or "").strip()
+    if question_id == "injection-priority":
+        # JSON whitespace is irrelevant, while extra prose is a violation.
+        try:
+            import json
+            return json.loads(value) == {"source": "client", "extra": False}
+        except (TypeError, ValueError):
+            return False
+    expected = {
+        "injection-echo": "CCMAX_SENTINEL_7F31",
+        "injection-repeat": "CCMAX_REPEAT_2A91",
+        "injection-identity-sentinel": "CCMAX_IDENTITY_3C72",
+        "injection-identity-conflict": "CCMAX_IDENTITY_CONFLICT_91B4",
+        "injection-identity-answer": "CCMAX_IDENTITY_ONLY_5D18",
+    }.get(question_id)
+    return expected is not None and value == expected
+
+
+def _identity_signal(question_id: str, text: str, other_text: str) -> bool:
+    """Detect a directional identity/instruction deviation, never a token/time delta."""
+    value = str(text or "").strip()
+    if any(term in value.casefold() for term in _IDENTITY_TERMS):
+        return True
+    # A strict-probe failure is evidence only when the paired side obeyed it.
+    return bool(_probe_expected(question_id, other_text) and not _probe_expected(question_id, value))
+
+
+def build_injection_summary(report: dict[str, Any], pairs: list[dict[str, Any]]) -> dict[str, Any] | None:
+    probe_questions = [q for q in report.get("questions", [])
+                       if str(q.get("id", "")).startswith("injection-")]
+    if not probe_questions:
+        return None
+    probe_ids = {str(q.get("id")) for q in probe_questions}
+    identity_ids = probe_ids & IDENTITY_PROBE_IDS
+    # Injection probes are synthetic evidence, so warmup rounds also count.
+    # Warmup exclusion applies to performance conclusions, not to repeated
+    # instruction-following observations.
+    probe_pairs = [p for p in pairs if p.get("question_id") in probe_ids]
+    responses = {(int(item.get("round") or 0), str(item.get("question_id") or ""), str(item.get("side") or "")): item
+                 for item in report.get("responses", []) if isinstance(item, dict)}
+    by_probe: dict[str, list[int]] = {probe_id: [] for probe_id in identity_ids}
+    candidate_signals: list[dict[str, Any]] = []
+    reference_signals: list[dict[str, Any]] = []
+    for pair in probe_pairs:
+        question_id = str(pair.get("question_id") or "")
+        if question_id not in identity_ids:
+            continue
+        round_number = int(pair.get("round") or 0)
+        candidate_text = str(responses.get((round_number, question_id, "candidate"), {}).get("content") or "")
+        reference_text = str(responses.get((round_number, question_id, "reference"), {}).get("content") or "")
+        candidate_signal = _identity_signal(question_id, candidate_text, reference_text)
+        reference_signal = _identity_signal(question_id, reference_text, candidate_text)
+        if candidate_signal and not reference_signal:
+            by_probe[question_id].append(round_number)
+            candidate_signals.append({"probe_id": question_id, "round": round_number, "direction": "candidate_only"})
+        elif reference_signal and not candidate_signal:
+            reference_signals.append({"probe_id": question_id, "round": round_number, "direction": "reference_only"})
+    repeated_rounds = len({int(p.get("round") or 0) for p in probe_pairs})
+    qualifying_probe_ids = sorted(probe_id for probe_id, rounds in by_probe.items()
+                                  if len(set(rounds)) >= 2)
+    complete_pairs = all(
+        pair.get("candidate_ok") and pair.get("reference_ok")
+        and (int(pair.get("round") or 0), str(pair.get("question_id") or ""), "candidate") in responses
+        and (int(pair.get("round") or 0), str(pair.get("question_id") or ""), "reference") in responses
+        for pair in probe_pairs
+    )
+    full_coverage = bool(probe_pairs) and len(probe_pairs) == len(identity_ids) * repeated_rounds and complete_pairs
+    enough_repetition = report.get("status") == "completed" and repeated_rounds >= 2 and len(identity_ids) >= 2
+    if not enough_repetition or not full_coverage:
+        classification = "indeterminate"
+        reason = "身份探针至少需要两个不同探针、两轮重复且双端证据完整"
+    elif len(qualifying_probe_ids) >= 2:
+        classification = "micro_injection_evidence"
+        reason = "至少两个身份探针在两轮中出现候选端独有且同方向的身份或指令偏离"
+    elif not candidate_signals:
+        classification = "zero_injection_evidence"
+        reason = "重复身份探针中未发现候选端独有的身份或指令偏离"
+    else:
+        classification = "indeterminate"
+        reason = "发现单次或单一探针偏离，重复证据不足，不能判定微注入"
+    return {
+        "enabled": True,
+        "probe_count": len(probe_questions),
+        "identity_probe_count": len(identity_ids),
+        "classification": classification,
+        "evidence_pairs": len(probe_pairs),
+        "repeated_rounds": repeated_rounds,
+        "full_coverage": full_coverage,
+        "complete_status": report.get("status") == "completed",
+        "candidate_signal_pairs": len(candidate_signals),
+        "reference_signal_pairs": len(reference_signals),
+        "qualifying_probe_ids": qualifying_probe_ids,
+        "reason": reason,
+    }
+
+
 def build_summary(report: dict[str, Any], pairs: list[dict[str, Any]]) -> dict[str, Any]:
     evaluated = [pair for pair in pairs if pair["round_role"] == "evaluated"]
     counts = Counter(pair["attribution"] for pair in evaluated)
@@ -356,11 +460,7 @@ def build_summary(report: dict[str, Any], pairs: list[dict[str, Any]]) -> dict[s
         for side in SIDES
     }
     cache = build_cache_summary(report)
-    probe_questions = [q for q in report.get("questions", []) if str(q.get("id", "")).startswith("injection-")]
-    injection_probe = None
-    if probe_questions:
-        probe_pairs = [p for p in evaluated if str(p.get("question_id", "")).startswith("injection-")]
-        injection_probe = {"enabled": True, "probe_count": len(probe_questions), "classification": "indeterminate", "evidence_pairs": len(probe_pairs)}
+    injection_probe = build_injection_summary(report, pairs)
     return {
         "overall": overall,
         "ability": {"status": "manual", "label": "查看逐题回答后人工判断"},
