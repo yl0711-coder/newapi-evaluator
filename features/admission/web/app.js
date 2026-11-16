@@ -141,9 +141,16 @@ function summaryCard(label,value) {
   return card;
 }
 
+function injectionSummary(summary) {
+  const injection = summary.injection_probe;
+  if (!injection) return null;
+  const label = injection.classification === 'micro_injection_evidence' ? '发现微注入证据' : injection.classification === 'zero_injection_evidence' ? '未发现注入证据' : '证据不足';
+  return {label,reason:injection.reason || injection.classification || '证据不足'};
+}
+
 function renderOverview() {
   const summary = report.summary || {}, evidence = summary.evidence || {}, counts = summary.counts || {};
-  const injection = summary.injection_probe;
+  const injection = injectionSummary(summary);
   const token = report.token_usage || summary.token_usage;
   $('report-channels').textContent=`候选：${endpointText(report.candidate)}\n参照：${endpointText(report.reference)}`;
   $('overview-title').textContent=evidence.coverage_complete ? '本轮对照结论' : '已完成部分与当前证据';
@@ -163,10 +170,10 @@ function renderOverview() {
     summaryCard('双端共同异常',String(counts.shared || 0)),
     summaryCard('测试轮次',`${evidence.test_rounds || report.rounds || 0} 轮（${evidence.warmup_rounds || 0} 轮预热）`),
     summaryCard('证据充分度',evidence.confidence || '低'),
-    ...(injection ? [summaryCard('注入保真专项', injection.classification === 'micro_injection_evidence' ? '发现微注入证据' : injection.classification === 'zero_injection_evidence' ? '未发现注入证据' : '证据不足')] : [])
+    ...(injection ? [summaryCard('注入保真专项', injection.label)] : [])
   );
   const notes = [...(summary.explanations || [])];
-  if (injection) notes.push(`注入保真专项：${injection.reason || injection.classification}`);
+  if (injection) notes.push(`注入保真专项：${injection.reason}`);
   $('explanations').replaceChildren(...notes.map(text => Workbench.node('li',text)));
   const identity = summary.model_identity || {};
   $('identity-summary').replaceChildren(...Object.keys(names).map(side => {
@@ -275,7 +282,10 @@ function ordinaryPayload(source) {
 
 function reportHtml(source, technical) {
   const summary = source.summary || {}, evidence = summary.evidence || {}, counts = summary.counts || {};
-  const cards = [['能力',summary.ability?.label],['速度',summary.speed?.label],['稳定性',summary.stability?.label],['缓存命中率',cacheSummaryText(summary.cache)],['有效题对',`${evidence.valid_pairs || 0} / ${evidence.planned_pairs || 0}`],['候选端独有异常',counts.candidate_only || 0],['共同异常',counts.shared || 0]].map(([label,value])=>`<div class="card"><small>${escapeHtml(label)}</small><strong>${escapeHtml(value ?? '-')}</strong></div>`).join('');
+  const injection = injectionSummary(summary);
+  const explanations = [...(summary.explanations || [])];
+  if (injection) explanations.push(`注入保真专项：${injection.reason}`);
+  const cards = [['能力',summary.ability?.label],['速度',summary.speed?.label],['稳定性',summary.stability?.label],['缓存命中率',cacheSummaryText(summary.cache)],['有效题对',`${evidence.valid_pairs || 0} / ${evidence.planned_pairs || 0}`],['候选端独有异常',counts.candidate_only || 0],['共同异常',counts.shared || 0],...(injection ? [['注入保真专项',injection.label]] : [])].map(([label,value])=>`<div class="card"><small>${escapeHtml(label)}</small><strong>${escapeHtml(value ?? '-')}</strong></div>`).join('');
   const pairRows = (source.pairs || []).filter(pair=>pair.round_role==='evaluated').map(pair=>`<tr><td>${escapeHtml(`第 ${pair.round} 轮 · ${pair.title}`)}</td><td>${escapeHtml(pair.attribution_label)}</td><td>${escapeHtml(pair.speed_label)}</td><td>${escapeHtml('人工查看双方回答')}</td></tr>`).join('');
   let details = '';
   const token = source.token_usage || summary.token_usage;
@@ -289,7 +299,7 @@ function reportHtml(source, technical) {
       return `<section><h3>${escapeHtml(names[side] + " · " + endpointText(source[side]))}</h3><p class="endpoint-status">状态：${escapeHtml(responseStatus(measurement))}</p>${measurement.upstream_error_message ? `<p class="upstream-error-message">上游错误信息：${escapeHtml(measurement.upstream_error_message)}</p>` : ''}${measurement.upstream_error_truncated ? '<p class="notice upstream-error-truncated">上游错误字段超过保存预算，已截断。</p>' : ''}<h4>渠道原始响应</h4>${response.raw_response_truncated ? '<p class="notice raw-truncated">原始响应超过保存预算，仅保留开头和结尾，中间已省略（最多 16 KiB）。</p>' : ''}<pre class="raw-response-body">${preHtml(response.raw_response ?? '')}</pre><h4>最终回答原文</h4><pre class="answer-response-body">${preHtml(response.content ?? '')}</pre><h4>上游返回的推理内容</h4><pre>${escapeHtml(response.reasoning || '上游未提供独立推理字段')}</pre><p>首次可见输出：${escapeHtml(duration(measurement.ttft_ms))}；首次答案正文：${escapeHtml(duration(measurement.first_answer_ms))}；完整响应：${escapeHtml(duration(measurement.total_ms))}；Token/s：${escapeHtml(speed)}</p>${(measurement.request_protocol === 'responses' ? [['实际输出 Token',measurement.output_tokens ?? '未提供'], ...responsesMetrics(measurement)] : []).concat(cacheMetrics(measurement)).map(([label,value]) => `<p>${escapeHtml(label)}：${escapeHtml(value)}</p>`).join('')}${measurement.error ? `<details class="local-diagnostic"><summary>检测诊断（本地记录）</summary><pre>${escapeHtml(measurement.error)}</pre></details>` : ''}</section>`;
     }).join('')}</div></details>`).join('');
   }
-  return `<!doctype html><html lang="zh-CN"><meta charset="utf-8"><meta name="viewport" content="width=device-width"><title>准入测试报告</title><style>*{box-sizing:border-box}body{max-width:1100px;margin:32px auto;padding:20px;font:16px/1.6 sans-serif;color:#172c29;overflow-wrap:anywhere}.headline{padding:18px;background:#e5eee7;border-left:5px solid #0a675d}.cards,.two{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:12px}.cards{grid-template-columns:repeat(3,minmax(0,1fr));margin:18px 0}section,.card{min-width:0}.card,details{border:1px solid #d7ded5;border-radius:8px;padding:14px;margin:12px 0}.card small,.card strong{display:block}table{width:100%;border-collapse:collapse}td,th{padding:10px;border-bottom:1px solid #d7ded5;text-align:left}pre{white-space:pre-wrap;overflow-wrap:anywhere;background:#f3f5ef;padding:12px}.notice{padding:10px;background:#f7f0df}.upstream-error-message{max-height:160px;overflow:auto;white-space:pre-wrap}@media(max-width:700px){.cards,.two{grid-template-columns:1fr}}</style><h1>准入测试报告</h1><p>候选：${escapeHtml(endpointText(source.candidate))}<br>参照：${escapeHtml(endpointText(source.reference))}</p><p>${escapeHtml(evidence.coverage_complete ? "完整报告" : "未完成快照：仅包含当前已记录证据")}</p><p>${escapeHtml(source.created_at)} · ${escapeHtml(reportStatus[source.status] || source.status)}</p><div class="headline"><h2>${escapeHtml(summary.overall?.label || '证据不足')}</h2><p>能力由人员阅读逐题回答后判断，系统不自动给出准入决定。</p></div>${tokenSection}<div class="cards">${cards}</div><ul>${(summary.explanations || []).map(item=>`<li>${escapeHtml(item)}</li>`).join('')}</ul><h2>逐题摘要</h2><table><thead><tr><th>题目</th><th>异常归因</th><th>速度</th><th>能力</th></tr></thead><tbody>${pairRows}</tbody></table>${details}</html>`;
+  return `<!doctype html><html lang="zh-CN"><meta charset="utf-8"><meta name="viewport" content="width=device-width"><title>准入测试报告</title><style>*{box-sizing:border-box}body{max-width:1100px;margin:32px auto;padding:20px;font:16px/1.6 sans-serif;color:#172c29;overflow-wrap:anywhere}.headline{padding:18px;background:#e5eee7;border-left:5px solid #0a675d}.cards,.two{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:12px}.cards{grid-template-columns:repeat(3,minmax(0,1fr));margin:18px 0}section,.card{min-width:0}.card,details{border:1px solid #d7ded5;border-radius:8px;padding:14px;margin:12px 0}.card small,.card strong{display:block}table{width:100%;border-collapse:collapse}td,th{padding:10px;border-bottom:1px solid #d7ded5;text-align:left}pre{white-space:pre-wrap;overflow-wrap:anywhere;background:#f3f5ef;padding:12px}.notice{padding:10px;background:#f7f0df}.upstream-error-message{max-height:160px;overflow:auto;white-space:pre-wrap}@media(max-width:700px){.cards,.two{grid-template-columns:1fr}}</style><h1>准入测试报告</h1><p>候选：${escapeHtml(endpointText(source.candidate))}<br>参照：${escapeHtml(endpointText(source.reference))}</p><p>${escapeHtml(evidence.coverage_complete ? "完整报告" : "未完成快照：仅包含当前已记录证据")}</p><p>${escapeHtml(source.created_at)} · ${escapeHtml(reportStatus[source.status] || source.status)}</p><div class="headline"><h2>${escapeHtml(summary.overall?.label || '证据不足')}</h2><p>能力由人员阅读逐题回答后判断，系统不自动给出准入决定。</p></div>${tokenSection}<div class="cards">${cards}</div><ul>${explanations.map(item=>`<li>${escapeHtml(item)}</li>`).join('')}</ul><h2>逐题摘要</h2><table><thead><tr><th>题目</th><th>异常归因</th><th>速度</th><th>能力</th></tr></thead><tbody>${pairRows}</tbody></table>${details}</html>`;
 }
 
 const queueCards = new Map();
