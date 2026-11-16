@@ -18,6 +18,9 @@ from features.protocol_admission.api import app as protocol_app
 
 
 _feishu_tasks: set[asyncio.Task[None]] = set()
+MAX_ADMISSION_ROUNDS = 5
+MAX_REPORT_QUESTIONS = len(engine.questions_for(True))
+MAX_REPORT_PAIRS = MAX_REPORT_QUESTIONS * MAX_ADMISSION_ROUNDS
 
 
 class CandidateInput(BaseModel):
@@ -47,7 +50,7 @@ class CompareInput(BaseModel):
     model_config = ConfigDict(extra="forbid")
     candidate: CandidateInput
     reference: AdmissionSelection
-    rounds: int = Field(default=2, ge=1, le=5)
+    rounds: int = Field(default=2, ge=1, le=MAX_ADMISSION_ROUNDS)
     injection_probe: bool = False
 
 
@@ -72,7 +75,7 @@ class ReportQuestionInput(BaseModel):
 
 class ReportResponseInput(BaseModel):
     model_config = ConfigDict(extra="forbid")
-    round: int = Field(ge=1, le=5)
+    round: int = Field(ge=1, le=MAX_ADMISSION_ROUNDS)
     question_id: str = Field(min_length=1, max_length=80)
     side: Literal["candidate", "reference"]
     content: str = Field(default="", max_length=200_000)
@@ -96,16 +99,16 @@ class AdmissionReportInput(BaseModel):
     version: Literal[1, 2]
     created_at: str = Field(min_length=1, max_length=80)
     status: Literal["completed", "canceled", "failed"]
-    rounds: int = Field(ge=1, le=5)
+    rounds: int = Field(ge=1, le=MAX_ADMISSION_ROUNDS)
     run_id: str = Field(default="", max_length=80)
     warmup_rounds: int = Field(default=0, ge=0, le=1)
     candidate: ReportEndpointInput
     reference: ReportEndpointInput
-    questions: list[ReportQuestionInput] = Field(min_length=1, max_length=12)
-    measurements: list[dict[str, Any]] = Field(default_factory=list, max_length=60)
-    responses: list[ReportResponseInput] = Field(default_factory=list, max_length=60)
+    questions: list[ReportQuestionInput] = Field(min_length=1, max_length=MAX_REPORT_QUESTIONS)
+    measurements: list[dict[str, Any]] = Field(default_factory=list, max_length=MAX_REPORT_PAIRS * 2)
+    responses: list[ReportResponseInput] = Field(default_factory=list, max_length=MAX_REPORT_PAIRS * 2)
     summary: dict[str, Any] = Field(default_factory=dict)
-    pairs: list[dict[str, Any]] = Field(default_factory=list, max_length=30)
+    pairs: list[dict[str, Any]] = Field(default_factory=list, max_length=MAX_REPORT_PAIRS)
     token_usage: dict[str, Any] | None = None
 
 

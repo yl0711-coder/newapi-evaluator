@@ -59,6 +59,28 @@ class ServiceTests(unittest.IsolatedAsyncioTestCase):
         return self.svc.submit(self.candidate, "synthetic-model", "openai", confirm_live=True,
                                idempotency_key=idem, **kwargs)
 
+    async def test_numeric_job_failure_preserves_consumed_permit_and_next_job_executes(self):
+        first = self.submit('synthetic-numeric-first')
+        second = self.submit('synthetic-numeric-next')
+        async def numeric_failure(*args, before_send, **kwargs):
+            await before_send('candidate', 0)
+            raise OverflowError('synthetic-numeric-failure')
+        with patch.object(service, 'run_paired_check', numeric_failure):
+            failed = await self.svc.execute_one(active=True)
+        self.assertEqual(failed['job_id'], first['job_id'])
+        self.assertEqual(failed['status'], 'completed')
+        self.assertEqual(failed['result']['reason'], 'invalid_usage_numeric')
+        self.assertEqual(failed['result']['requests_sent'], 1)
+        self.assertEqual(sum(a['state'] == 'unknown' for a in failed['attempts']), 1)
+        async def healthy(request):
+            return httpx.Response(200, json={'choices': [{'message': {'content': 'OK'}, 'finish_reason': 'stop'}], 'usage': {'prompt_tokens': 2048}})
+        self.svc.upstream_transport = httpx.MockTransport(healthy)
+        complete = await self.svc.execute_one(active=True)
+        self.assertEqual(complete['job_id'], second['job_id'])
+        self.assertEqual(complete['result']['conclusion'], 'normal')
+        self.assertEqual(complete['result']['requests_sent'], 2)
+        self.assertIsNone(await self.svc.execute_one(active=True, job_id=first['job_id']))
+
     def schedule(self):
         self.now = 1801
         config = self.svc.save_config(self.candidate, "synthetic-model", "openai", enabled=True, confirm_live=True)

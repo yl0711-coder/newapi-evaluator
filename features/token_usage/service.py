@@ -282,6 +282,10 @@ class TokenUsageService:
             self.store.publish(job_id, self.owner, stopped("cancelled_unknown"), terminal=True)
             if not self.store.get(job_id, administrative=True)["cancellation_requested"]:
                 raise
+        except ArithmeticError:
+            # Isolate a malformed numerical observation to this job. Publishing
+            # terminally also preserves confirmed permits and makes sending unknown.
+            self.store.publish(job_id, self.owner, stopped("invalid_usage_numeric"), terminal=True)
         except (ValueError, RegistryError, KeyError, RuntimeError):
             reason = control_reason or self.store.schedule_stop_reason(row["config_id"], spec) or ("missed_scheduled_window" if missed_window() else "target_or_reference_changed_or_execution_stopped")
             self.store.publish(job_id, self.owner, stopped(reason), terminal=True)

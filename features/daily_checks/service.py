@@ -230,6 +230,10 @@ class DailyChecks:
         await execute_requests(session, requests, lambda: self._resolve_item(item), self.sender, project, record_connect_failure=True)
 
     async def _run_usage(self, item, batch):
+        if item["usage_job_id"]:
+            existing = self.token.store.get(item["usage_job_id"], administrative=True)
+            if existing["status"] in {"completed", "cancelled"}:
+                return  # Completed evidence belongs to its frozen configuration.
         binding = self.token.store.binding(item["model"], item["protocol"])
         if binding["revision"] != item["profile"]["binding_revision"]:
             raise RegistryError("reference_changed")

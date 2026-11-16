@@ -345,7 +345,12 @@ def build_injection_summary(report: dict[str, Any], pairs: list[dict[str, Any]])
         and (int(pair.get("round") or 0), str(pair.get("question_id") or ""), "reference") in responses
         for pair in probe_pairs
     )
-    full_coverage = bool(probe_pairs) and len(probe_pairs) == len(identity_ids) * repeated_rounds and complete_pairs
+    expected_pairs = {(number, probe_id)
+                      for number in range(1, int(report.get("rounds") or 0) + 1)
+                      for probe_id in probe_ids}
+    observed_pairs = {(int(pair.get("round") or 0), str(pair.get("question_id") or ""))
+                      for pair in probe_pairs}
+    full_coverage = bool(expected_pairs) and observed_pairs == expected_pairs and complete_pairs
     enough_repetition = report.get("status") == "completed" and repeated_rounds >= 2 and len(identity_ids) >= 2
     if not enough_repetition or not full_coverage:
         classification = "indeterminate"

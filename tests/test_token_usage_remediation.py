@@ -17,7 +17,7 @@ from unittest.mock import patch
 import httpx
 
 from features.model_coverage.catalog import Catalog
-from features.token_usage.domain import classify_pair, normalize_usage, observation
+from features.token_usage.domain import MAX_REPORTED_TOKENS, classify_pair, normalize_usage, observation
 from features.token_usage.service import TokenUsageService
 from features.token_usage.transport import MAX_RESPONSE_BYTES, _attempt, headers
 from shared.registry import Registry, RegistryError
@@ -62,6 +62,30 @@ class Chunks(httpx.AsyncByteStream):
 
 
 class StreamRegressionTests(unittest.IsolatedAsyncioTestCase):
+    async def test_unrepresentable_output_usage_preserves_input_comparison_without_fake_speed(self):
+        events = chat_events()
+        events[0]['usage'].update(completion_tokens=10**400, completion_tokens_details={'reasoning_tokens': 0})
+        result = await self.attempt(Chunks([sse(events)]))
+        self.assertTrue(result['valid'])
+        self.assertEqual(result['normalized_input_tokens'], 2048)
+        self.assertTrue(result['output_usage_invalid'])
+        self.assertIsNone(result['output_tokens_reported'])
+        self.assertIsNone(result['tokens_per_second'])
+
+    async def test_output_usage_boundary_and_missing_values_keep_existing_semantics(self):
+        for count, invalid in ((0, False), (MAX_REPORTED_TOKENS, False), (MAX_REPORTED_TOKENS + 1, True)):
+            with self.subTest(count=count):
+                events = chat_events()
+                events[0]['usage'].update(completion_tokens=count, completion_tokens_details={'reasoning_tokens': 0})
+                result = await self.attempt(Chunks([sse(events)]))
+                self.assertTrue(result['valid'])
+                self.assertEqual(result.get('output_usage_invalid', False), invalid)
+                self.assertEqual(result['output_tokens_reported'], None if invalid else count)
+        result = await self.attempt(Chunks([sse(chat_events())]))
+        self.assertTrue(result['valid'])
+        self.assertFalse(result.get('output_usage_invalid', False))
+        self.assertIsNone(result['tokens_per_second'])
+
     async def attempt(self, stream, kind="openai", extra_headers=None):
         async def upstream(request):
             self.assertEqual(request.headers["accept-encoding"], "identity")
