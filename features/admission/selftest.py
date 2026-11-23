@@ -302,6 +302,14 @@ class StreamProtocolTests(unittest.TestCase):
 
 
 class ChannelExtractionTests(unittest.TestCase):
+    def test_extracts_native_gemini_curl_base_and_header(self) -> None:
+        endpoint = "https://mock.example/v1beta/models/gemini-demo:streamGenerateContent"
+        extracted = extract_channel_credentials(f"curl '{endpoint}?alt=sse' -H 'x-goog-api-key: synthetic'")
+        self.assertEqual(extracted["base_url"], "https://mock.example/v1beta")
+        self.assertEqual(extracted["api_key"], "synthetic")
+        with self.assertRaises(ValueError):
+            extract_channel_credentials(f"curl '{endpoint}?alt=sse&key=synthetic'")
+
     def test_extracts_json_credentials(self) -> None:
         extracted = extract_channel_credentials(
             '{"channel":{"base_url":"https://relay.example/v1","api_key":"sk-json-123"}}'
@@ -471,6 +479,23 @@ class StreamingMeasurementTests(unittest.IsolatedAsyncioTestCase):
         self.assertNotIn("secret", text)
         self.assertTrue(text.startswith("Synthetic ") and text.endswith(" answer"))
         self.assertIn("[REDACTED]", text)
+
+    async def test_gemini_native_does_not_follow_redirects(self) -> None:
+        hosts = []
+
+        def handler(request: httpx.Request) -> httpx.Response:
+            hosts.append(request.url.host)
+            return httpx.Response(307, headers={"Location": "https://different.example/v1beta"})
+
+        endpoint = EndpointConfig(base_url="https://mock.example/v1beta", api_key="synthetic",
+                                  protocol="gemini", model="gemini-demo")
+        queue = asyncio.Queue()
+        async with httpx.AsyncClient(transport=httpx.MockTransport(handler), follow_redirects=True) as client:
+            await measure_side("candidate", endpoint, QUESTIONS[0], queue, client)
+        self.assertEqual(hosts, ["mock.example"])
+        measurement = next(event for event in iter(queue.get_nowait, None) if event["type"] == "side_finished")
+        self.assertFalse(measurement["ok"])
+        self.assertEqual(measurement["http_status"], 307)
 
     async def test_measurement_emits_chunks_and_metrics(self) -> None:
         def handler(request: httpx.Request) -> httpx.Response:

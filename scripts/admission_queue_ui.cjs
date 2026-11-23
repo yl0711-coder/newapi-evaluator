@@ -22,7 +22,7 @@ const splitCases = [
 ];
 const geminiModel = 'gemini-3.8-flash';
 const expectedMockRequests = 126 + splitCases.length * 12;
-const expectedChecks = 22 + splitCases.length;
+const expectedChecks = 23 + splitCases.length;
 const browserBudgetMs = 240000;
 const runStartedAt = performance.now();
 const rawCases = [
@@ -165,6 +165,11 @@ const upstream = http.createServer(async (req, res) => {
       assert.deepEqual(body.generationConfig, {candidateCount:1,maxOutputTokens:4096});
       assert.equal(body.contents[0].role, 'user');
       assert.ok(body.systemInstruction.parts[0].text);
+    } else if (owner === 'fifo-two') {
+      assert.equal(body.model, geminiModel);
+      assert.equal(endpoint, 'chat/completions');
+      assert.equal(body.max_tokens, 4096);
+      assert.deepEqual(body.stream_options, {include_usage:true});
     } else {
       assert.equal(body.model, 'synthetic-queue-model');
     }
@@ -640,7 +645,8 @@ async function run() {
   const first = await submit(page, 'fifo-one', channels['fifo-one'], 'gemini', geminiModel);
   await page.getByText('Gemini 原生协议跳过输入 Token 专项，六题仍会记录上游用量。', {exact:true}).waitFor();
   await until(() => held.get('fifo-one')?.size === 2, 'First question pair reaches the local upstream gate');
-  const second = await submit(page, 'fifo-two', channels['fifo-two']);
+  const second = await submit(page, 'fifo-two', channels['fifo-two'], 'openai', geminiModel);
+  await page.waitForFunction(() => document.querySelector('#token-precheck').textContent.includes('可信绑定'));
   const third = await submit(page, 'fifo-three', channels['fifo-three']);
   assert.ok(first < second && second < third);
   for (const [id, state, position] of [[first, 'running', 1], [second, 'queued', 2], [third, 'queued', 3]]) {
@@ -695,7 +701,10 @@ async function run() {
   const cancelled = await until(async () => {const snapshot = await job(third); return snapshot.state === 'cancelled' && snapshot;}, 'Queued cancellation finishes');
   assert.ok(cancelled.report_id, 'Queued cancellation stores its partial report');
   assert.equal(requests.filter(item => item.owner === 'fifo-three').length, 0);
-  release('fifo-two'); await completed(second);
+  release('fifo-two');
+  const secondReport = (await completed(second)).report;
+  assert.ok(secondReport.measurements.length === 12 && secondReport.measurements.every(item => item.ok && item.finish_reason === 'stop'));
+  checks.push('gemini_compatible_chat_still_runs');
   checks.push('queued_cancel_sends_zero_requests');
   phase = 'report_history_export';
   await page.locator('#report-history-panel > summary').click();

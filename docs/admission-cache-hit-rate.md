@@ -1,19 +1,21 @@
 # 准入测试缓存命中率
 
-准入测试只展示上游响应 `usage` 中明确报告的缓存字段。它不使用本地 tokenizer、字符数或价格推算补齐数据；缺失值保持 `null`，不解释为 0%。缓存信息是技术证据，不参与自动准入结论。
+准入测试只展示上游响应明确报告的缓存字段。Gemini 原生协议读取 `usageMetadata`，其他协议读取 `usage`。缺失值保持 `null`，不解释为 0%。缓存信息是技术证据，不参与自动准入结论。
 
-## 三种协议的字段口径
+## 各协议的字段口径
 
 | 协议 | 输入 Token | 缓存命中 | 缓存写入 | 命中率分母 |
 | --- | --- | --- | --- | --- |
 | OpenAI Chat Completions | `prompt_tokens` | `prompt_tokens_details.cached_tokens` | 未使用 | `prompt_tokens`（已包含缓存命中 Token） |
 | OpenAI Responses | `input_tokens` | `input_tokens_details.cached_tokens` | 未使用 | `input_tokens`（已包含缓存命中 Token） |
 | Anthropic Messages | `input_tokens`（未缓存输入） | `cache_read_input_tokens` | `cache_creation_input_tokens` | `input_tokens + cache_read_input_tokens + cache_creation_input_tokens` |
+| Gemini 原生 | `promptTokenCount` | `cachedContentTokenCount` | 未提供 | `promptTokenCount`（已包含缓存命中 Token） |
 
 公式为：
 
 - OpenAI Chat/Responses：`cached_tokens / input_tokens`。
 - Anthropic Messages：`cache_read_input_tokens / (input_tokens + cache_read_input_tokens + cache_creation_input_tokens)`。
+- Gemini 原生的命中率为 `cachedContentTokenCount / promptTokenCount`。
 
 Anthropic 的 `cache_creation_input_tokens` 是缓存写入，不计入命中 Token；它只进入分母。OpenAI 的 `input_tokens` 已包含缓存 Token，不再把 `cached_tokens` 加回分母。
 

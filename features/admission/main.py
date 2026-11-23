@@ -323,6 +323,12 @@ def _normalized_channel_url(value: str) -> str:
     url = value.strip().strip("\"',`").rstrip(".,;:!?)")
     if url and not url.startswith(("http://", "https://")):
         url = f"https://{url}"
+    parsed = urlparse(url)
+    native = re.fullmatch(r"(.*?/v\d+(?:[a-z]+\d*)?)/models/[A-Za-z0-9._-]+:(?:streamGenerateContent|generateContent)", parsed.path)
+    if native:
+        if parsed.username is not None or parsed.password is not None or parsed.params or parsed.fragment or parsed.query not in {"", "alt=sse"}:
+            raise ValueError("请移除 Gemini URL 中的凭据、参数和片段，再单独填写 API Key。")
+        return parsed._replace(path=native[1], query="").geturl()
     return re.sub(r"/(chat/completions|responses|messages|models)/?$", "", url.rstrip("/"), flags=re.I)
 
 
@@ -1441,12 +1447,13 @@ async def _measure_side(
             endpoint_url(config),
             headers=build_headers(config),
             json=payload,
+            follow_redirects=False if gemini_native else httpx.USE_CLIENT_DEFAULT,
         ) as response:
             evidence["http_status"] = response.status_code
             header_request_id = response.headers.get("x-request-id") or response.headers.get("request-id")
             if header_request_id:
                 upstream_request_ids.add(header_request_id)
-            if response.status_code >= 400:
+            if response.status_code >= 400 or (gemini_native and 300 <= response.status_code < 400):
                 error_body = ""
                 error_body_size = 0
                 async for value in response.aiter_text():
