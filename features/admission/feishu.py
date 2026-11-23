@@ -11,9 +11,9 @@ from urllib.parse import quote, urlsplit, urlunsplit
 import httpx
 
 try:
-    from .main import PRESETS
+    from .main import PRESETS, is_gemini_model
 except ImportError:  # Direct execution of features/admission/selftest.py.
-    from main import PRESETS
+    from main import PRESETS, is_gemini_model
 
 
 FEISHU_ORIGIN = "https://open.feishu.cn"
@@ -80,6 +80,8 @@ def group_for_model(model: str) -> str:
     normalized = model.strip().casefold()
     if normalized in MODEL_GROUPS:
         return MODEL_GROUPS[normalized]
+    if is_gemini_model(normalized):
+        return "Gemini"
     for markers, group in FAMILY_MARKERS:
         if any(marker in normalized for marker in markers):
             return group

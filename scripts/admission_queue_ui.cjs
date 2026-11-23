@@ -20,8 +20,9 @@ const splitCredentialKeys = new Set(), splitHeld = new Map();
 const splitCases = [
   {owner:'split-chat', protocol:'openai'}, {owner:'split-responses', protocol:'responses'}, {owner:'split-messages', protocol:'anthropic'}
 ];
+const geminiModel = 'gemini-3.8-flash';
 const expectedMockRequests = 126 + splitCases.length * 12;
-const expectedChecks = 20 + splitCases.length;
+const expectedChecks = 22 + splitCases.length;
 const browserBudgetMs = 240000;
 const runStartedAt = performance.now();
 const rawCases = [
@@ -149,7 +150,12 @@ const upstream = http.createServer(async (req, res) => {
     assert.ok(match, 'Only the owned synthetic upstream path is requested');
     const [, owner, side, endpoint] = match;
     const protocol = {responses:'responses', messages:'anthropic'}[endpoint] || 'openai';
-    assert.equal(body.model, 'synthetic-queue-model');
+    assert.equal(body.model, owner === 'fifo-one' ? geminiModel : 'synthetic-queue-model');
+    if (owner === 'fifo-one') {
+      assert.equal(endpoint, 'chat/completions');
+      assert.equal(body.max_tokens, 4096);
+      assert.deepEqual(body.stream_options, {include_usage:true});
+    }
     const input = body.messages?.at(-1)?.content || '';
     requests.push({owner, side, stream:Boolean(body.stream), specialized:input.startsWith('Read the synthetic inventory below. Reply only OK.\nrecord-0000:'),
       signature:crypto.createHash('sha256').update(req.url + JSON.stringify(body)).digest('hex')});
@@ -245,15 +251,19 @@ function card(page, id) {
   return page.locator('#admission-queue article').filter({has:page.getByRole('heading', {name:new RegExp(`^任务 #${id} ·`)})});
 }
 
-async function submit(page, owner, channelId, protocol = 'openai') {
+async function submit(page, owner, channelId, protocol = 'openai', preset = '') {
   const key = `synthetic-candidate-${owner}`; candidateKeys.add(key);
   await page.locator('#candidate-name').fill(`候选 ${owner} <script>/..`);
   await page.locator('#candidate-url').fill(`${upstreamUrl}/${owner}/candidate/v1`);
   await page.locator('#candidate-key').fill(key);
-  await page.locator('#candidate-model').fill('synthetic-queue-model');
-  await page.locator('#reference-model').fill('synthetic-queue-model');
-  await page.locator('#candidate-protocol').selectOption(protocol);
-  await page.locator('#reference-protocol').selectOption(protocol);
+  if (preset) {
+    await page.locator('#preset').selectOption(preset);
+  } else {
+    await page.locator('#candidate-model').fill('synthetic-queue-model');
+    await page.locator('#reference-model').fill('synthetic-queue-model');
+    await page.locator('#candidate-protocol').selectOption(protocol);
+    await page.locator('#reference-protocol').selectOption(protocol);
+  }
   await page.locator('#reference-id').selectOption(String(channelId));
   await page.locator('#rounds').selectOption('1');
   const accepted = page.waitForResponse(response => new URL(response.url()).pathname === '/admission/api/jobs' && response.request().method() === 'POST');
@@ -551,6 +561,53 @@ async function rawResponseChecks(page) {
   await page.setViewportSize({width:1440, height:1000});
 }
 
+async function modelSelectionChecks(page) {
+  phase = 'shared_model_selection';
+  const model = 'synthetic-admission-custom';
+  const label = `自定义 · 合成准入模型（${model}）`;
+  const picker = page.locator('#preset');
+  const requestsBefore = requests.length;
+  assert.equal(await picker.locator('option', {hasText:label}).count(), 0);
+  const manager = await browser.newPage();
+  manager.on('pageerror', error => errors.push(error.name));
+  try {
+    await manager.goto(base + '/channels/#shared-models');
+    await manager.locator('#catalog-add').click();
+    await manager.locator('#catalog-model').fill(model);
+    await manager.locator('#catalog-label').fill('合成准入模型');
+    await manager.locator('#catalog-family').fill('自定义');
+    await manager.locator('#catalog-protocol').selectOption('responses');
+    await manager.locator('#catalog-submit').click();
+    await manager.locator(`[data-shared-model="${model}"]`).waitFor();
+  } finally { await manager.close(); }
+
+  const refresh = page.getByRole('button', {name:'刷新共用模型', exact:true});
+  await refresh.click();
+  const option = page.locator('#shared-model-options option', {hasText:label});
+  await option.waitFor({state:'attached'});
+  const value = await option.getAttribute('value');
+  await picker.selectOption({label});
+  for (const side of ['candidate','reference']) {
+    assert.equal(await page.locator(`#${side}-model`).inputValue(), model);
+    assert.equal(await page.locator(`#${side}-protocol`).inputValue(), 'responses');
+  }
+  await refresh.click();
+  await page.waitForFunction(() => !document.getElementById('refresh-shared-models').disabled);
+  assert.equal(await picker.inputValue(), value);
+  await page.reload();
+  await option.waitFor({state:'attached'});
+  assert.equal(await option.getAttribute('value'), value);
+  assert.equal(requests.length, requestsBefore, 'Reading and selecting shared models never calls the upstream');
+  checks.push('manual_shared_model_visible_selectable_and_persisted');
+
+  await picker.selectOption(geminiModel);
+  for (const width of [390, 900, 1440]) {
+    await page.setViewportSize({width, height:1000});
+    assert.equal(await page.evaluate(() => document.documentElement.scrollWidth > innerWidth + 2), false);
+    await page.locator('#compare-form').screenshot({path:path.join(data, `gemini-form-${width}.png`), animations:'disabled'});
+  }
+}
+
 async function run() {
   await new Promise(resolve => upstream.listen(0, '127.0.0.1', resolve));
   upstreamUrl = `http://127.0.0.1:${upstream.address().port}`;
@@ -565,7 +622,7 @@ async function run() {
   }
   let page = await openBrowser();
   phase = 'fifo_submission';
-  const first = await submit(page, 'fifo-one', channels['fifo-one']);
+  const first = await submit(page, 'fifo-one', channels['fifo-one'], 'openai', geminiModel);
   await until(() => held.get('fifo-one')?.size === 2, 'First question pair reaches the local upstream gate');
   const second = await submit(page, 'fifo-two', channels['fifo-two']);
   const third = await submit(page, 'fifo-three', channels['fifo-three']);
@@ -599,7 +656,14 @@ async function run() {
   await browser.close(); browser = null;
   release('fifo-one');
   const firstResult = await completed(first);
-  assert.equal(firstResult.report.measurements.length, 12);
+  const {candidate, reference, pairs, measurements} = firstResult.report;
+  assert.deepEqual([candidate.model, reference.model], [geminiModel, geminiModel]);
+  assert.deepEqual([candidate.protocol, reference.protocol], ['openai', 'openai']);
+  assert.equal(pairs.length, 6);
+  assert.equal(measurements.length, 12);
+  assert.ok(measurements.every(item => item.ok && item.finish_reason === 'stop' && !item.speed_data_valid));
+  assert.equal(requests.filter(item => item.owner === 'fifo-one').length, 12);
+  checks.push('gemini_presets_run_paired_chat_and_report');
   assert.equal(firstResult.report.token_usage?.conclusion, 'unable_to_determine', 'No trusted binding produces an unknown Token conclusion');
   assert.ok(requests.filter(item => item.owner === 'fifo-one').every(item => !item.specialized), 'No trusted binding sends zero specialized Token requests');
   await until(() => held.get('fifo-two')?.size === 2, 'Second job starts while the browser is closed');
@@ -811,6 +875,7 @@ async function run() {
   checks.push('queue_mixed_heights_five_at_every_scroll_position');
   await rawResponseChecks(page);
   await splitKeyChecks(page);
+  await modelSelectionChecks(page);
   assert.deepEqual(errors, []);
   await browser.close(); browser = null; await stopApp();
   for (const name of fs.readdirSync(data, {recursive:true})) {
@@ -818,7 +883,7 @@ async function run() {
     if (fs.statSync(file).isFile()) for (const key of new Set([...candidateKeys,...splitCredentialKeys])) assert.ok(!fs.readFileSync(file).includes(Buffer.from(key)), 'Temporary credentials never reach an evidence file or database');
   }
   assert.ok(!fixtureError);
-  assert.equal(requests.length,expectedMockRequests,'Fixed Mock request count includes the three new split-key jobs');
+  assert.equal(requests.length,expectedMockRequests,'Every expected Mock request runs once');
   assert.equal(checks.length,expectedChecks,'Every fixed browser acceptance scenario ran');
   return {status:'passed', checks, mockRequests:requests.length, maxActiveJobs, unknownSteps:recovered.progress.unknown,
     screenshotAudits, duration_ms:Math.round(performance.now()-runStartedAt), budget_ms:browserBudgetMs, real_upstream_tested:false, artifacts:data};

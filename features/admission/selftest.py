@@ -268,6 +268,23 @@ class StreamProtocolTests(unittest.TestCase):
         with self.assertRaises(ValueError):
             chat_completions_url("api.example.com/v1")
 
+    def test_gemini_presets_use_compatible_endpoint_and_shared_budget(self) -> None:
+        ids = {preset["model"] for preset in PRESETS if preset["provider"] == "Gemini"}
+        self.assertEqual(ids, {"gemini-4-carbon", "gemini-4-neon", "gemini-4-hydrogen", "gemini-4-argon",
+                               "gemini-3.8-flash", "gemini-3.5-flash-lite", "gemini-3.1-pro-preview",
+                               "gemini-3-flash-preview"})
+        for preset in PRESETS:
+            if preset["model"] in ids:
+                config = EndpointConfig(base_url=preset["official_base_url"], api_key="synthetic",
+                                        model=preset["model"], protocol=preset["protocol"])
+                self.assertEqual(endpoint_url(config),
+                                 "https://generativelanguage.googleapis.com/v1beta/openai/chat/completions")
+                self.assertEqual(preset["protocol"], "openai")
+                payload = build_payload(config, QUESTIONS[0])
+                self.assertEqual(payload["max_tokens"], 4096)
+                self.assertEqual(payload["stream_options"], {"include_usage": True})
+                self.assertEqual(payload["model"], preset["model"])
+
 
 class ChannelExtractionTests(unittest.TestCase):
     def test_extracts_json_credentials(self) -> None:
@@ -318,13 +335,13 @@ class StaticStream(httpx.AsyncByteStream):
 
 
 class StreamingMeasurementTests(unittest.IsolatedAsyncioTestCase):
-    async def measure_events(self, stream: httpx.AsyncByteStream) -> list[dict]:
+    async def measure_events(self, stream: httpx.AsyncByteStream, model: str = "demo") -> list[dict]:
         def handler(request: httpx.Request) -> httpx.Response:
             return httpx.Response(200, headers={"content-type": "text/event-stream"}, stream=stream)
 
         queue: asyncio.Queue = asyncio.Queue()
         endpoint = EndpointConfig(
-            base_url="https://mock.example/v1", api_key="secret", model="demo", protocol="openai"
+            base_url="https://mock.example/v1", api_key="secret", model=model, protocol="openai"
         )
         async with httpx.AsyncClient(transport=httpx.MockTransport(handler)) as client:
             await measure_side("candidate", endpoint, QUESTIONS[0], queue, client)
@@ -337,6 +354,48 @@ class StreamingMeasurementTests(unittest.IsolatedAsyncioTestCase):
     async def measure(self, stream: httpx.AsyncByteStream) -> dict:
         events = await self.measure_events(stream)
         return next(event for event in events if event["type"] == "side_finished")
+
+    async def test_gemini_chat_stream_outcomes(self) -> None:
+        answer = b'data: {"choices":[{"delta":{"content":"Synthetic reply"}}]}\n\n'
+        for chunks, status in [
+            ((answer, b'data: {"choices":[{"delta":{},"finish_reason":"stop"}]}\n\n',
+              b'data: {"choices":[],"usage":{"prompt_tokens":13,"completion_tokens":4}}\n\n'
+              b'data: [DONE]\n\n'), "completed"),
+            ((answer,), "incomplete_stream"),
+            ((answer, b'data: {"choices":[{"delta":{},"finish_reason":"length"}]}\n\n'), "truncated"),
+            ((answer, b'data: {"choices":[{"delta":{},"finish_reason":"content_filter"}]}\n\n'), "refused"),
+            ((answer, b'data: {"choices":[{"delta":{},"finish_reason":"tool_calls"}]}\n\n'), "protocol_error"),
+            ((answer, b'data: {"choices":[{"delta":{},"finish_reason":"other"}]}\n\n'), "protocol_error"),
+            ((b'data: {"choices":[{"delta":{"reasoning_content":"Synthetic thought"},"finish_reason":"stop"}]}\n\n',), "empty"),
+        ]:
+            with self.subTest(status=status):
+                events = await self.measure_events(StaticStream(*chunks), "google/gemini-3.8-flash")
+                finished = next(event for event in events if event["type"] == "side_finished")
+                self.assertEqual(finished["status"], status)
+                self.assertEqual(finished["ok"], status == "completed")
+                if status == "completed":
+                    self.assertEqual(finished["input_tokens"], 13)
+                    self.assertEqual(finished["output_tokens"], 4)
+
+    async def test_gemini_chat_speed_requires_unambiguous_visible_token_usage(self) -> None:
+        for reasoning, expected_speed in [(None, None), (1000, None), (0, 3.0)]:
+            with self.subTest(reasoning=reasoning):
+                usage = {"prompt_tokens": 13, "completion_tokens": 1004 if reasoning else 4}
+                if reasoning is not None:
+                    usage["completion_tokens_details"] = {"reasoning_tokens": reasoning}
+                stream = StaticStream(
+                    b'data: {"choices":[{"delta":{"content":"Synthetic "}}]}\n\n',
+                    b'data: {"choices":[{"delta":{"content":"reply"},"finish_reason":"stop"}]}\n\n',
+                    ("data: " + json.dumps({"choices": [], "usage": usage}) + "\n\ndata: [DONE]\n\n").encode(),
+                )
+                with patch("main.perf_counter", side_effect=range(20)):
+                    events = await self.measure_events(stream, "gemini-4-hydrogen")
+                finished = next(event for event in events if event["type"] == "side_finished")
+                self.assertTrue(finished["ok"])
+                self.assertEqual(finished["output_tokens"], usage["completion_tokens"])
+                self.assertEqual(finished["reasoning_tokens"], reasoning)
+                self.assertEqual(finished["tokens_per_second"], expected_speed)
+                self.assertEqual(finished["speed_data_valid"], expected_speed is not None)
 
     async def test_measurement_emits_chunks_and_metrics(self) -> None:
         def handler(request: httpx.Request) -> httpx.Response:
@@ -576,6 +635,8 @@ class FeishuAdmissionTests(unittest.IsolatedAsyncioTestCase):
         expected = {
             "gpt-5.6-sol": "Codex",
             "claude-opus-5": "Claude",
+            "gemini-4-hydrogen": "Gemini",
+            "google/Gemini-3.8-flash-custom": "Gemini",
             "glm-5.3": "智谱",
             "kimi-k3": "Kimi",
             "deepseek-v4-pro": "DeepSeek",

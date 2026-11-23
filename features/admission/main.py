@@ -16,7 +16,7 @@ from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, Field, model_validator
 
 from shared.redaction import scrub
-from features.token_usage.domain import normalize_usage
+from features.token_usage.domain import normalize_usage, tokens as reported_token_count
 
 
 ROOT = Path(__file__).resolve().parent
@@ -30,6 +30,7 @@ GPT6_MODEL = "gpt-6-astra"
 GPT6_OUTPUT_LIMIT = 4096
 GPT6_REASONING_EFFORT = "low"
 ANTHROPIC_OUTPUT_FLOOR = 4096
+GEMINI_OUTPUT_FLOOR = 4096
 RESPONSES_TOTAL_TIMEOUT_SECONDS = 240
 RAW_RESPONSE_MAX_BYTES = 16_384
 AdmissionProtocol = Literal["openai", "responses", "anthropic"]
@@ -37,6 +38,11 @@ AdmissionProtocol = Literal["openai", "responses", "anthropic"]
 
 def required_protocol(model: str) -> str | None:
     return "responses" if model.strip() == GPT6_MODEL else None
+
+
+def is_gemini_model(model: str) -> bool:
+    return model.strip().rsplit("/", 1)[-1].casefold().startswith("gemini-")
+
 
 MODEL_FAMILIES = [
     {
@@ -62,6 +68,21 @@ MODEL_FAMILIES = [
             ("claude-fable-5", "Fable 5"),
             ("claude-opus-5", "Opus 5"),
             ("claude-sonnet-5", "Sonnet 5"),
+        ],
+    },
+    {
+        "provider": "Gemini",
+        "protocol": "openai",
+        "official_base_url": "https://generativelanguage.googleapis.com/v1beta/openai",
+        "models": [
+            ("gemini-4-carbon", "Gemini 4 Carbon"),
+            ("gemini-4-neon", "Gemini 4 Neon"),
+            ("gemini-4-hydrogen", "Gemini 4 Hydrogen"),
+            ("gemini-4-argon", "Gemini 4 Argon"),
+            ("gemini-3.8-flash", "Gemini 3.8 Flash"),
+            ("gemini-3.5-flash-lite", "Gemini 3.5 Flash-Lite"),
+            ("gemini-3.1-pro-preview", "Gemini 3.1 Pro Preview"),
+            ("gemini-3-flash-preview", "Gemini 3 Flash Preview"),
         ],
     },
     {
@@ -350,7 +371,9 @@ def build_payload(config: EndpointConfig, question: dict[str, Any]) -> dict[str,
         ],
         "stream": True,
         "stream_options": {"include_usage": True},
-        "max_tokens": question["max_tokens"],
+        # Gemini's default thinking can exhaust the short-answer budget before emitting text.
+        "max_tokens": max(GEMINI_OUTPUT_FLOOR, question["max_tokens"])
+        if is_gemini_model(config.model) else question["max_tokens"],
     }
 
 
@@ -587,6 +610,12 @@ def parse_stream_line(line: str, protocol: str | None = None) -> dict[str, Any] 
                              **_upstream_error(payload), **metadata)
     cache_metrics = _usage_cache_metrics(payload, protocol)
     input_tokens = cache_metrics.get("input_tokens") if cache_metrics else None
+    usage = payload.get("usage")
+    completion_details = usage.get("completion_tokens_details") if isinstance(usage, dict) else None
+    chat_reasoning_tokens = (
+        reported_token_count(completion_details.get("reasoning_tokens"))
+        if isinstance(completion_details, dict) else None
+    )
     choices = payload.get("choices") or []
     if choices:
         choice = choices[0]
@@ -608,6 +637,7 @@ def parse_stream_line(line: str, protocol: str | None = None) -> dict[str, Any] 
             finish_reason=str(choice.get("finish_reason") or ""),
             response_format=response_format,
             output_tokens=output_tokens,
+            reasoning_tokens=chat_reasoning_tokens,
             input_tokens=input_tokens,
             cache_metrics=cache_metrics,
             **metadata,
@@ -748,7 +778,7 @@ def parse_stream_line(line: str, protocol: str | None = None) -> dict[str, Any] 
                              cache_metrics=cache_metrics, **metadata)
     if output_tokens is not None or cache_metrics is not None:
         return _stream_event(response_format="usage", output_tokens=output_tokens, input_tokens=input_tokens,
-                             cache_metrics=cache_metrics, **metadata)
+                             reasoning_tokens=chat_reasoning_tokens, cache_metrics=cache_metrics, **metadata)
     return _stream_event(recognized=False, raw=value)
 
 
@@ -1296,6 +1326,7 @@ async def _measure_side(
     text_recovered = False
     anthropic_snapshot = None
     payload = build_payload(config, question)
+    gemini_chat = config.protocol == "openai" and is_gemini_model(config.model)
     request_metrics = ({"request_protocol": config.protocol,
                         "max_output_tokens": payload["max_output_tokens"],
                         "reasoning_effort": payload.get("reasoning", {}).get("effort")}
@@ -1353,6 +1384,8 @@ async def _measure_side(
                     system_fingerprints.add(parsed["system_fingerprint"])
                 if parsed["output_tokens"] is not None:
                     reported_output_tokens = parsed["output_tokens"]
+                    if gemini_chat:
+                        reasoning_tokens = parsed["reasoning_tokens"]
                 if (parsed["format"] == "anthropic" and anthropic_snapshot is not None
                         and parsed["finish_reason"] not in {"", "stop", anthropic_snapshot[2]}):
                     protocol_error = "protocol_error"
@@ -1367,7 +1400,7 @@ async def _measure_side(
                     response_status = parsed["response_status"]
                 protocol_error = protocol_error or parsed["protocol_error"]
                 refused = refused or parsed["refused"]
-                if parsed["reasoning_tokens"] is not None:
+                if config.protocol == "responses" and parsed["reasoning_tokens"] is not None:
                     reasoning_tokens = parsed["reasoning_tokens"]
                 if parsed["input_tokens"] is not None:
                     input_tokens = parsed["input_tokens"]
@@ -1471,7 +1504,9 @@ async def _measure_side(
             tokens_per_second = None
             speed_data_valid = False
             speed_invalid_reason = "正文由结束事件补全，无法计算流式 Token/s"
-        elif config.protocol == "responses" and reasoning_tokens != 0:
+        elif (config.protocol == "responses" and reasoning_tokens != 0) or (
+            gemini_chat and reported_output_tokens is not None and (reasoning_tokens != 0 or reasoning)
+        ):
             tokens_per_second = None
             speed_data_valid = False
             speed_invalid_reason = "输出 Token 含推理或缺少推理明细，无法计算正文 Token/s"
@@ -1490,11 +1525,14 @@ async def _measure_side(
 
         normalized_finish_reason = finish_reason.lower()
         truncated_reasons = {"length", "max_tokens", "max_output_tokens", "incomplete"}
+        gemini_chat_response = gemini_chat and bool({"chat_delta", "chat_message"} & response_formats)
         if protocol_error:
             ok, status, error = False, protocol_error, ""
         elif config.protocol == "responses" and response_status not in {"completed", "incomplete"}:
             ok, status, error = False, "incomplete_stream", "未收到完整的 Responses 结束事件。"
-        elif config.protocol == "responses" and (refused or normalized_finish_reason == "content_filter"):
+        elif (config.protocol == "responses" and refused) or (
+            (config.protocol == "responses" or gemini_chat_response) and normalized_finish_reason == "content_filter"
+        ):
             ok, status, error = False, "refused", "上游拒绝回答或内容过滤中止。"
         elif normalized_finish_reason in truncated_reasons:
             ok = False
@@ -1507,6 +1545,12 @@ async def _measure_side(
         elif "anthropic" in response_formats and recognized_chars and not finish_reason:
             ok, status, error = False, "incomplete_stream", "未收到完整的 Anthropic 结束事件。"
         elif "anthropic" in response_formats and not answer.strip():
+            ok, status, error = False, "empty", "上游未返回答案正文。"
+        elif gemini_chat_response and recognized_chars and not normalized_finish_reason:
+            ok, status, error = False, "incomplete_stream", "未收到 Gemini 的结束原因。"
+        elif gemini_chat_response and normalized_finish_reason not in {"", "stop"}:
+            ok, status, error = False, "protocol_error", "Gemini 未以正常文本结束原因终止。"
+        elif gemini_chat_response and not answer.strip():
             ok, status, error = False, "empty", "上游未返回答案正文。"
         elif unrecognized:
             ok = False
@@ -1540,8 +1584,8 @@ async def _measure_side(
                 "output_tokens": reported_output_tokens,
                 **request_metrics,
                 **evidence,
-                **({"reasoning_tokens": reasoning_tokens,
-                    "response_status": response_status,
+                **({"reasoning_tokens": reasoning_tokens} if gemini_chat or config.protocol == "responses" else {}),
+                **({"response_status": response_status,
                     "text_recovered_from_completion": text_recovered,
                     "protocol_completed": response_status == "completed" and not protocol_error}
                    if config.protocol == "responses" else {}),

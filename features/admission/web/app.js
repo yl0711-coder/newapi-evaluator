@@ -3,7 +3,8 @@ const names = {candidate:'候选端', reference:'参照端'};
 const statusNames = {completed:'正常返回',truncated:'输出截断',unrecognized:'流格式不兼容',empty:'空响应',error:'请求异常',missing:'缺少数据',upstream_error:'上游生成失败',protocol_error:'流协议异常',incomplete_stream:'流未完整结束',incomplete_response:'回答未完成',refused:'上游拒答'};
 const reportStatus = {completed:'已完成',canceled:'已停止，未完成快照',failed:'未完成快照',running:'进行中快照'};
 statusNames.unknown = '结果未知，未重发';
-let metadata, references = [], report = null, selectedJobId = null, queueGeneration = 0;
+let presets = [], sharedModels = new Map();
+let references = [], report = null, selectedJobId = null, queueGeneration = 0;
 let renderedReport = '';
 const jobStatus = {queued:'等待测试',running:'测试进行中',waiting_credentials:'等待补充临时 Key',succeeded:'已完成',completed:'已完成',failed:'未完成',cancelled:'已停止',canceled:'已停止'};
 const duration = value => Number.isFinite(value) ? `${(value / 1000).toFixed(2)} 秒` : '不可用';
@@ -49,8 +50,33 @@ function showReference() {
   schedulePrecheck();
 }
 
+async function loadSharedModels() {
+  const refresh = $('refresh-shared-models');
+  const status = $('shared-model-status');
+  refresh.disabled = true;
+  try {
+    const {models} = await Workbench.api('/api/model-coverage/models');
+    const supported = new Set([...$('candidate-protocol').options].map(option => option.value));
+    const group = $('shared-model-options');
+    const selected = $('preset').value;
+    sharedModels = new Map(models.filter(item => supported.has(item.protocol) &&
+      !presets.some(preset => preset.model === item.model && preset.protocol === item.protocol)
+    ).map(item => [`catalog:${item.id}`, item]));
+    group.replaceChildren(...[...sharedModels].map(([id, item]) =>
+      new Option(`${item.family} · ${item.label}（${item.model}）`, id)));
+    group.hidden = sharedModels.size === 0;
+    $('preset').value = sharedModels.has(selected) || presets.some(item => item.id === selected) ? selected : '';
+    status.textContent = '';
+  } catch {
+    status.textContent = '共用模型读取失败，请刷新重试。';
+  } finally {
+    refresh.disabled = false;
+  }
+}
+
 function applyPreset() {
-  const preset = metadata.presets.find(item => item.id === $('preset').value);
+  const selected = $('preset').value;
+  const preset = sharedModels.get(selected) ?? presets.find(item => item.id === selected);
   if (!preset) return;
   for (const side of Object.keys(names)) {
     $(`${side}-model`).value = preset.model;
@@ -63,13 +89,13 @@ function syncModelPolicy() {
   let fixed = false;
   for (const side of Object.keys(names)) {
     const model = $(`${side}-model`).value.trim();
-    const required = metadata.presets.find(item => item.model === model)?.required_protocol;
+    const required = presets.find(item => item.model === model)?.required_protocol;
     const selector = $(`${side}-protocol`);
     selector.disabled = Boolean(required);
     if (required) { selector.value = required; fixed = true; }
   }
   $('model-policy').hidden = !fixed;
-  const policy = metadata.presets.find(item => item.required_protocol);
+  const policy = presets.find(item => item.required_protocol);
   $('model-policy').textContent = policy ? `${policy.label} 固定使用 Responses，推理强度 ${policy.reasoning_effort}，每题最多 ${policy.max_output_tokens} 个输出 Token（含推理）。双端使用相同设置。` : '';
   schedulePrecheck();
 }
@@ -410,9 +436,18 @@ for (const side of Object.keys(names)) $(`${side}-model`).addEventListener('inpu
 for (const side of Object.keys(names)) $(`${side}-protocol`).addEventListener('change',schedulePrecheck);
 $('stop').addEventListener('click',async()=>{ const id=$('stop').dataset.jobId; if(!id || $('stop').hidden)return; try{await Workbench.api(`./api/jobs/${encodeURIComponent(id)}/cancel`,{method:'POST'});await loadQueue();}catch(error){$('error').textContent=error.message;} });
 $('refresh-queue').addEventListener('click',()=>pollQueue()); $('preset').addEventListener('change',applyPreset); $('reference-id').addEventListener('change',showReference); $('pair-filter').addEventListener('change',applyPairFilter);
+$('refresh-shared-models').addEventListener('click',loadSharedModels);
 $('refresh-reference').addEventListener('click',()=>loadReferences().catch(error=>$('error').textContent=error.message)); $('refresh-reports').addEventListener('click',()=>loadReportHistory().catch(error=>$('error').textContent=error.message));
 $('export-json').addEventListener('click',()=>report&&Workbench.download(report,exportFilename(report,'technical','json')));
 $('export-html').addEventListener('click',async()=>{ if(!report)return; const snapshot=report; try{const source=snapshot.id?await Workbench.api(`./api/reports/${snapshot.id}/ordinary`):ordinaryPayload(snapshot);Workbench.download(reportHtml(source,false),exportFilename(snapshot,'summary','html'),'text/html');}catch(error){$('error').textContent=error.message;} });
 $('export-technical-html').addEventListener('click',()=>report&&Workbench.download(reportHtml(report,true),exportFilename(report,'technical','html'),'text/html'));
 
-(async()=>{ metadata=await Workbench.api('./api/meta'); $('preset').replaceChildren(new Option('手动填写模型','')); for(const preset of metadata.presets)$('preset').append(new Option(`${preset.provider} · ${preset.label}`,preset.id)); await Promise.all([loadReferences(),loadReportHistory()]); await loadQueue(); setInterval(pollQueue,1500); })().catch(error=>{$('error').textContent=error.message;});
+(async()=>{
+  ({presets} = await Workbench.api('./api/meta'));
+  $('builtin-model-options').replaceChildren(...presets.map(preset =>
+    new Option(`${preset.provider} · ${preset.label}`, preset.id)));
+  syncModelPolicy();
+  await Promise.all([loadSharedModels(),loadReferences(),loadReportHistory()]);
+  await loadQueue();
+  setInterval(pollQueue,1500);
+})().catch(error=>{$('error').textContent=error.message;});

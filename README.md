@@ -49,9 +49,13 @@ python3 -m venv .venv
 
 准入预设新增 **GPT-6 Astra**（`gpt-6-astra`），固定使用 Responses；推理强度 low，每题 `max_output_tokens=4096`（含推理）。技术报告展示推理用量与完成状态。[参数与验证说明](docs/admission-gpt6.md)。
 
+**Gemini 家族准入**沿用六题双端流式对照。在“测试模型”选择 Gemini 4 Carbon、Neon、Hydrogen、Argon，或 Gemini 3 的 Pro、Flash、Flash-Lite 预设。预设默认使用 Chat Completions，双端使用各自的兼容接口地址和相同的模型 ID。Google 官方参照端可使用 `https://generativelanguage.googleapis.com/v1beta/openai`。Gemini Chat 请求给每题至少 4096 个输出 Token，给上游默认思考和正文留出空间。报告区分内容过滤、截断和异常结束。上游明确报告零推理 Token 且流中只有正文时，才计算正文 Token/s。模型清单和接口见 [Google 模型文档](https://aistudio.google.com/docs/models) 与 [OpenAI 兼容接口](https://aistudio.google.com/docs/openai)。
+
 ## 共用测试模型
 
 在公共渠道页的“共用测试模型”选择一个来源渠道，点击“获取该渠道模型”。获取后选择新增型号，核对家族与默认协议后加入列表，也可手动添加。每日检测、Token监测、完整性参考复核、准入、非流式、普通定时目标、协议检测、请求特征诊断和极限测试共用此目录，各页可刷新选项。工具仅展示支持协议的型号；固定Astra的指纹计划、Canary及生图合同保持原约束。更新目录不改已有计划、可信参照或渠道映射，也不代表所有渠道均支持。
+
+在准入页点“刷新共用模型”，即可在“测试模型”的“共用模型”分组选择已保存型号，自动填写双端模型 ID 和默认协议。与内置预设的模型 ID 和协议完全相同的选项显示一次。两个请求模型输入框仍可手动填写。
 
 ## 模型与协议检测
 
