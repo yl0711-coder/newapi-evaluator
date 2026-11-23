@@ -643,7 +643,7 @@ async function run() {
   let page = await openBrowser();
   phase = 'fifo_submission';
   const first = await submit(page, 'fifo-one', channels['fifo-one'], 'gemini', geminiModel);
-  await page.getByText('Gemini 原生协议跳过输入 Token 专项，六题仍会记录上游用量。', {exact:true}).waitFor();
+  await page.waitForFunction(() => document.querySelector('#token-precheck').textContent.includes('Gemini 原生协议跳过'));
   await until(() => held.get('fifo-one')?.size === 2, 'First question pair reaches the local upstream gate');
   const second = await submit(page, 'fifo-two', channels['fifo-two'], 'openai', geminiModel);
   await page.waitForFunction(() => document.querySelector('#token-precheck').textContent.includes('可信绑定'));
