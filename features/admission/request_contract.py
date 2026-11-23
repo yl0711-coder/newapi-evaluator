@@ -20,7 +20,7 @@ def snapshot(configuration, *, token_enabled):
                     "url": engine.endpoint_url(endpoint), "headers": engine.build_headers(endpoint),
                     "body": engine.build_payload(endpoint, selected)})
     token_requests = []
-    if token_enabled:
+    if token_enabled and engine.supports_token_check(endpoints["candidate"].protocol, endpoints["reference"].protocol):
         from features.token_usage import transport
         for side, endpoint in endpoints.items():
             value = endpoint.model_dump()

@@ -285,6 +285,21 @@ class StreamProtocolTests(unittest.TestCase):
                 self.assertEqual(payload["stream_options"], {"include_usage": True})
                 self.assertEqual(payload["model"], preset["model"])
 
+    def test_gemini_native_url_and_header_keep_secret_out_of_url(self) -> None:
+        config = EndpointConfig(base_url="https://generativelanguage.googleapis.com", api_key="synthetic",
+                                model="models/gemini-3.8-flash", protocol="gemini")
+        self.assertEqual(endpoint_url(config),
+                         "https://generativelanguage.googleapis.com/v1beta/models/gemini-3.8-flash:streamGenerateContent?alt=sse")
+        self.assertEqual(build_headers(config)["x-goog-api-key"], "synthetic")
+        self.assertNotIn("Authorization", build_headers(config))
+        self.assertEqual(endpoint_url(config.model_copy(update={"base_url": "https://mock.example/tenant/v1beta/models"})),
+                         "https://mock.example/tenant/v1beta/models/gemini-3.8-flash:streamGenerateContent?alt=sse")
+        for updates in [{"model": "x/../gemini"}, {"model": "gemini?key=synthetic"},
+                        {"base_url": "https://mock.example/v1beta/openai"},
+                        {"base_url": "https://mock.example/v1beta?key=synthetic"}]:
+            with self.subTest(field=next(iter(updates))), self.assertRaises(ValueError):
+                endpoint_url(config.model_copy(update=updates))
+
 
 class ChannelExtractionTests(unittest.TestCase):
     def test_extracts_json_credentials(self) -> None:
@@ -335,13 +350,13 @@ class StaticStream(httpx.AsyncByteStream):
 
 
 class StreamingMeasurementTests(unittest.IsolatedAsyncioTestCase):
-    async def measure_events(self, stream: httpx.AsyncByteStream, model: str = "demo") -> list[dict]:
+    async def measure_events(self, stream: httpx.AsyncByteStream, model: str = "demo", protocol="openai") -> list[dict]:
         def handler(request: httpx.Request) -> httpx.Response:
             return httpx.Response(200, headers={"content-type": "text/event-stream"}, stream=stream)
 
         queue: asyncio.Queue = asyncio.Queue()
         endpoint = EndpointConfig(
-            base_url="https://mock.example/v1", api_key="secret", model=model, protocol="openai"
+            base_url="https://mock.example/v1", api_key="secret", model=model, protocol=protocol
         )
         async with httpx.AsyncClient(transport=httpx.MockTransport(handler)) as client:
             await measure_side("candidate", endpoint, QUESTIONS[0], queue, client)
@@ -396,6 +411,66 @@ class StreamingMeasurementTests(unittest.IsolatedAsyncioTestCase):
                 self.assertEqual(finished["reasoning_tokens"], reasoning)
                 self.assertEqual(finished["tokens_per_second"], expected_speed)
                 self.assertEqual(finished["speed_data_valid"], expected_speed is not None)
+
+    async def test_gemini_native_uses_answer_timing_and_usage(self) -> None:
+        stream = StaticStream(
+            b'data: {"candidates":[{"content":\n',
+            b'data: {"parts":[{"text":"Synthetic thought","thought":true}]}}]}\n\n',
+            b'data: {"candidates":[{"content":{"parts":[{"text":"Synthetic "}]}}]}\n\n',
+            b'data: {"candidates":[{"content":{"parts":[{"text":"answer"}]},"finishReason":"STOP"}]}\n\n',
+            b'data: {"modelVersion":"synthetic-version","responseId":"synthetic-id","usageMetadata":'
+            b'{"promptTokenCount":20,"cachedContentTokenCount":5,"candidatesTokenCount":7,"thoughtsTokenCount":100}}\n\n',
+        )
+        with patch("main.perf_counter", side_effect=range(20)):
+            events = await self.measure_events(stream, "gemini-3.8-flash", "gemini")
+        chunks = [event for event in events if event["type"] == "chunk"]
+        self.assertEqual("".join(event["content"] for event in chunks), "Synthetic answer")
+        self.assertEqual("".join(event["reasoning"] for event in chunks), "Synthetic thought")
+        finished = events[-1]
+        self.assertTrue(finished["ok"])
+        self.assertEqual(finished["finish_reason"], "STOP")
+        self.assertEqual(finished["actual_model"], "synthetic-version")
+        self.assertEqual(finished["upstream_request_id"], "synthetic-id")
+        self.assertEqual(finished["input_tokens"], 20)
+        self.assertEqual(finished["cache_hit_rate"], .25)
+        self.assertEqual(finished["output_tokens"], 7)
+        self.assertEqual(finished["reasoning_tokens"], 100)
+        self.assertEqual(finished["tokens_per_second"], 6.0)
+
+    async def test_gemini_native_rejects_nonterminal_and_nontext_streams(self) -> None:
+        text = b'data: {"candidates":[{"content":{"parts":[{"text":"Partial"}]}}]}\n\n'
+        for chunks, status in [
+            ((text,), "incomplete_stream"),
+            ((text, b'data: {"candidates":[{"finishReason":"STOP"}]}\n'), "protocol_error"),
+            ((text, b'data: {"candidates":[{"finishReason":"MAX_TOKENS"}]}\n\n'), "truncated"),
+            ((text, b'data: {"candidates":[{"finishReason":"SAFETY"}]}\n\n'), "refused"),
+            ((b'data: {"promptFeedback":{"blockReason":"BLOCKLIST"}}\n\n',), "refused"),
+            ((b'data: {"candidates":[{"finishReason":"STOP"}]}\n\n',), "empty"),
+            ((b'data: {"candidates":[{"finishReason":"STOP"}]}\n\n', text), "protocol_error"),
+            ((text, b'data: {"candidates":[{"finishReason":"OTHER"}]}\n\n'), "protocol_error"),
+            ((b'data: {"candidates":[{"content":{"parts":[{"functionCall":{"name":"synthetic"}}]},"finishReason":"STOP"}]}\n\n',), "protocol_error"),
+            ((b'data: {"choices":[{"delta":{"content":"wrong wire"},"finish_reason":"stop"}]}\n\n',), "protocol_error"),
+            ((text, b'data: {"error":{"code":429,"message":"Synthetic limit"}}\n\n'), "upstream_error"),
+        ]:
+            with self.subTest(status=status, chunks=len(chunks)):
+                event = (await self.measure_events(StaticStream(*chunks), "gemini-3.8-flash", "gemini"))[-1]
+                self.assertFalse(event["ok"])
+                self.assertEqual(event["status"], status)
+                if status == "upstream_error":
+                    self.assertEqual(event["upstream_error_code"], "429")
+
+    async def test_gemini_native_redacts_credentials_split_across_raw_text_parts(self) -> None:
+        stream = StaticStream(
+            b'data: {"candidates":[{"content":{"parts":[{"text":"Synthetic se"}]}}]}\n\n',
+            b'data: {"candidates":[{"content":{"parts":[{"text":"cret answer"}]},"finishReason":"STOP"}]}\n\n',
+        )
+        events = await self.measure_events(stream, "gemini-3.8-flash", "gemini")
+        raw = "".join(event["raw_response"] for event in events if event["type"] == "raw_response")
+        text = "".join(json.loads(line[6:])["candidates"][0]["content"]["parts"][0]["text"]
+                       for line in raw.splitlines() if line.startswith("data: "))
+        self.assertNotIn("secret", text)
+        self.assertTrue(text.startswith("Synthetic ") and text.endswith(" answer"))
+        self.assertIn("[REDACTED]", text)
 
     async def test_measurement_emits_chunks_and_metrics(self) -> None:
         def handler(request: httpx.Request) -> httpx.Response:

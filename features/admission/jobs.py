@@ -18,6 +18,7 @@ from . import main as engine, reporting, storage, request_contract
 
 
 TERMINAL = {"succeeded", "failed", "cancelled"}
+GEMINI_TOKEN_LABEL = "Gemini 原生协议跳过输入 Token 专项，六题仍会记录上游用量。"
 
 
 class AdmissionManager:
@@ -105,6 +106,8 @@ class AdmissionManager:
 
     def token_precheck(self, *, model, candidate_protocol, reference_model, reference_protocol, reference_channel_id):
         result = {"available": False, "configuration_url": "/token-usage/"}
+        if not engine.supports_token_check(candidate_protocol, reference_protocol):
+            return {**result, "reason": "gemini_native", "label": GEMINI_TOKEN_LABEL}
         if self.token_check is None:
             return {**result, "reason": "token_check_disabled", "label": "Token 专项未启用；仍可创建六题测试。"}
         if model != reference_model or candidate_protocol != reference_protocol:
@@ -141,7 +144,15 @@ class AdmissionManager:
             "candidate_identity": self.registry.connection_fingerprint(candidate),
             "reference_identity": self.registry.connection_fingerprint(channel),
         }
-        if self.token_check is not None:
+        for endpoint in (configuration["candidate"], configuration["reference"]):
+            if endpoint["protocol"] == "gemini":
+                try:
+                    engine.gemini_stream_url(endpoint["base_url"], endpoint["model"])
+                except ValueError as exc:
+                    raise RegistryError(str(exc)) from None
+        token_supported = engine.supports_token_check(body.candidate.protocol, body.reference.protocol)
+        token_enabled = token_supported and self.token_check is not None
+        if token_enabled:
             try:
                 binding = self._trusted_reference(body.reference.model, body.reference.protocol)
                 configuration["token_reference"] = self._binding_configuration(binding)
@@ -171,8 +182,11 @@ class AdmissionManager:
             }
             steps = [f"{number}:{question['id']}:{side}" for number in range(1, body.rounds + 1)
                      for question in engine.questions_for(body.injection_probe) for side in ("candidate", "reference")]
-            if self.token_check is not None:
+            if token_enabled:
                 steps += [f"token:{side}:{pair_index}" for pair_index in (0, 1) for side in ("candidate", "reference")]
+            if not token_supported:
+                from features.token_usage.domain import empty_result
+                report["token_usage"] = {**empty_result("gemini_native", source="admission"), "label": GEMINI_TOKEN_LABEL}
             self.store.create(task["id"], scrub(configuration, secrets), scrub(report, secrets), steps)
             if self.on_submit is not None:
                 self.on_submit(candidate["base_url"], body.candidate.model)
@@ -316,7 +330,8 @@ class AdmissionManager:
         timeout = httpx.Timeout(connect=20, read=240, write=20, pool=20)
         async with httpx.AsyncClient(timeout=timeout, follow_redirects=False, trust_env=False,
                                     transport=self.transport or guarded_transport()) as client:
-            if self.token_check is not None and "token:complete" not in self.store.get(task_id)["step_results"]:
+            if (self.token_check is not None and engine.supports_token_check(run.candidate.protocol, run.reference.protocol)
+                    and "token:complete" not in self.store.get(task_id)["step_results"]):
                 await self._run_token_check(task_id, run, client, report, redactor)
             questions = engine.questions_for(job["configuration"].get("injection_probe", False))
             for number in range(1, run.rounds + 1):

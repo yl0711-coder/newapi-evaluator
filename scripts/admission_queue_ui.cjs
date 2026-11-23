@@ -49,6 +49,12 @@ async function until(predicate, message, timeout = 30000) {
 
 function finishResponse(res, body, protocol = 'openai') {
   const usage = {prompt_tokens:10, completion_tokens:3};
+  if (protocol === 'gemini') {
+    res.writeHead(200, {'Content-Type':'text/event-stream'});
+    res.end('data: ' + JSON.stringify({candidates:[{content:{parts:[{text:'Synthetic queue answer'}]},finishReason:'STOP'}],
+      usageMetadata:{promptTokenCount:10,candidatesTokenCount:3,thoughtsTokenCount:2,cachedContentTokenCount:5},modelVersion:geminiModel}) + '\n\n');
+    return;
+  }
   if (body.stream) {
     res.writeHead(200, {'Content-Type':'text/event-stream'});
     if (protocol === 'responses') {
@@ -146,15 +152,21 @@ const upstream = http.createServer(async (req, res) => {
   try {
     const parts = []; for await (const chunk of req) parts.push(chunk);
     const body = JSON.parse(Buffer.concat(parts));
-    const match = req.url.match(/^\/([a-z-]+)\/(candidate|reference)\/v1\/(chat\/completions|responses|messages)$/);
+    const url = new URL(req.url, 'http://127.0.0.1');
+    const match = url.pathname.match(/^\/([a-z-]+)\/(candidate|reference)\/(?:v1\/(chat\/completions|responses|messages)|v1beta\/models\/([\w.-]+):streamGenerateContent)$/);
     assert.ok(match, 'Only the owned synthetic upstream path is requested');
-    const [, owner, side, endpoint] = match;
-    const protocol = {responses:'responses', messages:'anthropic'}[endpoint] || 'openai';
-    assert.equal(body.model, owner === 'fifo-one' ? geminiModel : 'synthetic-queue-model');
+    const [, owner, side, endpoint, nativeModel] = match;
+    const protocol = nativeModel ? 'gemini' : ({responses:'responses', messages:'anthropic'}[endpoint] || 'openai');
     if (owner === 'fifo-one') {
-      assert.equal(endpoint, 'chat/completions');
-      assert.equal(body.max_tokens, 4096);
-      assert.deepEqual(body.stream_options, {include_usage:true});
+      assert.equal(nativeModel, geminiModel);
+      assert.equal(url.search, '?alt=sse');
+      assert.equal(req.headers['x-goog-api-key'], `synthetic-${side}-fifo-one`);
+      assert.equal(req.headers.authorization, undefined);
+      assert.deepEqual(body.generationConfig, {candidateCount:1,maxOutputTokens:4096});
+      assert.equal(body.contents[0].role, 'user');
+      assert.ok(body.systemInstruction.parts[0].text);
+    } else {
+      assert.equal(body.model, 'synthetic-queue-model');
     }
     const input = body.messages?.at(-1)?.content || '';
     requests.push({owner, side, stream:Boolean(body.stream), specialized:input.startsWith('Read the synthetic inventory below. Reply only OK.\nrecord-0000:'),
@@ -174,7 +186,7 @@ const upstream = http.createServer(async (req, res) => {
     res.once('finish', close); res.once('close', close);
     if (gated.has(owner)) {
       if (!held.has(owner)) held.set(owner, new Map());
-      held.get(owner).set(res, body);
+      held.get(owner).set(res, {body, protocol});
     } else if (splitCases.some(item => item.owner === owner)) await splitFixtureResponse(res, owner, side, protocol);
     else if (rawCases.some(item => item.owner === owner)) rawFixtureResponse(res, body, owner, side, protocol);
     else finishResponse(res, body, protocol);
@@ -186,7 +198,7 @@ const upstream = http.createServer(async (req, res) => {
 
 function release(owner) {
   gated.delete(owner);
-  for (const [res, body] of held.get(owner) || []) finishResponse(res, body);
+  for (const [res, {body, protocol}] of held.get(owner) || []) finishResponse(res, body, protocol);
 }
 
 async function request(url, {body, method = body === undefined ? 'GET' : 'POST', expected = 200, headers = {}} = {}) {
@@ -254,16 +266,16 @@ function card(page, id) {
 async function submit(page, owner, channelId, protocol = 'openai', preset = '') {
   const key = `synthetic-candidate-${owner}`; candidateKeys.add(key);
   await page.locator('#candidate-name').fill(`候选 ${owner} <script>/..`);
-  await page.locator('#candidate-url').fill(`${upstreamUrl}/${owner}/candidate/v1`);
+  await page.locator('#candidate-url').fill(`${upstreamUrl}/${owner}/candidate/${protocol === 'gemini' ? 'v1beta' : 'v1'}`);
   await page.locator('#candidate-key').fill(key);
   if (preset) {
     await page.locator('#preset').selectOption(preset);
   } else {
     await page.locator('#candidate-model').fill('synthetic-queue-model');
     await page.locator('#reference-model').fill('synthetic-queue-model');
-    await page.locator('#candidate-protocol').selectOption(protocol);
-    await page.locator('#reference-protocol').selectOption(protocol);
   }
+  await page.locator('#candidate-protocol').selectOption(protocol);
+  await page.locator('#reference-protocol').selectOption(protocol);
   await page.locator('#reference-id').selectOption(String(channelId));
   await page.locator('#rounds').selectOption('1');
   const accepted = page.waitForResponse(response => new URL(response.url()).pathname === '/admission/api/jobs' && response.request().method() === 'POST');
@@ -601,6 +613,8 @@ async function modelSelectionChecks(page) {
   checks.push('manual_shared_model_visible_selectable_and_persisted');
 
   await picker.selectOption(geminiModel);
+  await page.locator('#candidate-protocol').selectOption('gemini');
+  await page.locator('#reference-protocol').selectOption('gemini');
   for (const width of [390, 900, 1440]) {
     await page.setViewportSize({width, height:1000});
     assert.equal(await page.evaluate(() => document.documentElement.scrollWidth > innerWidth + 2), false);
@@ -618,11 +632,13 @@ async function run() {
   const owners = ['fifo-one', 'fifo-two', 'fifo-three', 'restart-head', 'restart-next', 'stop-visible', 'stop-pending'];
   const channels = {};
   for (const owner of owners) {
-    channels[owner] = (await request('/api/registry/channels', {body:{name:`Synthetic ${owner}`, base_url:`${upstreamUrl}/${owner}/reference/v1`, api_key:`synthetic-reference-${owner}`, multiplier:1}})).id;
+    const version = owner === 'fifo-one' ? 'v1beta' : 'v1';
+    channels[owner] = (await request('/api/registry/channels', {body:{name:`Synthetic ${owner}`, base_url:`${upstreamUrl}/${owner}/reference/${version}`, api_key:`synthetic-reference-${owner}`, multiplier:1}})).id;
   }
   let page = await openBrowser();
   phase = 'fifo_submission';
-  const first = await submit(page, 'fifo-one', channels['fifo-one'], 'openai', geminiModel);
+  const first = await submit(page, 'fifo-one', channels['fifo-one'], 'gemini', geminiModel);
+  await page.getByText('Gemini 原生协议跳过输入 Token 专项，六题仍会记录上游用量。', {exact:true}).waitFor();
   await until(() => held.get('fifo-one')?.size === 2, 'First question pair reaches the local upstream gate');
   const second = await submit(page, 'fifo-two', channels['fifo-two']);
   const third = await submit(page, 'fifo-three', channels['fifo-three']);
@@ -648,7 +664,6 @@ async function run() {
   assert.ok(!(await card(page, first).textContent()).includes('排队第 1 位'), 'Running job is never labeled queued first');
   assert.ok((await card(page, first).textContent()).includes('候选 fifo-one <script>/..'));
   assert.equal(await card(page, first).locator('script').count(), 0, 'Names render as text');
-  assert.ok((await page.locator('#token-precheck').textContent()).includes('可信绑定'), 'Token prerequisite is visible before execution');
   checks.push('channel_identity_partial_coverage_precheck');
   await page.goto(base + '/channels/'); await page.reload();
   assert.equal((await job(first)).state, 'running');
@@ -658,13 +673,15 @@ async function run() {
   const firstResult = await completed(first);
   const {candidate, reference, pairs, measurements} = firstResult.report;
   assert.deepEqual([candidate.model, reference.model], [geminiModel, geminiModel]);
-  assert.deepEqual([candidate.protocol, reference.protocol], ['openai', 'openai']);
+  assert.deepEqual([candidate.protocol, reference.protocol], ['gemini', 'gemini']);
   assert.equal(pairs.length, 6);
   assert.equal(measurements.length, 12);
-  assert.ok(measurements.every(item => item.ok && item.finish_reason === 'stop' && !item.speed_data_valid));
+  assert.ok(measurements.every(item => item.ok && item.finish_reason === 'STOP' &&
+    item.input_tokens === 10 && item.output_tokens === 3 && item.reasoning_tokens === 2 && item.cache_hit_rate === 0.5));
   assert.equal(requests.filter(item => item.owner === 'fifo-one').length, 12);
-  checks.push('gemini_presets_run_paired_chat_and_report');
-  assert.equal(firstResult.report.token_usage?.conclusion, 'unable_to_determine', 'No trusted binding produces an unknown Token conclusion');
+  checks.push('gemini_native_presets_run_paired_sse_and_report');
+  assert.equal(firstResult.report.token_usage?.conclusion, 'unable_to_determine');
+  assert.equal(firstResult.report.token_usage.reason, 'gemini_native');
   assert.ok(requests.filter(item => item.owner === 'fifo-one').every(item => !item.specialized), 'No trusted binding sends zero specialized Token requests');
   await until(() => held.get('fifo-two')?.size === 2, 'Second job starts while the browser is closed');
   assert.equal((await job(third)).state, 'queued');

@@ -33,7 +33,8 @@ ANTHROPIC_OUTPUT_FLOOR = 4096
 GEMINI_OUTPUT_FLOOR = 4096
 RESPONSES_TOTAL_TIMEOUT_SECONDS = 240
 RAW_RESPONSE_MAX_BYTES = 16_384
-AdmissionProtocol = Literal["openai", "responses", "anthropic"]
+AdmissionProtocol = Literal["openai", "responses", "anthropic", "gemini"]
+GEMINI_FILTER_REASONS = {"SAFETY", "RECITATION", "BLOCKLIST", "PROHIBITED_CONTENT", "SPII", "IMAGE_SAFETY"}
 
 
 def required_protocol(model: str) -> str | None:
@@ -42,6 +43,10 @@ def required_protocol(model: str) -> str | None:
 
 def is_gemini_model(model: str) -> bool:
     return model.strip().rsplit("/", 1)[-1].casefold().startswith("gemini-")
+
+
+def supports_token_check(candidate_protocol: str, reference_protocol: str) -> bool:
+    return "gemini" not in (candidate_protocol, reference_protocol)
 
 
 MODEL_FAMILIES = [
@@ -236,7 +241,26 @@ def anthropic_messages_url(base_url: str) -> str:
     return f"{normalized}/v1/messages"
 
 
+def gemini_stream_url(base_url: str, model: str) -> str:
+    parsed = urlparse(_normalized_http_url(base_url))
+    resource = model.removeprefix("models/")
+    if not re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9._-]{0,159}", resource):
+        raise ValueError("Gemini 原生协议要求模型 ID，允许以 models/ 开头。")
+    if parsed.username is not None or parsed.password is not None or parsed.query or parsed.fragment or parsed.params:
+        raise ValueError("Gemini 原生 Base URL 不能包含凭据、参数或片段。")
+    path = parsed.path.rstrip("/")
+    if not path:
+        path = "/v1beta"
+    elif path.endswith("/models"):
+        path = path.removesuffix("/models")
+    if not re.search(r"/v\d+(?:[a-z]+\d*)?$", path):
+        raise ValueError("Gemini 原生 Base URL 请填写 API 根地址，例如 https://generativelanguage.googleapis.com/v1beta。")
+    return parsed._replace(path=f"{path}/models/{resource}:streamGenerateContent", query="alt=sse").geturl()
+
+
 def endpoint_url(config: EndpointConfig) -> str:
+    if config.protocol == "gemini":
+        return gemini_stream_url(config.base_url, config.model)
     if config.protocol == "responses":
         base = re.sub(r"/(chat/completions|responses|messages)/?$", "", config.base_url.strip().rstrip("/"))
         return f"{openai_api_base_url(base)}/responses"
@@ -253,6 +277,8 @@ def build_headers(config: EndpointConfig) -> dict[str, str]:
     if config.protocol == "anthropic":
         headers["x-api-key"] = config.api_key
         headers["anthropic-version"] = ANTHROPIC_VERSION
+    elif config.protocol == "gemini":
+        headers["x-goog-api-key"] = config.api_key
     else:
         headers["Authorization"] = f"Bearer {config.api_key}"
     return headers
@@ -320,7 +346,7 @@ def extract_channel_credentials(text: str) -> dict[str, Any]:
         url_match = re.search(r"https?://[^\s'\"<>{}\[\]，。；、]+", raw, re.I)
         base_url = url_match.group(0) if url_match else ""
     if not api_key:
-        bearer_match = re.search(r"(?:Authorization:\s*Bearer|x-api-key:)\s*([^\s'\"\\]+)", raw, re.I)
+        bearer_match = re.search(r"(?:Authorization:\s*Bearer|x-(?:goog-)?api-key:)\s*([^\s'\"\\]+)", raw, re.I)
         named_match = re.search(r"(?:api[_-]?key|token|secret)\s*[=:]\s*['\"]?([^\s'\",}]+)", raw, re.I)
         sk_match = re.search(r"(?<![\w.-])(sk-[A-Za-z0-9][A-Za-z0-9._-]*)", raw)
         match = bearer_match or named_match or sk_match
@@ -338,6 +364,12 @@ def extract_channel_credentials(text: str) -> dict[str, Any]:
 
 
 def build_payload(config: EndpointConfig, question: dict[str, Any]) -> dict[str, Any]:
+    if config.protocol == "gemini":
+        return {
+            "systemInstruction": {"parts": [{"text": SYSTEM_PROMPT}]},
+            "contents": [{"role": "user", "parts": [{"text": question["prompt"]}]}],
+            "generationConfig": {"candidateCount": 1, "maxOutputTokens": max(GEMINI_OUTPUT_FLOOR, question["max_tokens"])},
+        }
     if config.protocol == "responses":
         payload = {
             "model": config.model,
@@ -587,6 +619,63 @@ def _upstream_error(payload: dict[str, Any], *, allow_top_level=False) -> dict[s
         code = message = None
     return {"upstream_error_code": str(code) if code is not None else "",
             "upstream_error_message": str(message) if message is not None else ""}
+
+
+def _gemini_event(payload: dict[str, Any]) -> dict[str, Any]:
+    malformed = _stream_event(response_format="gemini", protocol_error="protocol_error")
+    if payload.get("error"):
+        return _stream_event(response_format="gemini", protocol_error="upstream_error", **_upstream_error(payload))
+    if not {"candidates", "promptFeedback", "usageMetadata"} & payload.keys():
+        return malformed
+    candidates = payload.get("candidates", [])
+    feedback = payload.get("promptFeedback", {})
+    usage = payload.get("usageMetadata", {})
+    if (not isinstance(candidates, list) or len(candidates) > 1
+            or not isinstance(feedback, dict) or not isinstance(usage, dict)):
+        return malformed
+    candidate = candidates[0] if candidates else {}
+    if not isinstance(candidate, dict) or candidate.get("index", 0) != 0:
+        return malformed
+    content = candidate.get("content", {})
+    if not isinstance(content, dict):
+        return malformed
+    finish = candidate.get("finishReason", "")
+    blocked = feedback.get("blockReason", "")
+    parts = content.get("parts", [])
+    if not isinstance(parts, list) or not isinstance(finish, str) or not isinstance(blocked, str):
+        return malformed
+    if blocked == "BLOCK_REASON_UNSPECIFIED":
+        blocked = ""
+    if finish == "FINISH_REASON_UNSPECIFIED":
+        finish = ""
+    if blocked and candidates:
+        return malformed
+    answer, thoughts = [], []
+    for part in parts:
+        if (not isinstance(part, dict) or not isinstance(part.get("text", ""), str)
+                or type(part.get("thought", False)) is not bool
+                or part.keys() - {"text", "thought", "thoughtSignature"}):
+            return malformed
+        (thoughts if part.get("thought") else answer).append(part.get("text", ""))
+    input_usage = {}
+    if "promptTokenCount" in usage:
+        input_usage["prompt_tokens"] = usage["promptTokenCount"]
+    if "cachedContentTokenCount" in usage:
+        input_usage["prompt_tokens_details"] = {"cached_tokens": usage["cachedContentTokenCount"]}
+    cache_metrics = _usage_cache_metrics({"usage": input_usage}, "openai")
+    model, response_id = payload.get("modelVersion"), payload.get("responseId")
+    return _stream_event(
+        response_format="gemini", content="".join(answer), reasoning="".join(thoughts),
+        finish_reason=blocked or finish, refused=bool(blocked) or finish in GEMINI_FILTER_REASONS,
+        input_tokens=cache_metrics["input_tokens"] if cache_metrics else None,
+        output_tokens=reported_token_count(usage.get("candidatesTokenCount")),
+        reasoning_tokens=reported_token_count(usage.get("thoughtsTokenCount")),
+        actual_model=model if isinstance(model, str) else "",
+        upstream_request_id=response_id if isinstance(response_id, str) else "",
+        cache_metrics=cache_metrics,
+    )
+
+
 def parse_stream_line(line: str, protocol: str | None = None) -> dict[str, Any] | None:
     value = line.strip().lstrip("\ufeff")
     if not value or value.startswith(":") or value in {"event", "id", "retry"} or value.startswith(("event:", "id:", "retry:")):
@@ -603,6 +692,8 @@ def parse_stream_line(line: str, protocol: str | None = None) -> dict[str, Any] 
         return _stream_event(recognized=False, raw=value)
     if not isinstance(payload, dict):
         return _stream_event(recognized=False, raw=value)
+    if protocol == "gemini":
+        return _gemini_event(payload)
     metadata = _response_metadata(payload)
     output_tokens = _usage_output_tokens(payload)
     if payload.get("type") == "error" or payload.get("error"):
@@ -878,6 +969,9 @@ def _logical_text_channel(payload, path):
                 return "reasoning" if field == "reasoning_content" else "content"
     if text_leaf(("choices", 0, "text")):
         return "content"
+    if len(path) == 6 and path[:4] == ("candidates", 0, "content", "parts") and path[-1] == "text":
+        part = payload["candidates"][0]["content"]["parts"][path[4]]
+        return "reasoning" if part.get("thought") is True else "content"
     event_type = payload.get("type")
     if path == ("delta",):
         if event_type in {"response.output_text.delta", "response.refusal.delta"}:
@@ -1191,7 +1285,7 @@ async def _response_lines(response, on_raw):
 
 
 async def stream_events(response: httpx.Response, protocol: str, on_raw=None) -> AsyncIterator[dict[str, Any]]:
-    if protocol != "responses":
+    if protocol not in {"responses", "gemini"}:
         async for line in _response_lines(response, on_raw):
             parsed = parse_stream_line(line, protocol)
             if parsed is not None:
@@ -1210,8 +1304,8 @@ async def stream_events(response: httpx.Response, protocol: str, on_raw=None) ->
                     parsed = parse_stream_line("\n".join(data), protocol)
                 except (AttributeError, TypeError, KeyError, IndexError):
                     parsed = None
-                if parsed is None or parsed["format"] != "responses":
-                    yield _stream_event(response_format="responses", protocol_error="protocol_error")
+                if parsed is None or parsed["format"] != protocol:
+                    yield _stream_event(response_format=protocol, protocol_error="protocol_error")
                 else:
                     yield parsed
             data, size = [], 0
@@ -1219,11 +1313,11 @@ async def stream_events(response: httpx.Response, protocol: str, on_raw=None) ->
             data.append(line[5:].removeprefix(" "))
             size += len(line)
             if size > 1_048_576:
-                raise ValueError("Responses 流事件超过本地读取上限")
+                raise ValueError("上游流事件超过本地读取上限")
         elif not line.startswith((":", "event:", "id:", "retry:")):
-            yield _stream_event(response_format="responses", protocol_error="protocol_error")
+            yield _stream_event(response_format=protocol, protocol_error="protocol_error")
     if data:
-        yield _stream_event(response_format="responses", protocol_error="protocol_error")
+        yield _stream_event(response_format=protocol, protocol_error="protocol_error")
 
 
 def _redact(message: str, api_key: str) -> str:
@@ -1255,6 +1349,15 @@ def _exception_category(exc: Exception, had_output: bool) -> str:
     return "transport_error"
 
 
+def _request_metrics(config: EndpointConfig, payload: dict[str, Any]) -> dict[str, Any]:
+    if config.protocol == "responses":
+        return {"request_protocol": config.protocol, "max_output_tokens": payload["max_output_tokens"],
+                "reasoning_effort": payload.get("reasoning", {}).get("effort")}
+    if config.protocol == "gemini":
+        return {"request_protocol": config.protocol, "max_output_tokens": payload["generationConfig"]["maxOutputTokens"]}
+    return {}
+
+
 async def measure_side(
     side: str,
     config: EndpointConfig,
@@ -1270,7 +1373,7 @@ async def measure_side(
         await start_gate.wait()
     evidence = {"http_status": None, "upstream_error_code": "", "upstream_error_message": "", "upstream_error_truncated": False}
     credentials = (config.api_key, *secrets)
-    if config.protocol != "responses":
+    if config.protocol not in {"responses", "gemini"}:
         await _measure_side(side, config, question, queue, client, before_send, evidence, credentials)
         return
     started_ms = round(time() * 1000)
@@ -1278,15 +1381,14 @@ async def measure_side(
         await asyncio.wait_for(_measure_side(side, config, question, queue, client, before_send, evidence, credentials),
                                timeout=RESPONSES_TOTAL_TIMEOUT_SECONDS)
     except asyncio.TimeoutError:
-        payload = build_payload(config, question)
+        protocol_label = "Gemini 原生" if config.protocol == "gemini" else "Responses"
         await queue.put({"type": "side_finished", "question_id": question["id"], "side": side,
                          "ok": False, "status": "error", "transport_completed": False,
-                         "request_started_ms": started_ms, "request_protocol": config.protocol,
-                         "max_output_tokens": payload["max_output_tokens"],
-                         "reasoning_effort": payload.get("reasoning", {}).get("effort"),
+                         "request_started_ms": started_ms,
+                         **_request_metrics(config, build_payload(config, question)),
                          **evidence,
                          **_empty_cache_metrics(),
-                         "error_category": "total_timeout", "error": "Responses 请求超过总时限。"})
+                         "error_category": "total_timeout", "error": f"{protocol_label} 请求超过总时限。"})
 
 
 async def _measure_side(
@@ -1305,12 +1407,14 @@ async def _measure_side(
     request_started_ms = round(time() * 1000)
     first_chunk_at: float | None = None
     first_answer_at: float | None = None
+    last_answer_at: float | None = None
     last_output_at: float | None = None
     answer_parts: list[str] = []
     reasoning_parts: list[str] = []
     unrecognized = False
     heartbeat_count = 0
     output_chunk_count = 0
+    answer_chunk_count = 0
     finish_reason = ""
     reported_output_tokens: int | None = None
     response_formats: set[str] = set()
@@ -1327,10 +1431,8 @@ async def _measure_side(
     anthropic_snapshot = None
     payload = build_payload(config, question)
     gemini_chat = config.protocol == "openai" and is_gemini_model(config.model)
-    request_metrics = ({"request_protocol": config.protocol,
-                        "max_output_tokens": payload["max_output_tokens"],
-                        "reasoning_effort": payload.get("reasoning", {}).get("effort")}
-                       if config.protocol == "responses" else {})
+    gemini_native = config.protocol == "gemini"
+    request_metrics = _request_metrics(config, payload)
     if before_send is not None:
         await before_send(side)
     try:
@@ -1390,6 +1492,11 @@ async def _measure_side(
                         and parsed["finish_reason"] not in {"", "stop", anthropic_snapshot[2]}):
                     protocol_error = "protocol_error"
                     continue
+                if gemini_native and finish_reason and (
+                    parsed["content"] or parsed["reasoning"] or parsed["finish_reason"] not in {"", finish_reason}
+                ):
+                    protocol_error = protocol_error or "protocol_error"
+                    continue
                 if parsed["finish_reason"] and not (parsed["format"] == "anthropic" and parsed["finish_reason"] == "stop" and finish_reason):
                     finish_reason = parsed["finish_reason"]
                 if config.protocol == "responses" and response_status and (parsed["content"] or parsed["reasoning"] or parsed["block_content"] is not None):
@@ -1400,7 +1507,7 @@ async def _measure_side(
                     response_status = parsed["response_status"]
                 protocol_error = protocol_error or parsed["protocol_error"]
                 refused = refused or parsed["refused"]
-                if config.protocol == "responses" and parsed["reasoning_tokens"] is not None:
+                if (config.protocol == "responses" or gemini_native) and parsed["reasoning_tokens"] is not None:
                     reasoning_tokens = parsed["reasoning_tokens"]
                 if parsed["input_tokens"] is not None:
                     input_tokens = parsed["input_tokens"]
@@ -1458,8 +1565,11 @@ async def _measure_side(
                 if last_output_at is not None:
                     pause_ms = round((now - last_output_at) * 1000)
                     maximum_output_pause_ms = max(maximum_output_pause_ms or 0, pause_ms)
-                if content_delta and first_answer_at is None:
-                    first_answer_at = now
+                if content_delta:
+                    if first_answer_at is None:
+                        first_answer_at = now
+                    last_answer_at = now
+                    answer_chunk_count += 1
                 last_output_at = now
                 output_chunk_count += 1
                 answer_parts.append(content_delta)
@@ -1492,14 +1602,18 @@ async def _measure_side(
         chars_per_second = None
         if output_chunk_count > 1 and generation_seconds > 0:
             chars_per_second = round(recognized_chars / generation_seconds, 1)
+        speed_chunks = answer_chunk_count if gemini_native else output_chunk_count
+        speed_seconds = generation_seconds
+        if gemini_native and first_answer_at is not None and last_answer_at is not None:
+            speed_seconds = last_answer_at - first_answer_at
         tokens_per_second = None
         if (
             reported_output_tokens is not None
             and reported_output_tokens > 1
-            and output_chunk_count > 1
-            and generation_seconds > 0
+            and speed_chunks > 1
+            and speed_seconds > 0
         ):
-            tokens_per_second = round((reported_output_tokens - 1) / generation_seconds, 1)
+            tokens_per_second = round((reported_output_tokens - 1) / speed_seconds, 1)
         if text_recovered:
             tokens_per_second = None
             speed_data_valid = False
@@ -1516,7 +1630,7 @@ async def _measure_side(
         elif reported_output_tokens is None:
             speed_data_valid = False
             speed_invalid_reason = "上游未提供输出 Token 数"
-        elif output_chunk_count <= 1:
+        elif speed_chunks <= 1:
             speed_data_valid = False
             speed_invalid_reason = "流式粒度不足"
         else:
@@ -1530,7 +1644,7 @@ async def _measure_side(
             ok, status, error = False, protocol_error, ""
         elif config.protocol == "responses" and response_status not in {"completed", "incomplete"}:
             ok, status, error = False, "incomplete_stream", "未收到完整的 Responses 结束事件。"
-        elif (config.protocol == "responses" and refused) or (
+        elif ((config.protocol == "responses" or gemini_native) and refused) or (
             (config.protocol == "responses" or gemini_chat_response) and normalized_finish_reason == "content_filter"
         ):
             ok, status, error = False, "refused", "上游拒绝回答或内容过滤中止。"
@@ -1541,6 +1655,12 @@ async def _measure_side(
         elif config.protocol == "responses" and response_status == "incomplete":
             ok, status, error = False, "incomplete_response", "上游标记回答未完成。"
         elif config.protocol == "responses" and not answer.strip():
+            ok, status, error = False, "empty", "上游未返回答案正文。"
+        elif gemini_native and not finish_reason:
+            ok, status, error = False, "incomplete_stream", "未收到 Gemini 原生流的结束原因。"
+        elif gemini_native and finish_reason != "STOP":
+            ok, status, error = False, "protocol_error", "Gemini 原生流未以 STOP 正常结束。"
+        elif gemini_native and not answer.strip():
             ok, status, error = False, "empty", "上游未返回答案正文。"
         elif "anthropic" in response_formats and recognized_chars and not finish_reason:
             ok, status, error = False, "incomplete_stream", "未收到完整的 Anthropic 结束事件。"
@@ -1584,7 +1704,7 @@ async def _measure_side(
                 "output_tokens": reported_output_tokens,
                 **request_metrics,
                 **evidence,
-                **({"reasoning_tokens": reasoning_tokens} if gemini_chat or config.protocol == "responses" else {}),
+                **({"reasoning_tokens": reasoning_tokens} if gemini_chat or gemini_native or config.protocol == "responses" else {}),
                 **({"response_status": response_status,
                     "text_recovered_from_completion": text_recovered,
                     "protocol_completed": response_status == "completed" and not protocol_error}

@@ -16,10 +16,12 @@ from features.admission import main as engine
 def inspect(base_url, model, protocol):
     config = engine.EndpointConfig(base_url=base_url, api_key="synthetic-inspection", model=model, protocol=protocol)
     endpoint = urlsplit(engine.endpoint_url(config))
-    if endpoint.username or endpoint.password or endpoint.query or endpoint.fragment:
+    expected_query = "alt=sse" if config.protocol == "gemini" else ""
+    if endpoint.username or endpoint.password or endpoint.query != expected_query or endpoint.fragment:
         raise ValueError("base URL contains credentials, query or fragment")
     settings = [{"question_id": q["id"], "parameters": {key: value for key, value in
-                engine.build_payload(config, q).items() if key not in {"instructions", "input", "messages", "system"}}}
+                engine.build_payload(config, q).items()
+                if key not in {"instructions", "input", "messages", "system", "systemInstruction", "contents"}}}
                 for q in engine.QUESTIONS]
     fingerprint = hashlib.sha256(json.dumps([base_url, config.model, config.protocol, settings], sort_keys=True).encode()).hexdigest()
     return {"model": config.model, "protocol": config.protocol, "requests_sent": 0,

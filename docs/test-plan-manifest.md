@@ -18,7 +18,7 @@
 
 `admission` 及继承它的 `integrity` 还登记飞书渠道组：`feishu-channels-inspect` 执行 `scripts/inspect_feishu_channels.py`（60 秒、零请求）；`feishu-channels-browser` 执行 `scripts/feishu_channels_ui.cjs`（180 秒）。`tests.test_feishu_channels` 纳入 Python 收集门禁，覆盖筛选、加密、幂等、换 Key、下线、分页失败、配置变更和并发取消。浏览器使用独立本地服务，仅将飞书 HTTP 传输替换为合成响应，实际经过设置、读取、持久化和渠道展示。
 
-`admission-queue-browser` 从公共渠道页面手动保存型号，在已打开的准入页刷新并选中，核对双端模型和默认协议、刷新后的选中值及重载后的可见性，再从 Gemini 预设发起六题双端回环测试并核对请求、终态报告及三种宽度。准入引擎自测覆盖 Gemini 兼容接口、输出预算、usage、过滤、截断及断流。零发送检查可用 `python -B scripts/inspect_admission.py --model gemini-3.8-flash --protocol openai --base-url https://generativelanguage.googleapis.com/v1beta/openai`。
+`admission-queue-browser` 验证共用模型手动保存、刷新和选择，并从 Gemini 预设选用原生协议执行六题双端回环测试，核对请求鉴权、终态报告、用量和三种宽度。准入引擎自测覆盖 Gemini 兼容接口与原生 SSE、输出预算、usage、过滤、截断、断流和跨分片脱敏。原生接口的零发送检查可用 `python -B scripts/inspect_admission.py --model gemini-3.8-flash --protocol gemini --base-url https://generativelanguage.googleapis.com/v1beta`。
 
 ```bash
 python -B scripts/inspect_test_plan.py admission

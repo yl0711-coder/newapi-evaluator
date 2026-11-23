@@ -51,6 +51,8 @@ python3 -m venv .venv
 
 **Gemini 家族准入**沿用六题双端流式对照。在“测试模型”选择 Gemini 4 Carbon、Neon、Hydrogen、Argon，或 Gemini 3 的 Pro、Flash、Flash-Lite 预设。预设默认使用 Chat Completions，双端使用各自的兼容接口地址和相同的模型 ID。Google 官方参照端可使用 `https://generativelanguage.googleapis.com/v1beta/openai`。Gemini Chat 请求给每题至少 4096 个输出 Token，给上游默认思考和正文留出空间。报告区分内容过滤、截断和异常结束。上游明确报告零推理 Token 且流中只有正文时，才计算正文 Token/s。模型清单和接口见 [Google 模型文档](https://aistudio.google.com/docs/models) 与 [OpenAI 兼容接口](https://aistudio.google.com/docs/openai)。
 
+两端也可以选择 **Gemini 原生 · streamGenerateContent**。官方渠道的 Base URL 用 `https://generativelanguage.googleapis.com/v1beta`，代理渠道填写自身的版本化 Gemini API 根地址。Eval 通过 `x-goog-api-key` 传递密钥，向 `/models/{model}:streamGenerateContent?alt=sse` 发送同题请求。报告展示正文、上游提供的思考摘要、结束原因和用量。原生流以 `STOP` 和非空正文确认正常返回，缓存命中率使用 `cachedContentTokenCount / promptTokenCount`。任一端使用原生协议时跳过独立的输入 Token 专项，六题仍记录上游上报的用量。 [Google 原生流式接口](https://aistudio.google.com/api-reference/generate-content/stream-generate-content)
+
 ## 共用测试模型
 
 在公共渠道页的“共用测试模型”选择一个来源渠道，点击“获取该渠道模型”。获取后选择新增型号，核对家族与默认协议后加入列表，也可手动添加。每日检测、Token监测、完整性参考复核、准入、非流式、普通定时目标、协议检测、请求特征诊断和极限测试共用此目录，各页可刷新选项。工具仅展示支持协议的型号；固定Astra的指纹计划、Canary及生图合同保持原约束。更新目录不改已有计划、可信参照或渠道映射，也不代表所有渠道均支持。
