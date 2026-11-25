@@ -49,7 +49,7 @@ class ScheduleInput(BaseModel):
     daily_times: str = Field(min_length=1, max_length=200)
     timezone: str = Field(default=TIMEZONE, min_length=1, max_length=80)
     channel_ids: list[int] = Field(default_factory=list, max_length=100)
-    targets: list[TargetInput] = Field(default_factory=list, max_length=15)
+    targets: list[TargetInput] = Field(default_factory=list, max_length=2000)
     plan_version: Literal["ins-v2", "layered-integrity-v1", "layered-integrity-v2", "layered-integrity-v3"] | None = None
     layered_config: dict = Field(default_factory=dict)
     rounds: int = Field(default=3, ge=1, le=10)
@@ -81,8 +81,8 @@ class ScheduleInput(BaseModel):
             if not self.targets:
                 raise ValueError("分层计划需要显式 Registry/model/protocol 目标")
             ids = {t.registry_channel_id for t in self.targets}
-            if len(ids) > 5:
-                raise ValueError("分层计划最多五个公共渠道")
+            if len(ids) > 500:
+                raise ValueError("分层计划最多五百个公共渠道")
             self.layered_config["registry_channel_ids"] = sorted(ids)
             for channel_id in ids:
                 selected = {(t.model, t.protocol) for t in self.targets if t.registry_channel_id == channel_id}
@@ -92,12 +92,14 @@ class ScheduleInput(BaseModel):
         elif self.plan_version == timetable.VERSION:
             self.layered_config = timetable.validate_config(self.layered_config)
             if not self.targets or self.channel_ids:
-                raise ValueError("十分钟计划需要显式 Registry / Astra / Responses 目标")
+                raise ValueError("十分钟计划需要显式 Registry / 模型 / 协议目标")
             ids = {t.registry_channel_id for t in self.targets}
-            if len(ids) > 5 or len(ids) != len(self.targets):
-                raise ValueError("十分钟计划须选择一至五条不重复的渠道")
-            if any((t.model, t.protocol) != ("gpt-6-astra", "responses") for t in self.targets):
-                raise ValueError("十分钟计划固定 Astra / Responses")
+            if len(ids) > 500 or len(self.targets) != len({(t.registry_channel_id, t.model, t.protocol) for t in self.targets}):
+                raise ValueError("十分钟计划的渠道与模型协议目标不能重复，渠道最多五百条")
+            for target in self.targets:
+                expected_protocol = required_protocol(target.model)
+                if expected_protocol and target.protocol != expected_protocol:
+                    raise ValueError(f"模型 {target.model} 必须使用 {expected_protocol} 协议")
             self.layered_config["registry_channel_ids"] = sorted(ids)
         return self
 
@@ -264,7 +266,9 @@ async def save_schedule(body: ScheduleInput) -> JSONResponse:
 async def preview_timetable(body: ScheduleInput) -> JSONResponse:
     if body.plan_version != timetable.VERSION:
         raise HTTPException(status_code=400, detail="仅十分钟计划支持本预览")
-    return JSONResponse(timetable.preview(body.layered_config, body.timezone))
+    config = dict(body.layered_config)
+    config["target_bindings"] = {f"{t.registry_channel_id}:{t.model}:{t.protocol}": {} for t in body.targets}
+    return JSONResponse(timetable.preview(config, body.timezone))
 
 
 @app.get("/api/timetable/report")

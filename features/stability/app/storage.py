@@ -356,7 +356,8 @@ def save_schedule_targets(data: dict[str, Any], targets: list[dict[str, Any]]) -
     from features.integrity.execution import resolve_registry_target
     from features.integrity.durable import IntegrityStore
     from . import timetable
-    Catalog(registry)
+    catalog = Catalog(registry)
+    catalog_models = {row["model"]: row for row in catalog.models()}
     IntegrityStore(registry)
     timetable.init_tables(registry)
     with registry.connect() as guard, cursor() as cur:
@@ -364,6 +365,7 @@ def save_schedule_targets(data: dict[str, Any], targets: list[dict[str, Any]]) -
         cur.execute("BEGIN IMMEDIATE")
         ids = []
         target_bindings = {}
+        target_meta = {}
         for selected in targets:
             registry_id = int(selected["registry_channel_id"])
             registry.resolve(registry_id)
@@ -373,6 +375,11 @@ def save_schedule_targets(data: dict[str, Any], targets: list[dict[str, Any]]) -
             if data.get("plan_version") in {"layered-integrity-v1", timetable.VERSION}:
                 resolved = resolve_registry_target(registry, registry_id, model, protocol, require_online=True, conn=guard)
                 target_bindings[f"{registry_id}:{model}:{protocol}"] = resolved.snapshot
+                catalog_row = catalog_models.get(model)
+                target_meta[f"{registry_id}:{model}:{protocol}"] = {
+                    "family": catalog_row.get("family", "") if catalog_row else "",
+                    "label": catalog_row.get("label", model) if catalog_row else model,
+                }
             matches = cur.execute("SELECT id,enabled FROM channels WHERE registry_channel_id=? AND model=? AND protocol=? ORDER BY id",
                                   (registry_id, model, protocol)).fetchall()
             if matches and not any(row["enabled"] for row in matches):
@@ -393,6 +400,7 @@ def save_schedule_targets(data: dict[str, Any], targets: list[dict[str, Any]]) -
             config["registry_channel_ids"] = list(dict.fromkeys(t["registry_channel_id"] for t in targets))
             config.pop("production_bindings", None)
             config["target_bindings"] = target_bindings
+            config["target_meta"] = target_meta
         if data.get("plan_version") == timetable.VERSION:
             config["channel_names"] = {str(t["registry_channel_id"]): registry.public(guard.execute("SELECT * FROM channels WHERE id=?", (t["registry_channel_id"],)).fetchone())["name"] for t in targets}
             config["channel_multipliers"] = {str(t["registry_channel_id"]): registry.public(guard.execute("SELECT * FROM channels WHERE id=?", (t["registry_channel_id"],)).fetchone())["multiplier"] for t in targets}

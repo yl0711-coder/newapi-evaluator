@@ -217,7 +217,7 @@ function renderLegacyPicker(selected = []) {
   }));
 }
 
-function renderChannelPicker(selected = [], registrySelected = []) {
+function renderChannelPicker(selected = [], registrySelected = [], targetSelected = []) {
   const version = $("#schedule-pack").value;
   const v2 = version === "layered-integrity-v3", layered = v2;
   $("#timetable-fields").hidden = !v2;
@@ -236,14 +236,39 @@ function renderChannelPicker(selected = [], registrySelected = []) {
     label.append(input, document.createTextNode(`${publicChannelLabel(channel)} · ${channel.status} · 凭据 ${channel.credential_status} · ${channel.discovery_status}`));
     row.append(label);
     let eligible = !reason;
-    for (const model of v2 ? ["gpt-6-astra"] : ["gpt-6-astra", "gpt-6.1-sol"]) {
-      const select = document.createElement("select"); select.dataset.model = model; select.setAttribute("aria-label", `${publicChannelLabel(channel)} ${model} 模型与协议`);
-      const choices = channel.models.filter(item => item.catalog_model === model);
-      select.replaceChildren(...choices.map(item => new Option(`${item.model} / ${item.protocol}${item.reason ? " · " + item.reason : ""}`, JSON.stringify(item))));
-      if (!choices.some(item => item.eligible)) eligible = false;
-      select.disabled = !choices.length || choices.every(item => !item.eligible);
-      row.append(text("span", model), select);
+    const targets = channel.models.filter(item => item.eligible);
+    if (!targets.length) eligible = false;
+    const selectedKeys = new Set(targetSelected);
+    const useLegacyChannelSelection = selectedKeys.size === 0 && registrySelected.includes(channel.registry_channel_id);
+    for (const item of targets) {
+      const target = text("label", "", "target-choice");
+      const checkbox = document.createElement("input"); checkbox.type = "checkbox";
+      checkbox.dataset.target = JSON.stringify(item);
+      checkbox.dataset.registry = channel.registry_channel_id;
+      const targetKey = `${channel.registry_channel_id}:${item.model}:${item.protocol}`;
+      checkbox.checked = selectedKeys.has(targetKey) || useLegacyChannelSelection;
+      checkbox.disabled = !eligible;
+      checkbox.setAttribute("aria-label", `${publicChannelLabel(channel)} ${item.family || item.catalog_model || item.model} ${item.model} ${item.protocol}`);
+      target.append(checkbox, document.createTextNode(`${item.family || item.catalog_model || "模型"} · ${item.model} · ${item.protocol}`));
+      row.append(target);
     }
+    const master = input;
+    const selectedTargetCount = targets.filter(item => {
+      const key = `${channel.registry_channel_id}:${item.model}:${item.protocol}`;
+      return selectedKeys.has(key) || useLegacyChannelSelection;
+    }).length;
+    master.checked = targets.length > 0 && selectedTargetCount === targets.length;
+    master.indeterminate = selectedTargetCount > 0 && !master.checked;
+    master.addEventListener("change", () => {
+      row.querySelectorAll("input[data-target]:not(:disabled)").forEach(item => { item.checked = master.checked; });
+      updateTimetablePreview();
+    });
+    row.querySelectorAll("input[data-target]").forEach(item => item.addEventListener("change", () => {
+      const children = [...row.querySelectorAll("input[data-target]:not(:disabled)")];
+      master.checked = children.length > 0 && children.every(child => child.checked);
+      master.indeterminate = children.some(child => child.checked) && !master.checked;
+      updateTimetablePreview();
+    }));
     input.disabled = !eligible;
     input.addEventListener("change", updateTimetablePreview);
     if (!eligible) row.append(text("p", `不可执行：${reason || channel.models.filter(m => ["gpt-6-astra","gpt-6.1-sol"].includes(m.catalog_model)).map(m => m.reason).filter(Boolean).join(" / ") || "模型未登记"}；请核对公共渠道的已上线状态、启用、凭据及模型/协议映射`, "form-error"));
@@ -264,7 +289,7 @@ function renderLayeredRun(root, run) {
   root.append(controls);
   for (const slot of run.slots || []) {
     const card = text("article", "", "panel"); const evidence = slot.summary || {}, score = evidence.score || {};
-    card.append(text("h3", `${slot.slot} · ${publicChannelLabel(state.candidates.find((item) => item.registry_channel_id === slot.registry_channel_id) || {registry_channel_id: slot.registry_channel_id})} · ${slot.model}/${slot.protocol}`));
+    card.append(text("h3", `${slot.slot} · ${publicChannelLabel(state.candidates.find((item) => item.registry_channel_id === slot.registry_channel_id) || {registry_channel_id: slot.registry_channel_id})} · ${slot.family || "未标注家族"} · ${slot.model}/${slot.protocol}`));
     card.append(text("p", `费用估算 USD ${evidence.fees?.estimated_usd ?? "unknown"} · reasoning 用量见导出；不设每日金额上限`));
     card.append(text("p", `${slot.status}${slot.reason ? " · " + slot.reason : ""} · 计划 ${evidence.planned ?? (slot.method === "canary" ? 192 : slot.method === "modeltrace" ? 3 : 1)} · 尝试 ${evidence.attempted ?? 0} · 有效 ${evidence.valid ?? 0} · 无效 ${evidence.invalid ?? 0} · unknown ${evidence.unknown ?? 0} · not_run ${evidence.not_run ?? "未测"}`));
     if (slot.method === "canary") {
@@ -289,9 +314,9 @@ function renderLayeredRun(root, run) {
 
 function timetableGridTimes() { return Array.from({length: 144}, (_, i) => `${String(Math.floor(i / 6)).padStart(2, "0")}:${String(i % 6 * 10).padStart(2, "0")}`); }
 function selectedTimetableTargets() {
-  return $$("#channel-picker input[data-registry]:checked").map(input => {
-    const entry = JSON.parse(input.closest("article").querySelector('select[data-model="gpt-6-astra"]').value);
-    return {registry_channel_id: Number(input.dataset.registry), model: "gpt-6-astra", protocol: "responses", model_id: entry.model_id};
+  return $$("#channel-picker input[data-target]:checked").map(input => {
+    const entry = JSON.parse(input.dataset.target);
+    return {registry_channel_id: Number(input.dataset.registry), model: entry.model, protocol: entry.protocol, model_id: entry.model_id};
   });
 }
 function renderTimetable() {
@@ -375,7 +400,7 @@ function reportEvidence(item, synthetic, period = false) {
   details.append(text("pre", JSON.stringify({canary: item.canary, modeltrace: item.modeltrace, calibration_status: item.calibration_status, ...(synthetic ? {synthetic: true} : {})}, null, 2)));
   return details;
 }
-function recordIdentity(item) {return `${item.run_id}:${item.scheduled_at_utc}:${item.registry_channel_id}`;}
+function recordIdentity(item) {return `${item.run_id}:${item.scheduled_at_utc}:${item.registry_channel_id}:${item.model || ""}:${item.protocol || ""}`;}
 function renderTimetableOverview(root, data) {
   const channels = new Map(), times = new Map();
   for (const item of data.rows) {
@@ -430,6 +455,7 @@ function renderTimetableReport(root, data, run = null, view = "detail") {
     const row = document.createElement("tr"); row.dataset.channel = item.registry_channel_id; row.dataset.record = recordIdentity(item);
     const time = document.createElement("td"); time.append(text("p", item.scheduled_at), text("p", item.sampling_period), text("small", `${item.timezone} · ${data.synthetic ? "演示" : "Run"} ${item.run_id}`));
     const channel = text("td", publicChannelLabel(item));
+    channel.append(text("small", `${item.family || "未标注家族"} · ${item.model_label || item.model || "未知模型"} · ${item.model || "未知模型"}/${item.protocol || "未知协议"}`));
     channel.append(reportMultiplierEvidence(item));
     const decision = text("td", item.conclusion?.label || item.status);
     if (item.canary) {
@@ -527,7 +553,8 @@ async function openSchedule(schedule = null) {
   state.baselineIds = {...(config.baseline_ids ?? {})};
   state.timetable = {modeltrace_times: [...(config.modeltrace_times ?? state.timetableDefaults.modeltrace_times)], nerfed_times: [...(config.nerfed_times ?? config.modeltrace_times ?? state.timetableDefaults.nerfed_times)]};
   renderTimetable();
-  renderChannelPicker(schedule?.channel_ids || [], config.registry_channel_ids || []);
+  const targetSelected = Object.keys(config.target_bindings || {});
+  renderChannelPicker(schedule?.channel_ids || [], config.registry_channel_ids || [], targetSelected);
   $("#schedule-error").textContent = "";
   $("#schedule-dialog").showModal();
 }

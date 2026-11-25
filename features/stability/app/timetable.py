@@ -13,7 +13,7 @@ from features.integrity.strategies import get_strategy
 from features.integrity import retries
 from . import layered, storage
 
-from .timetable_contract import VERSION, LEGACY_VERSIONS, METHODS, GRID, DEFAULTS, WINDOWS, validate_config, local_epoch, build_slots
+from .timetable_contract import VERSION, LEGACY_VERSIONS, METHODS, GRID, DEFAULTS, WINDOWS, validate_config, local_epoch, build_slots, decode_target_key
 
 TERMINAL = layered.TERMINAL
 
@@ -29,6 +29,19 @@ def _request_limits(method):
             "max_output_tokens": sum(r.output_tokens_reserved for r in requests)}
 
 
+def _targets(config):
+    """Return immutable scheduled targets, retaining legacy Astra fallback."""
+    bindings = config.get("target_bindings") or {}
+    targets = []
+    for key in bindings:
+        decoded = decode_target_key(key)
+        if decoded:
+            targets.append(decoded)
+    if targets:
+        return sorted(set(targets))
+    return [(int(channel_id), "gpt-6-astra", "responses") for channel_id in config.get("registry_channel_ids", [])]
+
+
 def preview(config, timezone, day=None):
     config = validate_config(config)
     day = day or datetime.now(ZoneInfo(timezone)).date()
@@ -38,7 +51,8 @@ def preview(config, timezone, day=None):
         for key, value in request_limits(row["method"], config).items():
             limits[key] += value
     return {**limits, "date": str(day), "timezone": timezone, "occurrences": len(rows),
-            "channels": len(config["registry_channel_ids"]), "nerfed_batches": sum(r["method"] == "nerfed" for r in rows),
+            "channels": len(config["registry_channel_ids"]), "targets": len(_targets(config)),
+            "nerfed_batches": sum(r["method"] == "nerfed" for r in rows),
             "initial_requests": len(rows) * 3, "max_retries": retries.MAX_RETRIES,
             "modeltrace_batches": sum(r["method"] == "modeltrace" for r in rows),
             "shared_health": sum(r["method"] == "health" for r in rows), "cost_stopping_limit": None,
@@ -58,6 +72,7 @@ def init_tables(registry=None):
         CREATE TABLE IF NOT EXISTS integrity_sampling_occurrences (
           slot_key TEXT PRIMARY KEY, schedule_id INTEGER NOT NULL, run_id INTEGER NOT NULL,
           budget_date TEXT NOT NULL, clock TEXT NOT NULL, registry_channel_id INTEGER NOT NULL,
+          model TEXT NOT NULL DEFAULT 'gpt-6-astra', protocol TEXT NOT NULL DEFAULT 'responses',
           method TEXT NOT NULL, due REAL NOT NULL, deadline REAL NOT NULL, dependency TEXT,
           priority INTEGER NOT NULL, revision REAL NOT NULL, snapshot_json TEXT NOT NULL,
           job_id TEXT, status TEXT NOT NULL, reason TEXT NOT NULL DEFAULT '',
@@ -71,6 +86,11 @@ def init_tables(registry=None):
             conn.execute("ALTER TABLE integrity_sampling_days ADD COLUMN budget_timezone TEXT NOT NULL DEFAULT ''")
         if "archived" not in {r[1] for r in conn.execute("PRAGMA table_info(integrity_sampling_days)")}:
             conn.execute("ALTER TABLE integrity_sampling_days ADD COLUMN archived INTEGER NOT NULL DEFAULT 0")
+        columns = {r[1] for r in conn.execute("PRAGMA table_info(integrity_sampling_occurrences)")}
+        if "model" not in columns:
+            conn.execute("ALTER TABLE integrity_sampling_occurrences ADD COLUMN model TEXT NOT NULL DEFAULT 'gpt-6-astra'")
+        if "protocol" not in columns:
+            conn.execute("ALTER TABLE integrity_sampling_occurrences ADD COLUMN protocol TEXT NOT NULL DEFAULT 'responses'")
 
 
 def write_control(conn, schedule_id, revision, enabled, timezone, config):
@@ -98,9 +118,14 @@ def decode(row):
     row = dict(row)
     row["summary"] = storage.loads(row.pop("summary_json"), {})
     row["snapshot"] = storage.loads(row.pop("snapshot_json"), {})
-    row["model"], row["protocol"] = "gpt-6-astra", "responses"
+    row["model"] = row.get("model") or "gpt-6-astra"
+    row["protocol"] = row.get("protocol") or "responses"
     row["slot"] = row["clock"] + "-" + row["method"]
-    row["target_snapshot"] = row["snapshot"].get("layered_config", {}).get("target_bindings", {}).get(f"{row['registry_channel_id']}:gpt-6-astra:responses", {})
+    key = f"{row['registry_channel_id']}:{row['model']}:{row['protocol']}"
+    row["target_snapshot"] = row["snapshot"].get("layered_config", {}).get("target_bindings", {}).get(key, {})
+    row["target_meta"] = row["snapshot"].get("layered_config", {}).get("target_meta", {}).get(key, {})
+    row["family"] = row["target_meta"].get("family", "")
+    row["model_label"] = row["target_meta"].get("label", row["model"])
     return row
 
 
@@ -178,14 +203,14 @@ def reconcile(schedule, day, *, now=None):
         for row in rows:
             state = "pending" if row["due"] > schedule["updated_at"] else "skipped"
             reason = "" if state == "pending" else "not_scheduled_before_save"
-            conn.execute("INSERT OR IGNORE INTO integrity_sampling_occurrences(slot_key,schedule_id,run_id,budget_date,clock,registry_channel_id,method,due,deadline,dependency,priority,revision,snapshot_json,status,reason,updated_at) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
-                         (row["slot_key"], row["schedule_id"], run_id, row["budget_date"], row["clock"], row["registry_channel_id"], row["method"], row["due"], row["deadline"], row["dependency"], row["priority"], schedule["updated_at"], storage.dumps(snapshot), state, reason, now))
+            conn.execute("INSERT OR IGNORE INTO integrity_sampling_occurrences(slot_key,schedule_id,run_id,budget_date,clock,registry_channel_id,model,protocol,method,due,deadline,dependency,priority,revision,snapshot_json,status,reason,updated_at) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
+                         (row["slot_key"], row["schedule_id"], run_id, row["budget_date"], row["clock"], row["registry_channel_id"], row["model"], row["protocol"], row["method"], row["due"], row["deadline"], row["dependency"], row["priority"], schedule["updated_at"], storage.dumps(snapshot), state, reason, now))
             old = conn.execute("SELECT o.*, (SELECT COUNT(*) FROM integrity_attempts a WHERE a.job_id=o.job_id) AS attempts FROM integrity_sampling_occurrences o WHERE slot_key=?", (row["slot_key"],)).fetchone()
             if old["attempts"] == 0 and old["due"] > now and old["status"] in {"pending", "cancelled"} and control["enabled"] and not (saved and saved["cancelled"]):
                 conn.execute("UPDATE integrity_sampling_occurrences SET status='pending',reason='',revision=?,snapshot_json=?,priority=?,deadline=?,updated_at=? WHERE slot_key=?", (schedule["updated_at"], storage.dumps(snapshot), row["priority"], row["deadline"], now, row["slot_key"]))
                 if old["job_id"]:
-                    target = snapshot["layered_config"]["target_bindings"][f"{row['registry_channel_id']}:gpt-6-astra:responses"]
-                    target_id = next(t["id"] for t in snapshot["targets"] if t["registry_channel_id"] == row["registry_channel_id"])
+                    target = snapshot["layered_config"]["target_bindings"][f"{row['registry_channel_id']}:{row['model']}:{row['protocol']}"]
+                    target_id = next(t["id"] for t in snapshot["targets"] if t["registry_channel_id"] == row["registry_channel_id"] and t["model"] == row["model"] and t["protocol"] == row["protocol"])
                     conn.execute("UPDATE integrity_jobs SET status='queued',cancel_requested=0,target_json=? WHERE job_id=? AND status IN ('queued','cancelled')", (storage.dumps({**target, "target_id": str(target_id)}), old["job_id"]))
         current = conn.execute("SELECT * FROM integrity_sampling_occurrences WHERE schedule_id=? AND status IN ('pending','running')", (schedule["id"],)).fetchall()
         for row in current:
@@ -342,7 +367,7 @@ def send_guard(slot):
             if selected(other, other):
                 raise ExecutionStopped("yielded", "higher_priority_ready")
         config = json.loads(control["config_json"])
-        bound = config["target_bindings"].get(f"{slot['registry_channel_id']}:gpt-6-astra:responses")
+        bound = config["target_bindings"].get(f"{slot['registry_channel_id']}:{slot['model']}:{slot['protocol']}")
         frozen = json.loads(job["target_json"])
         if not bound or any(frozen.get(k) != value for k, value in bound.items()):
             raise ExecutionStopped("rejected", "schedule_target_changed")

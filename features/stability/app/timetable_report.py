@@ -66,11 +66,11 @@ def table_rows(slots):
     for slot in slots:
         if slot["method"] not in {"canary", "modeltrace", "nerfed"}:
             continue
-        key = (slot["run_id"], slot["due"], slot["registry_channel_id"])
+        key = (slot["run_id"], slot["due"], slot["registry_channel_id"], slot.get("model", ""), slot.get("protocol", ""))
         grouped.setdefault(key, {})[slot["method"]] = slot
     rows = []
     labels = {"degraded": "疑似能力下降", "review": "需复核", "reference_missing": "参照不足", "incomplete": "未完成 / 未测", "observed": "正常观测", "waiting": "待采样", "sampling": "采样中"}
-    for (_, due, channel_id), methods in grouped.items():
+    for (_, due, channel_id, model, protocol), methods in grouped.items():
         example = next(iter(methods.values()))
         snapshot = example["snapshot"]
         timezone = snapshot["timezone"]
@@ -94,9 +94,13 @@ def table_rows(slots):
         ends = [r["sampling_finished_at"] for r in results.values() if r.get("sampling_finished_at") is not None]
         start, end = min(starts) if starts else None, max(ends) if ends else None
         period = f"{datetime.fromtimestamp(start, zone).isoformat()} – {datetime.fromtimestamp(end, zone).isoformat()}" if start is not None and end is not None else "未采样"
+        target_key = f"{channel_id}:{model}:{protocol}"
+        target_meta = snapshot.get("layered_config", {}).get("target_meta", {}).get(target_key, {})
         rows.append({"run_id": example["run_id"], "date": example["budget_date"], "timezone": timezone,
                      "scheduled_at": datetime.fromtimestamp(due, zone).isoformat(), "scheduled_at_utc": due,
                      "registry_channel_id": channel_id, "channel_name": channel_name,
+                     "model": model, "protocol": protocol, "family": target_meta.get("family", ""),
+                     "model_label": target_meta.get("label", model),
                      "channel_multiplier": multiplier, "method_multipliers": {m: v["channel_multiplier"] for m, v in results.items() if "channel_multiplier" in v},
                      "multiplier_basis": "用户配置的渠道倍率标记，未验证实际扣费",
                      "sampling_period": period, "sampling_started_at": start, "sampling_finished_at": end,
@@ -132,8 +136,8 @@ def report(*, run_id=None, day=None, channel_id=None, anomalies_only=False):
     # A raw SQL cap can cut one method or a channel group. Drop the complete
     # boundary group so absence never masquerades as an unscheduled method.
     if truncated:
-        boundary = (slots[-1]["run_id"], slots[-1]["due"], slots[-1]["registry_channel_id"])
-        slots = [s for s in slots if (s["run_id"], s["due"], s["registry_channel_id"]) != boundary]
+        boundary = (slots[-1]["run_id"], slots[-1]["due"], slots[-1]["registry_channel_id"], slots[-1].get("model", ""), slots[-1].get("protocol", ""))
+        slots = [s for s in slots if (s["run_id"], s["due"], s["registry_channel_id"], s.get("model", ""), s.get("protocol", "")) != boundary]
     rows = table_rows(slots)
     counts = dict(Counter(r["status"] for r in rows))
     visible = [r for r in rows if r["anomaly"]] if anomalies_only else rows
