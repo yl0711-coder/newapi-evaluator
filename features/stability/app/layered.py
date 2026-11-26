@@ -31,6 +31,17 @@ def canonical_hash(value):
     return hashlib.sha256(json.dumps(value, sort_keys=True, ensure_ascii=False, separators=(",", ":"), allow_nan=False).encode()).hexdigest()
 
 
+def declared_families(scope):
+    """Map a channel's human label to catalog families when it is specific enough."""
+    value = str(scope or "").casefold()
+    families = set()
+    if "claude" in value or "cc " in value or value.startswith("cc"):
+        families.add("Claude")
+    if any(token in value for token in ("codex", "openai", "gpt")):
+        families.add("GPT")
+    return families
+
+
 def validate_config(value):
     from .scheduler import parse_daily_times
     if not isinstance(value, dict) or set(value) - (set(DEFAULTS) | {"registry_channel_ids", "group_ids", "production_bindings", "target_bindings", "target_meta", "group_meta", "channel_names", "channel_multipliers"}):
@@ -97,7 +108,8 @@ def candidates():
                             "reason": reason,
                             "eval_coverage": "configured" if matching else "not_enrolled",
                             "target_ids": [t["id"] for t in matching]})
-        group_families = sorted({entry["family"] for entry in entries if entry["family"]})
+        declared = declared_families(channel["scope"])
+        group_families = sorted({entry["family"] for entry in entries if entry["family"] and (not declared or entry["family"] in declared)})
         group_label = f"{channel['scope'] or '未标注家族'} · {channel['multiplier']:g}x"
         rows.append({"registry_channel_id": channel["id"], "registry_group_id": channel["id"],
                      "name": channel["name"], "source_channel_name": channel["name"],
