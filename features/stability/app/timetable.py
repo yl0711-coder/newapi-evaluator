@@ -39,7 +39,7 @@ def _targets(config):
             targets.append(decoded)
     if targets:
         return sorted(set(targets))
-    return [(int(channel_id), "gpt-6-astra", "responses") for channel_id in config.get("registry_channel_ids", [])]
+    return [(int(group_id), "gpt-6-astra", "responses") for group_id in config.get("group_ids", config.get("registry_channel_ids", []))]
 
 
 def preview(config, timezone, day=None):

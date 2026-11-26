@@ -33,7 +33,7 @@ def canonical_hash(value):
 
 def validate_config(value):
     from .scheduler import parse_daily_times
-    if not isinstance(value, dict) or set(value) - (set(DEFAULTS) | {"registry_channel_ids", "production_bindings", "target_bindings"}):
+    if not isinstance(value, dict) or set(value) - (set(DEFAULTS) | {"registry_channel_ids", "group_ids", "production_bindings", "target_bindings", "target_meta", "group_meta", "channel_names", "channel_multipliers"}):
         raise ValueError("分层配置含未知字段")
     config = {**DEFAULTS, **value}
     if len(config["health_times"]) != 4 or len(config["astra_times"]) != 2:
@@ -93,11 +93,17 @@ def candidates():
             except RegistryError as exc:
                 reason = reason or str(exc)
             entries.append({"model_id": model["id"], "model": model["model"], "upstream_model": actual, "catalog_model": model["model"],
-                            "label": model["label"], "protocol": protocol, "eligible": not reason,
+                            "label": model["label"], "family": model["family"], "protocol": protocol, "eligible": not reason,
                             "reason": reason,
                             "eval_coverage": "configured" if matching else "not_enrolled",
                             "target_ids": [t["id"] for t in matching]})
-        rows.append({"registry_channel_id": channel["id"], "name": channel["name"],
+        group_families = sorted({entry["family"] for entry in entries if entry["family"]})
+        group_label = f"{channel['scope'] or '未标注家族'} · {channel['multiplier']:g}x"
+        rows.append({"registry_channel_id": channel["id"], "registry_group_id": channel["id"],
+                     "name": channel["name"], "source_channel_name": channel["name"],
+                     "group_label": group_label, "group_family": channel["scope"],
+                     "group_families": group_families,
+                     "group_multiplier": channel["multiplier"],
                      "scope": channel["scope"], "multiplier": channel["multiplier"],
                      "enabled": channel["enabled"], "status": channel["status"],
                      "source_kind": channel["source_kind"], "credential_status": credential,

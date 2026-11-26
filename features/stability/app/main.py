@@ -37,10 +37,23 @@ class ChannelInput(BaseModel):
 
 class TargetInput(BaseModel):
     model_config = ConfigDict(extra="forbid", str_strip_whitespace=True)
-    registry_channel_id: int = Field(ge=1, strict=True)
+    registry_channel_id: int | None = Field(default=None, ge=1, strict=True)
+    registry_group_id: int | None = Field(default=None, ge=1, strict=True)
     model: str = Field(min_length=1, max_length=160)
+    model_family: str | None = Field(default=None, min_length=1, max_length=40)
     protocol: Literal["openai", "anthropic", "responses"]
     model_id: int | None = Field(default=None, ge=1)
+
+    @model_validator(mode="after")
+    def normalize_group_identity(self):
+        if self.registry_group_id is not None and self.registry_channel_id is not None and self.registry_group_id != self.registry_channel_id:
+            raise ValueError("倍率分组标识不一致")
+        group_id = self.registry_group_id or self.registry_channel_id
+        if group_id is None:
+            raise ValueError("请选择倍率分组")
+        self.registry_group_id = group_id
+        self.registry_channel_id = group_id
+        return self
 
 
 class ScheduleInput(BaseModel):
@@ -84,6 +97,7 @@ class ScheduleInput(BaseModel):
             if len(ids) > 500:
                 raise ValueError("分层计划最多五百个公共渠道")
             self.layered_config["registry_channel_ids"] = sorted(ids)
+            self.layered_config["group_ids"] = sorted(ids)
             for channel_id in ids:
                 selected = {(t.model, t.protocol) for t in self.targets if t.registry_channel_id == channel_id}
                 required = {(self.layered_config[k + "_model"], self.layered_config[k + "_protocol"]) for k in ("health", "astra", "sol")}
@@ -101,6 +115,7 @@ class ScheduleInput(BaseModel):
                 if expected_protocol and target.protocol != expected_protocol:
                     raise ValueError(f"模型 {target.model} 必须使用 {expected_protocol} 协议")
             self.layered_config["registry_channel_ids"] = sorted(ids)
+            self.layered_config["group_ids"] = sorted(ids)
         return self
 
 

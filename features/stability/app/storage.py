@@ -358,6 +358,16 @@ def save_schedule_targets(data: dict[str, Any], targets: list[dict[str, Any]]) -
     from . import timetable
     catalog = Catalog(registry)
     catalog_models = {row["model"]: row for row in catalog.models()}
+    if data.get("plan_version") == timetable.VERSION:
+        family_targets = {}
+        for selected in targets:
+            model = model_name(selected["model"])
+            catalog_row = catalog_models.get(model)
+            if catalog_row is None:
+                continue
+            family_targets.setdefault(catalog_row["family"], set()).add((model, selected["protocol"]))
+        if any(len(values) > 1 for values in family_targets.values()):
+            raise ValueError("同一模型家族的定时测试只能选择一个统一模型")
     IntegrityStore(registry)
     timetable.init_tables(registry)
     with registry.connect() as guard, cursor() as cur:
@@ -372,10 +382,12 @@ def save_schedule_targets(data: dict[str, Any], targets: list[dict[str, Any]]) -
             model = model_name(selected["model"])
             protocol = selected["protocol"]
             validate_protocol(protocol, model)
+            catalog_row = catalog_models.get(model)
+            if selected.get("model_family") and catalog_row and selected["model_family"] != catalog_row.get("family"):
+                raise ValueError("模型家族与实际模型不一致")
             if data.get("plan_version") in {"layered-integrity-v1", timetable.VERSION}:
                 resolved = resolve_registry_target(registry, registry_id, model, protocol, require_online=True, conn=guard)
                 target_bindings[f"{registry_id}:{model}:{protocol}"] = resolved.snapshot
-                catalog_row = catalog_models.get(model)
                 target_meta[f"{registry_id}:{model}:{protocol}"] = {
                     "family": catalog_row.get("family", "") if catalog_row else "",
                     "label": catalog_row.get("label", model) if catalog_row else model,
@@ -398,12 +410,30 @@ def save_schedule_targets(data: dict[str, Any], targets: list[dict[str, Any]]) -
         config = dict(data.get("layered_config") or {})
         if data.get("plan_version") in {"layered-integrity-v1", timetable.VERSION}:
             config["registry_channel_ids"] = list(dict.fromkeys(t["registry_channel_id"] for t in targets))
+            config["group_ids"] = list(dict.fromkeys(t["registry_channel_id"] for t in targets))
             config.pop("production_bindings", None)
             config["target_bindings"] = target_bindings
             config["target_meta"] = target_meta
         if data.get("plan_version") == timetable.VERSION:
             config["channel_names"] = {str(t["registry_channel_id"]): registry.public(guard.execute("SELECT * FROM channels WHERE id=?", (t["registry_channel_id"],)).fetchone())["name"] for t in targets}
             config["channel_multipliers"] = {str(t["registry_channel_id"]): registry.public(guard.execute("SELECT * FROM channels WHERE id=?", (t["registry_channel_id"],)).fetchone())["multiplier"] for t in targets}
+            group_meta = {}
+            for target in targets:
+                group_id = str(target["registry_channel_id"])
+                channel = registry.public(guard.execute("SELECT * FROM channels WHERE id=?", (target["registry_channel_id"],)).fetchone())
+                meta = group_meta.setdefault(group_id, {
+                    "family": channel["scope"],
+                    "multiplier": channel["multiplier"],
+                    "source_channel_name": channel["name"],
+                    "families": [],
+                })
+                catalog_row = catalog_models.get(model_name(target["model"]))
+                family = catalog_row.get("family") if catalog_row else ""
+                if family and family not in meta["families"]:
+                    meta["families"].append(family)
+            for meta in group_meta.values():
+                meta["families"].sort()
+            config["group_meta"] = group_meta
         schedule_id = _upsert_schedule(cur, {**data, "channel_ids": list(dict.fromkeys(ids)), "layered_config": config})
         if data.get("plan_version") == timetable.VERSION:
             revision = cur.execute("SELECT updated_at FROM schedules WHERE id=?", (schedule_id,)).fetchone()[0]

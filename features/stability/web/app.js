@@ -22,6 +22,10 @@ function publicChannelLabel(channel = {}) {
   });
 }
 
+function multiplierGroupLabel(group = {}) {
+  return group.group_label || `${group.group_family || group.scope || "未标注家族"} · ${Number(group.group_multiplier ?? group.multiplier ?? 1).toFixed(2).replace(/\.00$/, "")}x`;
+}
+
 function toast(message) {
   const node = $("#toast");
   node.textContent = message;
@@ -175,9 +179,18 @@ function renderSchedules() {
     const card = text("article", "", "panel");
     card.append(text("h3", schedule.name));
     if (schedule.plan_version === "layered-integrity-v3") {
-      const c = schedule.layered_config, n = c.registry_channel_ids.length;
-      const total = n * 6 * c.modeltrace_times.length;
-      card.append(text("p", `每天 · ${n} 渠道 · MT / Nerfed 同轮采样 · ${c.modeltrace_times.length} 个采样时刻`));
+      const c = schedule.layered_config, groupIds = c.group_ids || c.registry_channel_ids || [], n = groupIds.length;
+      const targetCount = Object.keys(c.target_bindings || {}).length || n;
+      const total = targetCount * 6 * c.modeltrace_times.length;
+      const groupLabels = groupIds.map(id => {
+        const meta = c.group_meta?.[String(id)] || {};
+        const candidate = state.candidates.find(item => (item.registry_group_id || item.registry_channel_id) === id);
+        const label = meta.group_label || candidate?.group_label || `${meta.family || candidate?.group_family || "未标注家族"} · ${Number(meta.multiplier ?? candidate?.group_multiplier ?? 1).toFixed(2).replace(/\.00$/, "")}x`;
+        const families = meta.families || candidate?.group_families || [];
+        return families.length ? `${label}（${families.join("、")}）` : label;
+      });
+      card.append(text("p", `每天 · ${n} 个倍率分组 · MT / Nerfed 同轮采样 · ${c.modeltrace_times.length} 个采样时刻`));
+      if (groupLabels.length) card.append(text("p", `分组：${groupLabels.join("、")}`));
       card.append(text("p", `${schedule.timezone} · 首次 ${total} 次，断联最多再重试三次 · 用户报告仅展示结论`));
     } else if (schedule.plan_version === "layered-integrity-v1") {
       const config = schedule.layered_config;
@@ -224,58 +237,91 @@ function renderChannelPicker(selected = [], registrySelected = [], targetSelecte
   for (const id of ["times","rounds","interval","notify-delay","concurrency","success","timeout","break","speed-mode","baseline-runs","slow-ratio","p95"]) $(`#schedule-${id}`).closest("label").hidden = layered;
   if (!layered) { renderLegacyPicker(selected); return; }
   const root = $("#channel-picker");
-  root.replaceChildren(...state.candidates.map(channel => {
-    const row = text("article", "", "panel");
-    const label = text("label", "");
-    const input = document.createElement("input"); input.type = "checkbox";
-    input.dataset.registry = channel.registry_channel_id;
-    input.checked = registrySelected.includes(channel.registry_channel_id);
-    input.setAttribute("aria-label", `选择公共渠道 ${publicChannelLabel(channel)}`);
-    const reason = !channel.enabled ? "registry_disabled" : channel.credential_status !== "available" ? `credential_${channel.credential_status}` : "";
-    input.disabled = Boolean(reason);
-    label.append(input, document.createTextNode(`${publicChannelLabel(channel)} · ${channel.status} · 凭据 ${channel.credential_status} · ${channel.discovery_status}`));
-    row.append(label);
-    let eligible = !reason;
-    const targets = channel.models.filter(item => item.eligible);
-    if (!targets.length) eligible = false;
-    const selectedKeys = new Set(targetSelected);
-    const useLegacyChannelSelection = selectedKeys.size === 0 && registrySelected.includes(channel.registry_channel_id);
-    for (const item of targets) {
-      const target = text("label", "", "target-choice");
-      const checkbox = document.createElement("input"); checkbox.type = "checkbox";
-      checkbox.dataset.target = JSON.stringify(item);
-      checkbox.dataset.registry = channel.registry_channel_id;
-      const targetKey = `${channel.registry_channel_id}:${item.model}:${item.protocol}`;
-      checkbox.checked = selectedKeys.has(targetKey) || useLegacyChannelSelection;
-      checkbox.disabled = !eligible;
-      checkbox.setAttribute("aria-label", `${publicChannelLabel(channel)} ${item.family || item.catalog_model || item.model} ${item.model} ${item.protocol}`);
-      target.append(checkbox, document.createTextNode(`${item.family || item.catalog_model || "模型"} · ${item.model} · ${item.protocol}`));
-      row.append(target);
+  state.selectedTargetKeys = new Set(targetSelected);
+  const selectedKeys = state.selectedTargetKeys;
+  const sourceGroups = new Map();
+  for (const candidate of state.candidates) {
+    const source = candidate.source_channel_name || candidate.name || "未命名渠道";
+    if (!sourceGroups.has(source)) sourceGroups.set(source, []);
+    sourceGroups.get(source).push(candidate);
+  }
+  root.replaceChildren(...[...sourceGroups.entries()].sort(([a], [b]) => a.localeCompare(b)).map(([source, candidates]) => {
+    const sourcePanel = text("section", "", "panel channel-source-group");
+    sourcePanel.append(text("h3", `上游渠道 · ${source}`));
+    for (const channel of candidates.sort((a, b) => multiplierGroupLabel(a).localeCompare(multiplierGroupLabel(b)))) {
+      const row = text("article", "", "channel-group-row");
+      const label = text("label", "");
+      const input = document.createElement("input"); input.type = "checkbox";
+      const groupId = Number(channel.registry_group_id || channel.registry_channel_id);
+      input.dataset.registry = groupId;
+      input.dataset.group = "true";
+      input.setAttribute("aria-label", `选择倍率分组 ${multiplierGroupLabel(channel)}`);
+      const reason = !channel.enabled ? "registry_disabled" : channel.credential_status !== "available" ? `credential_${channel.credential_status}` : "";
+      const targets = channel.models.filter(item => item.eligible);
+      const eligible = !reason && targets.length > 0;
+      input.checked = selectedKeys.size > 0 ? [...selectedKeys].some(key => key.startsWith(`${groupId}:`)) : registrySelected.includes(groupId);
+      input.disabled = !eligible;
+      label.append(input, document.createTextNode(`${multiplierGroupLabel(channel)} · ${channel.status} · 凭据 ${channel.credential_status} · ${channel.discovery_status}`));
+      row.append(label);
+      if (channel.group_families?.length) row.append(text("small", `所属家族：${channel.group_families.join("、")}`, "muted"));
+      input.addEventListener("change", () => {
+        renderUnifiedModelPicker();
+        updateTimetablePreview();
+      });
+      if (!eligible) row.append(text("p", `不可执行：${reason || channel.models.filter(m => ["gpt-6-astra","gpt-6.1-sol"].includes(m.catalog_model)).map(m => m.reason).filter(Boolean).join(" / ") || "模型未登记"}；请核对公共渠道的已上线状态、启用、凭据及模型/协议映射`, "form-error"));
+      sourcePanel.append(row);
     }
-    const master = input;
-    const selectedTargetCount = targets.filter(item => {
-      const key = `${channel.registry_channel_id}:${item.model}:${item.protocol}`;
-      return selectedKeys.has(key) || useLegacyChannelSelection;
-    }).length;
-    master.checked = targets.length > 0 && selectedTargetCount === targets.length;
-    master.indeterminate = selectedTargetCount > 0 && !master.checked;
-    master.addEventListener("change", () => {
-      row.querySelectorAll("input[data-target]:not(:disabled)").forEach(item => { item.checked = master.checked; });
-      updateTimetablePreview();
-    });
-    row.querySelectorAll("input[data-target]").forEach(item => item.addEventListener("change", () => {
-      const children = [...row.querySelectorAll("input[data-target]:not(:disabled)")];
-      master.checked = children.length > 0 && children.every(child => child.checked);
-      master.indeterminate = children.some(child => child.checked) && !master.checked;
-      updateTimetablePreview();
-    }));
-    input.disabled = !eligible;
-    input.addEventListener("change", updateTimetablePreview);
-    if (!eligible) row.append(text("p", `不可执行：${reason || channel.models.filter(m => ["gpt-6-astra","gpt-6.1-sol"].includes(m.catalog_model)).map(m => m.reason).filter(Boolean).join(" / ") || "模型未登记"}；请核对公共渠道的已上线状态、启用、凭据及模型/协议映射`, "form-error"));
-    return row;
+    return sourcePanel;
   }));
   if (!state.candidates.length) root.append(text("p", "公共库暂无候选渠道。先在公共渠道页新增，再刷新。"));
+  renderUnifiedModelPicker();
   updateTimetablePreview();
+}
+
+function renderUnifiedModelPicker() {
+  const root = $("#channel-picker");
+  root.querySelector(".unified-model-picker")?.remove();
+  const selectedGroups = new Set($$("#channel-picker input[data-group]:checked").map(input => Number(input.dataset.registry)));
+  const families = new Map();
+  for (const group of state.candidates) {
+    const groupId = group.registry_group_id || group.registry_channel_id;
+    if (!selectedGroups.has(groupId)) continue;
+    const groupFamilies = group.group_families || group.models.map(model => model.family || model.catalog_model).filter(Boolean);
+    for (const item of group.models.filter(model => model.eligible && groupFamilies.includes(model.family || model.catalog_model))) {
+      const family = item.family || item.catalog_model || "未标注家族";
+      if (!families.has(family)) families.set(family, new Map());
+      families.get(family).set(`${item.model}:${item.protocol}`, item);
+    }
+  }
+  const fieldset = text("fieldset", "", "panel unified-model-picker");
+  fieldset.append(text("legend", "家族代表模型（自动选择）"));
+  if (!families.size) {
+    fieldset.append(text("p", "先选择倍率分组，再为每个模型家族选择一个统一模型。", "muted"));
+    root.append(fieldset);
+    return;
+  }
+  for (const [family, options] of [...families].sort(([a], [b]) => a.localeCompare(b))) {
+    const label = text("label", "");
+    label.append(document.createTextNode(`${family} 家族`));
+    const select = document.createElement("select");
+    select.dataset.family = family;
+    const values = [...options.values()];
+    let selected = state.timetableModels?.[family];
+    if (!selected) {
+      selected = values.find(item => [...state.selectedTargetKeys || []].some(key => key.endsWith(`:${item.model}:${item.protocol}`)));
+    }
+    if (!selected || !values.some(item => item.model === selected.model && item.protocol === selected.protocol)) selected = values[0];
+    select.replaceChildren(...values.map(item => new Option(`${item.label || item.model} · ${item.model} / ${item.protocol}`, JSON.stringify(item))));
+    select.value = JSON.stringify(selected);
+    state.timetableModels = {...(state.timetableModels || {}), [family]: selected};
+    select.addEventListener("change", () => {
+      state.timetableModels[family] = JSON.parse(select.value);
+      updateTimetablePreview();
+    });
+    label.append(select);
+    fieldset.append(label);
+  }
+  root.append(fieldset);
 }
 
 function renderLayeredRun(root, run) {
@@ -289,7 +335,8 @@ function renderLayeredRun(root, run) {
   root.append(controls);
   for (const slot of run.slots || []) {
     const card = text("article", "", "panel"); const evidence = slot.summary || {}, score = evidence.score || {};
-    card.append(text("h3", `${slot.slot} · ${publicChannelLabel(state.candidates.find((item) => item.registry_channel_id === slot.registry_channel_id) || {registry_channel_id: slot.registry_channel_id})} · ${slot.family || "未标注家族"} · ${slot.model}/${slot.protocol}`));
+    const group = state.candidates.find((item) => (item.registry_group_id || item.registry_channel_id) === slot.registry_channel_id);
+    card.append(text("h3", `${slot.slot} · ${multiplierGroupLabel(group || {group_family: slot.group_family, group_multiplier: slot.group_multiplier})} · 上游 ${slot.source_channel_name || group?.source_channel_name || group?.name || "未知"} · ${slot.model}/${slot.protocol}`));
     card.append(text("p", `费用估算 USD ${evidence.fees?.estimated_usd ?? "unknown"} · reasoning 用量见导出；不设每日金额上限`));
     card.append(text("p", `${slot.status}${slot.reason ? " · " + slot.reason : ""} · 计划 ${evidence.planned ?? (slot.method === "canary" ? 192 : slot.method === "modeltrace" ? 3 : 1)} · 尝试 ${evidence.attempted ?? 0} · 有效 ${evidence.valid ?? 0} · 无效 ${evidence.invalid ?? 0} · unknown ${evidence.unknown ?? 0} · not_run ${evidence.not_run ?? "未测"}`));
     if (slot.method === "canary") {
@@ -314,10 +361,20 @@ function renderLayeredRun(root, run) {
 
 function timetableGridTimes() { return Array.from({length: 144}, (_, i) => `${String(Math.floor(i / 6)).padStart(2, "0")}:${String(i % 6 * 10).padStart(2, "0")}`); }
 function selectedTimetableTargets() {
-  return $$("#channel-picker input[data-target]:checked").map(input => {
-    const entry = JSON.parse(input.dataset.target);
-    return {registry_channel_id: Number(input.dataset.registry), model: entry.model, protocol: entry.protocol, model_id: entry.model_id};
-  });
+  const result = [];
+  for (const input of $$("#channel-picker input[data-group]:checked")) {
+    const groupId = Number(input.dataset.registry);
+    const group = state.candidates.find(item => (item.registry_group_id || item.registry_channel_id) === groupId);
+    if (!group) continue;
+    const families = new Set(group.group_families || group.models.filter(item => item.eligible).map(item => item.family || item.catalog_model || "未标注家族"));
+    for (const family of families) {
+      const entry = state.timetableModels?.[family];
+      if (entry && group.models.some(item => item.eligible && item.model === entry.model && item.protocol === entry.protocol)) {
+        result.push({registry_group_id: groupId, model_family: family, model: entry.model, protocol: entry.protocol, model_id: entry.model_id});
+      }
+    }
+  }
+  return result;
 }
 function renderTimetable() {
   const times = timetableGridTimes(), table = $("#timetable-grid");
@@ -366,7 +423,7 @@ async function updateTimetablePreview() {
   try {
     const p = await api("/api/timetable/preview", {method: "POST", body: JSON.stringify({name: "计划预览", daily_times: "00:00", timezone: $("#schedule-timezone").value, targets, plan_version: "layered-integrity-v3", layered_config: state.timetable})});
     if (generation !== state.previewGeneration) return;
-    $("#timetable-preview").textContent = `${p.date} · ${p.channels} 渠道 · MT / Nerfed 每轮各 3 题 · 首次 ${p.initial_requests} 次，含断联重试最多 ${p.max_requests} 次${p.max_requests === 0 ? " · 未安排采样" : ""}`;
+    $("#timetable-preview").textContent = `${p.date} · ${p.channels} 个倍率分组 · ${p.targets} 个统一模型目标 · MT / Nerfed 每轮各 3 题 · 首次 ${p.initial_requests} 次，含断联重试最多 ${p.max_requests} 次${p.max_requests === 0 ? " · 未安排采样" : ""}`;
   } catch (error) {if (generation === state.previewGeneration) $("#timetable-preview").textContent = error.message;}
 }
 function reportMultiplier(item) {
@@ -404,26 +461,27 @@ function recordIdentity(item) {return `${item.run_id}:${item.scheduled_at_utc}:$
 function renderTimetableOverview(root, data) {
   const channels = new Map(), times = new Map();
   for (const item of data.rows) {
-    if (!channels.has(item.registry_channel_id)) channels.set(item.registry_channel_id, new Set());
-    channels.get(item.registry_channel_id).add(item.channel_name);
+    const groupId = item.registry_group_id || item.registry_channel_id;
+    if (!channels.has(groupId)) channels.set(groupId, new Set());
+    channels.get(groupId).add(item.group_label || `${item.group_family || "未标注家族"} · ${item.group_multiplier ?? item.channel_multiplier ?? "?"}x`);
     const key = `${item.date}:${item.timezone}:${item.scheduled_at_utc}`;
     if (!times.has(key)) times.set(key, {item, cells: new Map()});
     const cells = times.get(key).cells;
-    if (!cells.has(item.registry_channel_id)) cells.set(item.registry_channel_id, []);
-    cells.get(item.registry_channel_id).push(item);
+    if (!cells.has(groupId)) cells.set(groupId, []);
+    cells.get(groupId).push(item);
   }
   const ids = [...channels.keys()].sort((a, b) => a - b), scroll = text("div", "", "local-scroll");
   const table = document.createElement("table"); table.className = "detail-table timetable-overview";
   table.style.minWidth = `${185 + ids.length * 260}px`;
   const head = document.createElement("thead"), h = document.createElement("tr"); h.append(text("th", "计划时刻（时区）"));
-  for (const id of ids) h.append(text("th", publicChannelLabel({id, name: [...channels.get(id)].join(" / "), channel_multiplier: data.rows.find((item) => item.registry_channel_id === id)?.channel_multiplier})));
+  for (const id of ids) h.append(text("th", [...channels.get(id)].join(" / ")));
   head.append(h); const body = document.createElement("tbody");
   for (const {item, cells} of [...times.values()].sort((a, b) => a.item.scheduled_at_utc - b.item.scheduled_at_utc || a.item.timezone.localeCompare(b.item.timezone))) {
     const tr = document.createElement("tr"), time = document.createElement("th"); time.scope = "row";
     const [date, clock] = item.scheduled_at.split("T");
     time.append(text("p", clock || item.scheduled_at), text("small", date), text("small", item.timezone)); tr.append(time);
     for (const id of ids) {
-      const td = document.createElement("td"), records = cells.get(id) || [];
+        const td = document.createElement("td"), records = cells.get(id) || [];
       if (!records.length) td.append(text("p", "无符合筛选的采样记录", "muted"));
       for (const record of records) {
         const cell = text("article", "", `timetable-cell state-${record.state}`); cell.dataset.record = recordIdentity(record);
@@ -454,7 +512,7 @@ function renderTimetableReport(root, data, run = null, view = "detail") {
   for (const item of data.rows) {
     const row = document.createElement("tr"); row.dataset.channel = item.registry_channel_id; row.dataset.record = recordIdentity(item);
     const time = document.createElement("td"); time.append(text("p", item.scheduled_at), text("p", item.sampling_period), text("small", `${item.timezone} · ${data.synthetic ? "演示" : "Run"} ${item.run_id}`));
-    const channel = text("td", publicChannelLabel(item));
+    const channel = text("td", `${item.group_family || "未标注家族"} · ${item.group_multiplier ?? item.channel_multiplier ?? "?"}x · 上游 ${item.source_channel_name || item.channel_name || "未知"}`);
     channel.append(text("small", `${item.family || "未标注家族"} · ${item.model_label || item.model || "未知模型"} · ${item.model || "未知模型"}/${item.protocol || "未知协议"}`));
     channel.append(reportMultiplierEvidence(item));
     const decision = text("td", item.conclusion?.label || item.status);
@@ -552,9 +610,20 @@ async function openSchedule(schedule = null) {
   const config = schedule?.layered_config || {};
   state.baselineIds = {...(config.baseline_ids ?? {})};
   state.timetable = {modeltrace_times: [...(config.modeltrace_times ?? state.timetableDefaults.modeltrace_times)], nerfed_times: [...(config.nerfed_times ?? config.modeltrace_times ?? state.timetableDefaults.nerfed_times)]};
+  state.timetableModels = {};
+  for (const key of Object.keys(config.target_bindings || {})) {
+    const decoded = key.split(":");
+    if (decoded.length < 3) continue;
+    const model = decoded.slice(1, -1).join(":");
+    const protocol = decoded.at(-1);
+    const candidate = state.candidates.flatMap(group => group.models || []).find(item => item.model === model && item.protocol === protocol);
+    const family = candidate?.family || candidate?.catalog_model;
+    if (family && candidate) state.timetableModels[family] = candidate;
+  }
   renderTimetable();
   const targetSelected = Object.keys(config.target_bindings || {});
-  renderChannelPicker(schedule?.channel_ids || [], config.registry_channel_ids || [], targetSelected);
+  const selectedGroups = config.group_ids || config.registry_channel_ids || [];
+  renderChannelPicker(schedule?.channel_ids || [], selectedGroups, targetSelected);
   $("#schedule-error").textContent = "";
   $("#schedule-dialog").showModal();
 }

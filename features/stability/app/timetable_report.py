@@ -96,9 +96,15 @@ def table_rows(slots):
         period = f"{datetime.fromtimestamp(start, zone).isoformat()} – {datetime.fromtimestamp(end, zone).isoformat()}" if start is not None and end is not None else "未采样"
         target_key = f"{channel_id}:{model}:{protocol}"
         target_meta = snapshot.get("layered_config", {}).get("target_meta", {}).get(target_key, {})
+        group_meta = snapshot.get("layered_config", {}).get("group_meta", {}).get(str(channel_id), {})
         rows.append({"run_id": example["run_id"], "date": example["budget_date"], "timezone": timezone,
                      "scheduled_at": datetime.fromtimestamp(due, zone).isoformat(), "scheduled_at_utc": due,
                      "registry_channel_id": channel_id, "channel_name": channel_name,
+                     "registry_group_id": channel_id, "group_family": group_meta.get("family", ""),
+                     "group_families": group_meta.get("families", []),
+                     "group_multiplier": group_meta.get("multiplier", multiplier),
+                     "group_label": f"{group_meta.get('family') or '未标注家族'} · {group_meta.get('multiplier', multiplier) if group_meta.get('multiplier', multiplier) is not None else '?'}x",
+                     "source_channel_name": group_meta.get("source_channel_name", channel_name),
                      "model": model, "protocol": protocol, "family": target_meta.get("family", ""),
                      "model_label": target_meta.get("label", model),
                      "channel_multiplier": multiplier, "method_multipliers": {m: v["channel_multiplier"] for m, v in results.items() if "channel_multiplier" in v},

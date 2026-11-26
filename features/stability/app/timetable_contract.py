@@ -27,7 +27,7 @@ def decode_target_key(key):
 def upgrade_config(config, version):
     empty = version == "layered-integrity-v2" and all(config.get(method + "_times") == [] for method in ("modeltrace", "canary"))
     times = [] if empty else DEFAULT_TIMES
-    return {**{k: config[k] for k in ("registry_channel_ids", "target_bindings", "target_meta", "channel_names", "channel_multipliers") if k in config},
+    return {**{k: config[k] for k in ("registry_channel_ids", "group_ids", "target_bindings", "target_meta", "group_meta", "channel_names", "channel_multipliers") if k in config},
             "channel_names": dict(config.get("channel_names", {})),
             "channel_multipliers": dict(config.get("channel_multipliers", {})),
             "modeltrace_times": list(times), "nerfed_times": list(times), "reasoning_effort": "low",
@@ -35,7 +35,7 @@ def upgrade_config(config, version):
 
 
 def validate_config(value):
-    allowed = set(DEFAULTS) | {"registry_channel_ids", "target_bindings", "target_meta", "channel_names", "channel_multipliers", "legacy_plan"}
+    allowed = set(DEFAULTS) | {"registry_channel_ids", "group_ids", "target_bindings", "target_meta", "group_meta", "channel_names", "channel_multipliers", "legacy_plan"}
     if not isinstance(value, dict) or set(value) - allowed:
         raise ValueError("十分钟计划配置含未知字段")
     config = {**DEFAULTS, **value}
@@ -71,7 +71,7 @@ def build_slots(schedule, day):
         if decoded:
             targets.append(decoded)
     if not targets:
-        targets = [(int(channel_id), "gpt-6-astra", "responses") for channel_id in config.get("registry_channel_ids", [])]
+        targets = [(int(group_id), "gpt-6-astra", "responses") for group_id in config.get("group_ids", config.get("registry_channel_ids", []))]
     for clock in config["modeltrace_times"]:
         due = local_epoch(day, clock, zone)
         if due is None:
